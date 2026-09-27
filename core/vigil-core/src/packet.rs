@@ -100,7 +100,12 @@ pub fn parse_ip(p: &[u8]) -> Option<IpInfo> {
                     44 => {
                         let h = p.get(off..off + 8)?;
                         next = h[0];
-                        fragment = true;
+                        // An "atomic fragment" (offset 0, M = 0, RFC 6946)
+                        // is a whole packet and is processed as one.
+                        let offset_and_m = u16::from_be_bytes([h[2], h[3]]);
+                        let offset = offset_and_m >> 3;
+                        let more = offset_and_m & 1 != 0;
+                        fragment |= offset != 0 || more;
                         off += 8;
                     }
                     _ => break,
@@ -120,6 +125,23 @@ pub fn parse_ip(p: &[u8]) -> Option<IpInfo> {
         }
         _ => None,
     }
+}
+
+/// Rewrites an IPv6 packet whose fixed header is directly followed by an
+/// atomic fragment header into the equivalent packet without it, for the
+/// user-space TCP stack, which does not implement fragment headers. Returns
+/// `None` if the packet has no such header or is a real fragment.
+pub fn strip_atomic_fragment_v6(p: &[u8], ip: &IpInfo) -> Option<Vec<u8>> {
+    if ip.fragment || p.first()? >> 4 != 6 || *p.get(6)? != 44 || ip.end < 48 {
+        return None;
+    }
+    let h = p.get(40..48)?;
+    let mut out = Vec::with_capacity(ip.end - 8);
+    out.extend_from_slice(&p[..40]);
+    out[6] = h[0];
+    out[4..6].copy_from_slice(&((ip.end - 48) as u16).to_be_bytes());
+    out.extend_from_slice(&p[48..ip.end]);
+    Some(out)
 }
 
 pub fn parse_tcp(p: &[u8], ip: &IpInfo) -> Option<TcpInfo> {
@@ -342,5 +364,40 @@ mod tests {
         assert!(parse_ip(&pkt).is_none());
         assert!(parse_ip(&[]).is_none());
         assert!(parse_ip(&[0x45; 10]).is_none());
+    }
+
+    /// Inserts an IPv6 fragment header (offset, M flag) after the fixed header.
+    fn with_frag_header(pkt: &[u8], offset: u16, more: bool) -> Vec<u8> {
+        let mut out = pkt[..40].to_vec();
+        let next = out[6];
+        out[6] = 44;
+        let plen = u16::from_be_bytes([out[4], out[5]]) + 8;
+        out[4..6].copy_from_slice(&plen.to_be_bytes());
+        out.extend_from_slice(&[next, 0]);
+        out.extend_from_slice(&((offset << 3) | more as u16).to_be_bytes());
+        out.extend_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+        out.extend_from_slice(&pkt[40..]);
+        out
+    }
+
+    #[test]
+    fn ipv6_atomic_fragments_are_whole_packets() {
+        let plain = build_udp(sa("[fd00::1]:5000"), sa("[2001:db8::1]:53"), b"query").unwrap();
+        let atomic = with_frag_header(&plain, 0, false);
+        let ip = parse_ip(&atomic).unwrap();
+        assert!(!ip.fragment);
+        assert_eq!(ip.proto, PROTO_UDP);
+        let u = parse_udp(&atomic, &ip).unwrap();
+        assert_eq!(&atomic[u.payload_offset..u.payload_end], b"query");
+        // Stripping yields the original packet.
+        assert_eq!(strip_atomic_fragment_v6(&atomic, &ip).unwrap(), plain);
+        assert!(strip_atomic_fragment_v6(&plain, &parse_ip(&plain).unwrap()).is_none());
+        // Real fragments stay fragments.
+        for (off, more) in [(0, true), (8, false), (8, true)] {
+            let f = with_frag_header(&plain, off, more);
+            let ip = parse_ip(&f).unwrap();
+            assert!(ip.fragment, "offset {off} more {more}");
+            assert!(strip_atomic_fragment_v6(&f, &ip).is_none());
+        }
     }
 }

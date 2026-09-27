@@ -497,6 +497,19 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
     }
     match ip.proto {
         PROTO_TCP => {
+            // smoltcp does not parse fragment headers: hand it IPv6 atomic
+            // fragments without theirs.
+            let stripped;
+            let (pkt, ip) = match packet::strip_atomic_fragment_v6(pkt, &ip) {
+                Some(p) => {
+                    stripped = p;
+                    let Some(ip) = packet::parse_ip(&stripped) else {
+                        return drop_it();
+                    };
+                    (&stripped[..], ip)
+                }
+                None => (pkt, ip),
+            };
             let Some(t) = packet::parse_tcp(pkt, &ip) else {
                 return drop_it();
             };
