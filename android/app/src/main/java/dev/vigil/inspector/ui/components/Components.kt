@@ -12,10 +12,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
@@ -29,6 +36,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,7 +89,7 @@ fun Tag(text: String, color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
         text,
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(if (filled) color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant)
+            .background(if (filled) color.copy(alpha = VigilColors.TintAlpha) else MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 6.dp, vertical = 1.dp),
         color = color,
         fontSize = 11.sp,
@@ -96,14 +106,66 @@ fun SeverityDot(severity: String, size: Dp = 10.dp) {
     Box(Modifier.size(size).clip(CircleShape).background(VigilColors.severity(severity)))
 }
 
+/** A metric card. With [onClick] it gets a chevron, a ripple and button semantics. */
 @Composable
-fun StatTile(label: String, value: String, modifier: Modifier = Modifier, accent: Color = MaterialTheme.colorScheme.primary, caption: String? = null) {
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
-        Column(Modifier.padding(14.dp)) {
-            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, color = accent)
-            if (caption != null) Text(caption, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+fun StatTile(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    accent: Color = MaterialTheme.colorScheme.primary,
+    caption: String? = null,
+    onClick: (() -> Unit)? = null,
+) {
+    val colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+    val content: @Composable () -> Unit = {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, color = accent)
+                if (caption != null) Text(caption, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (onClick != null) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+    if (onClick != null) {
+        Card(onClick = onClick, modifier = modifier.semantics { role = Role.Button }, colors = colors) { content() }
+    } else {
+        Card(modifier, colors = colors) { content() }
+    }
+}
+
+/** A dismissible error card, e.g. for settings the engine rejected. */
+@Composable
+fun ErrorCard(title: String, message: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
+        Column(Modifier.padding(start = 16.dp, top = 16.dp, end = 8.dp, bottom = 4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp, end = 8.dp))
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Dismiss") }
+        }
+    }
+}
+
+/** An info button that explains a technical term in a dialog. */
+@Composable
+fun HelpIcon(term: String, explanation: String, modifier: Modifier = Modifier) {
+    var open by remember { mutableStateOf(false) }
+    IconButton(onClick = { open = true }, modifier = modifier.size(32.dp)) {
+        Icon(Icons.Outlined.Info, contentDescription = "What is $term?", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text(term) },
+            text = { Text(explanation) },
+            confirmButton = { TextButton(onClick = { open = false }) { Text("OK") } },
+        )
     }
 }
 
@@ -129,10 +191,13 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
 
 /** A label/value row for detail screens. Values are monospace and selectable-looking. */
 @Composable
-fun Field(label: String, value: String?, mono: Boolean = false) {
+fun Field(label: String, value: String?, mono: Boolean = false, help: String? = null) {
     if (value.isNullOrEmpty()) return
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(label, Modifier.weight(0.35f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.weight(0.35f), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (help != null) HelpIcon(label, help)
+        }
         Text(
             value,
             Modifier.weight(0.65f),

@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,7 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Badge
@@ -24,10 +25,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
@@ -47,6 +51,7 @@ import dev.vigil.inspector.ui.screens.DashboardScreen
 import dev.vigil.inspector.ui.screens.ExportScreen
 import dev.vigil.inspector.ui.screens.FeedsScreen
 import dev.vigil.inspector.ui.screens.FlowDetailScreen
+import dev.vigil.inspector.ui.screens.OnboardingScreen
 import dev.vigil.inspector.ui.screens.RulesScreen
 import dev.vigil.inspector.ui.screens.SettingsScreen
 import dev.vigil.inspector.ui.theme.VigilTheme
@@ -58,25 +63,58 @@ class MainActivity : ComponentActivity() {
     private val destination = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK) VigilVpnService.start(this)
+        if (result.resultCode == RESULT_OK) {
+            VigilVpnService.start(this)
+        } else {
+            vm.showMessage("VPN permission was not granted, so inspection did not start.")
+        }
     }
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /** Whether the notification request was made by [startInspection] (then VPN consent follows). */
+    private var startAfterNotificationPrompt = false
+    private val notificationsGranted = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        notificationsGranted.value = granted
+        if (startAfterNotificationPrompt) {
+            startAfterNotificationPrompt = false
+            requestVpnConsent()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        destination.value = intent?.getStringExtra(EXTRA_DESTINATION)
+        // Only on a fresh start: after a configuration change the intent was already handled.
+        if (savedInstanceState == null) destination.value = Routes.sanitize(intent?.getStringExtra(EXTRA_DESTINATION))
+        startAfterNotificationPrompt = savedInstanceState?.getBoolean(STATE_START_PENDING) ?: false
+        notificationsGranted.value = hasNotificationPermission()
         setContent {
             VigilTheme {
+                val settings by vm.settings.collectAsStateWithLifecycle()
+                if (!settings.onboarded) {
+                    val granted by notificationsGranted.collectAsStateWithLifecycle()
+                    OnboardingScreen(
+                        vm,
+                        notificationsGranted = granted,
+                        onRequestNotifications = {
+                            if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        },
+                        onFinish = { vm.updateSettings { it.copy(onboarded = true) } },
+                    )
+                    return@VigilTheme
+                }
                 val nav = rememberNavController()
                 val target by destination.collectAsStateWithLifecycle()
                 LaunchedEffect(target) {
                     target?.let { route ->
-                        nav.navigate(route) {
-                            popUpTo("dashboard") { saveState = true }
-                            launchSingleTop = true
-                        }
                         destination.value = null
+                        // Routes are whitelisted, but never let a bad request crash the app.
+                        runCatching {
+                            nav.navigate(route) {
+                                popUpTo("dashboard") { saveState = true }
+                                launchSingleTop = true
+                            }
+                        }.onFailure { Log.w("vigil.ui", "cannot open $route: ${it.message}") }
                     }
                 }
                 VigilScaffold(nav)
@@ -84,19 +122,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_START_PENDING, startAfterNotificationPrompt)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent.getStringExtra(EXTRA_DESTINATION)?.let { destination.value = it }
+        Routes.sanitize(intent.getStringExtra(EXTRA_DESTINATION))?.let { destination.value = it }
     }
 
-    /** Starts inspection, asking for VPN consent (and notifications) first. */
+    private fun hasNotificationPermission() = Build.VERSION.SDK_INT < 33 ||
+        ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Starts inspection. Asks for notifications first (Android 13+), then for
+     * VPN consent once that prompt is answered, so the two dialogs never overlap.
+     */
     fun startInspection() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (!hasNotificationPermission()) {
+            startAfterNotificationPrompt = true
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            requestVpnConsent()
         }
+    }
+
+    private fun requestVpnConsent() {
         val consent = VpnService.prepare(this)
         if (consent != null) vpnConsent.launch(consent) else VigilVpnService.start(this)
     }
@@ -109,7 +162,7 @@ class MainActivity : ComponentActivity() {
     private fun VigilScaffold(nav: NavHostController) {
         val tabs = listOf(
             Tab("dashboard", "Overview", Icons.Default.Home),
-            Tab("activity", "Activity", Icons.Default.List),
+            Tab("activity", "Activity", Icons.AutoMirrored.Filled.List),
             Tab("apps", "Apps", Icons.Default.AccountBox),
             Tab("alerts", "Alerts", Icons.Default.Warning),
             Tab("settings", "Settings", Icons.Default.Settings),
@@ -117,7 +170,12 @@ class MainActivity : ComponentActivity() {
         val backStack by nav.currentBackStackEntryAsState()
         val route = backStack?.destination?.route
         val unseen by vm.unseenAlerts.collectAsStateWithLifecycle()
+        val snackbar = remember { SnackbarHostState() }
+        LaunchedEffect(Unit) {
+            vm.messages.collect { snackbar.showSnackbar(it) }
+        }
         Scaffold(
+            snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
                 if (tabs.any { it.route == route }) {
                     NavigationBar {
@@ -125,6 +183,8 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = route == tab.route,
                                 onClick = {
+                                    // A fresh visit to Activity starts unfiltered.
+                                    if (tab.route == "activity" && route != "activity") vm.clearActivityFilters()
                                     nav.navigate(tab.route) {
                                         popUpTo("dashboard") { saveState = true }
                                         launchSingleTop = true
@@ -166,5 +226,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_DESTINATION = "destination"
+        private const val STATE_START_PENDING = "start_pending"
     }
 }

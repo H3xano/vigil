@@ -95,8 +95,8 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
         }.onFailure { Log.w(TAG, "no connectivity callback: ${it.message}") }
     }
 
-    /** Sends one synthetic record with the current settings. */
-    suspend fun sendTest(): Result<Unit> = withContext(Dispatchers.IO) {
+    /** Sends one synthetic record with [cfg] (by default the saved settings). */
+    suspend fun sendTest(cfg: ExportSettings = settings.value.export): Result<Unit> = withContext(Dispatchers.IO) {
         val record = JsonObject(
             mapOf(
                 "@timestamp" to JsonPrimitive(Instant.now().toString()),
@@ -106,7 +106,7 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
             ),
         )
         runCatching {
-            val out = send(settings.value.export, listOf(record))
+            val out = send(cfg, listOf(record))
             if (out.delivered == 0) throw IOException(out.detail ?: "the collector did not accept the test event")
         }.onFailure { closeSinkQuietly() }.map { }
     }

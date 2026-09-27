@@ -246,6 +246,9 @@ interface AlertDao {
     @Query("UPDATE alerts SET seen = 1 WHERE seen = 0")
     suspend fun markAllSeen()
 
+    @Query("UPDATE alerts SET seen = 1 WHERE id = :id AND seen = 0")
+    suspend fun markSeen(id: Long)
+
     @Query("DELETE FROM alerts WHERE ts < :before")
     suspend fun deleteBefore(before: Long): Int
 

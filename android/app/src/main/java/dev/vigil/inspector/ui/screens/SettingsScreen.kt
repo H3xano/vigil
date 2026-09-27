@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,27 +28,33 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.BuildConfig
 import dev.vigil.inspector.engine.VigilNative
+import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.vpn.ConfigFactory
 
 @Composable
 fun SettingRow(title: String, summary: String? = null, checked: Boolean? = null, onClick: (() -> Unit)? = null, onChecked: ((Boolean) -> Unit)? = null) {
+    // A switch row is one focus target: the whole row toggles, and the
+    // Switch itself is decorative (onCheckedChange = null).
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = summary?.let { { Text(it) } },
-        trailingContent = checked?.let { c -> { Switch(checked = c, onCheckedChange = onChecked) } },
+        trailingContent = checked?.let { c -> { Switch(checked = c, onCheckedChange = null) } },
         modifier = Modifier.fillMaxWidth().let { m ->
             when {
+                checked != null && onChecked != null -> m.toggleable(value = checked, role = Role.Switch, onValueChange = onChecked)
                 onClick != null -> m.clickable(onClick = onClick)
-                checked != null && onChecked != null -> m.clickable { onChecked(!checked) }
                 else -> m
             }
         },
@@ -72,6 +79,7 @@ fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> 
 fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     val s by vm.settings.collectAsStateWithLifecycle()
     val feeds by vm.feeds.collectAsStateWithLifecycle()
+    val configError by vm.configError.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var confirmClear by remember { mutableStateOf(false) }
     var editUpstreams by remember { mutableStateOf(false) }
@@ -79,9 +87,17 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Settings")
         Column(Modifier.verticalScroll(rememberScrollState())) {
+            configError?.let { ConfigErrorCard(it) { vm.dismissConfigError() } }
             SectionTitle("Blocking")
-            Text("Answer for blocked domains", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
+            Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Answer for blocked domains", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                HelpIcon("Blocked-domain answer", Glossary.SINKHOLE)
+            }
             Segmented(listOf("null_ip" to "0.0.0.0 / ::", "nxdomain" to "NXDOMAIN"), s.sinkhole, { v -> vm.updateSettings { it.copy(sinkhole = v) } })
+            Text(
+                if (s.sinkhole == "nxdomain") "Blocked names are reported as nonexistent." else "Blocked names resolve to an address that goes nowhere (recommended).",
+                Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             SettingRow(
                 "Block encrypted DNS",
                 "Refuse DNS-over-TLS/QUIC and known DNS-over-HTTPS servers so apps fall back to DNS that vigil can inspect. " +
@@ -91,7 +107,8 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             val enabledFeeds = feeds.filter { it.enabled }
             SettingRow(
                 "Threat intelligence feeds",
-                "${enabledFeeds.size} enabled · ${enabledFeeds.sumOf { it.domains }} domains, ${enabledFeeds.sumOf { it.ipRanges }} IP ranges",
+                "${enabledFeeds.size} enabled · ${enabledFeeds.sumOf { it.domains }} domains, ${enabledFeeds.sumOf { it.ipRanges }} IP ranges · " +
+                    "downloaded daily from their publishers",
                 onClick = { nav.navigate("feeds") },
             )
             SettingRow("Custom rules", "${s.denyDomains.size} blocked · ${s.allowDomains.size} allowed domains", onClick = { nav.navigate("rules") })
@@ -111,7 +128,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SectionTitle("Detection")
             SettingRow(
                 "Beaconing detection",
-                "Alert when an app contacts the same destination at a near-constant interval (C2 check-ins, telemetry heartbeats).",
+                "Alert when an app contacts the same destination at a near-constant interval: malware checking in with its command-and-control (C2) server, but also telemetry heartbeats.",
                 s.beaconEnabled, onChecked = { v -> vm.updateSettings { it.copy(beaconEnabled = v) } },
             )
             if (s.beaconEnabled) {
@@ -134,7 +151,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             )
 
             SectionTitle("Permissions")
-            SettingRow("Usage access", if (vm.app.foreground.hasPermission()) "Granted: flows are tagged foreground/background" else "Not granted",
+            SettingRow("Usage access", if (usageAccessGranted(vm)) "Granted: flows are tagged foreground/background" else "Not granted",
                 onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) })
             SettingRow("Always-on VPN", "Start vigil at boot and keep it running: VPN settings → vigil → Always-on",
                 onClick = { context.startActivity(Intent(AndroidSettings.ACTION_VPN_SETTINGS)) })

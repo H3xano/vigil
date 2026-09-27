@@ -20,17 +20,21 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.processing.AlertNotifier
+import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.EmptyState
 import dev.vigil.inspector.ui.components.SeverityDot
@@ -54,17 +58,27 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
             )
             return@Column
         }
+        val appLabel = rememberAppLabels(vm, alerts.map { it.pkg }.distinct())
         LazyColumn {
             items(alerts, key = { it.id }) { a ->
-                var expanded by remember { mutableStateOf(false) }
-                val label = vm.appLabel(a.pkg)
-                Column(Modifier.fillMaxWidth().clickable { expanded = !expanded }.animateContentSize().padding(16.dp)) {
+                var expanded by rememberSaveable(a.id) { mutableStateOf(false) }
+                val label = appLabel(a.pkg)
+                Column(
+                    Modifier.fillMaxWidth()
+                        .clickable(onClickLabel = if (expanded) "Collapse" else "Show details") {
+                            expanded = !expanded
+                            // Opening an alert counts as reading it.
+                            if (expanded && !a.seen) vm.markAlertSeen(a.id)
+                        }
+                        .animateContentSize()
+                        .padding(16.dp),
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         SeverityDot(a.severity)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             AlertNotifier.titleFor(a.kind).replaceFirstChar { it.uppercase() },
-                            Modifier.weight(1f),
+                            Modifier.weight(1f).semantics { if (!a.seen) stateDescription = "Unread" },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = if (a.seen) FontWeight.Normal else FontWeight.Bold,
                         )
@@ -78,6 +92,12 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
                     Text(a.message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
                     if (expanded) {
                         Text(formatDateTime(a.ts), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                        alertHelp(a.kind)?.let { (term, text) ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("What does this mean?", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                HelpIcon(term, text)
+                            }
+                        }
                         Text(a.detail, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
                         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -93,4 +113,16 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
             }
         }
     }
+}
+
+private fun alertHelp(kind: String): Pair<String, String>? = when (kind) {
+    "beacon" -> "Beaconing" to Glossary.BEACONING
+    "threat_domain", "threat_ip" -> "Threat feed hit" to
+        "The destination is listed in an enabled threat-intelligence feed (malware, phishing or C2). ${Glossary.C2}"
+    "encrypted_dns" -> "Encrypted DNS" to
+        "The app resolves names over DNS-over-HTTPS/TLS/QUIC, so vigil cannot see which names it looks up. " +
+        "Connections are still named from TLS/QUIC SNI. ${Glossary.SNI}"
+    "hardcoded_dns" -> "Bypassing system DNS" to
+        "The app sent DNS queries straight to its own resolver instead of the one Android configured."
+    else -> null
 }

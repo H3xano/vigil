@@ -23,6 +23,7 @@ object ServiceState {
     val stats = MutableStateFlow<StatsEvent?>(null)
     val network = MutableStateFlow(NetworkInfo())
     val loadedFeeds = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val configError = MutableStateFlow<String?>(null)
 
     fun reportEngineError(message: String) {
         status.value = VpnStatus.Failed("Engine error: $message")
