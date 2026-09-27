@@ -256,7 +256,7 @@ class VigilVpnService : android.net.VpnService() {
         val virtual = setOf(EngineConfig.VIRTUAL_DNS_V4, EngineConfig.VIRTUAL_DNS_V6)
         val dns = props?.dnsServers.orEmpty()
             .filter { !it.isLoopbackAddress && !it.isAnyLocalAddress && it.hostAddress !in virtual }
-            .map(ConfigFactory::formatResolver)
+            .mapNotNull(ConfigFactory::formatResolver)
         ServiceState.network.value = NetworkInfo(
             upstreamDns = dns,
             privateDnsStrictHost = props?.privateDnsServerName,
