@@ -49,6 +49,13 @@ struct TcpSocketControl {
     recv_waker: Option<Waker>,
     recv_state: TcpSocketState,
     send_state: TcpSocketState,
+    // vigil patch: abort requested by the owner of the stream.
+    abort: bool,
+    // vigil patch: the connection ended without an orderly close (RST from
+    // the peer, or a smoltcp timeout).
+    reset: bool,
+    // vigil patch: last state observed, to tell a reset from an orderly close.
+    last_state: TcpState,
 }
 
 struct TcpSocketCreation {
@@ -160,6 +167,9 @@ impl TcpListenerRunner {
                     recv_waker: None,
                     recv_state: TcpSocketState::Normal,
                     send_state: TcpSocketState::Normal,
+                    abort: false,
+                    reset: false,
+                    last_state: TcpState::Listen,
                 }));
 
                 stream_tx
@@ -221,6 +231,21 @@ impl TcpListenerRunner {
                 if socket.state() == TcpState::Closed {
                     sockets_to_remove.push(socket_handle);
 
+                    // vigil patch: an orderly close reaches CLOSED from
+                    // LAST-ACK or TIME-WAIT (or never left LISTEN); anything
+                    // else is a reset by the peer or a timeout.
+                    if !control.abort
+                        && !matches!(
+                            control.last_state,
+                            TcpState::LastAck
+                                | TcpState::TimeWait
+                                | TcpState::Closed
+                                | TcpState::Listen
+                        )
+                    {
+                        control.reset = true;
+                    }
+
                     control.send_state = TcpSocketState::Closed;
                     control.recv_state = TcpSocketState::Closed;
 
@@ -234,6 +259,25 @@ impl TcpListenerRunner {
                     trace!("closed TCP connection");
                     continue;
                 }
+
+                // vigil patch: abort on request. smoltcp sends the RST on
+                // the next poll (the socket is CLOSED with its tuple still
+                // set, so poll_at is "now") and the socket is recycled then.
+                if control.abort {
+                    trace!("aborting TCP connection, {:?}", socket.state());
+                    socket.abort();
+                    control.send_state = TcpSocketState::Closed;
+                    control.recv_state = TcpSocketState::Closed;
+                    control.last_state = TcpState::Closed;
+                    if let Some(waker) = control.send_waker.take() {
+                        waker.wake();
+                    }
+                    if let Some(waker) = control.recv_waker.take() {
+                        waker.wake();
+                    }
+                    continue;
+                }
+                control.last_state = socket.state();
 
                 // SHUT_WR — only close once the send_buffer has been fully
                 // drained into the smoltcp socket.  Closing earlier transitions
@@ -480,6 +524,51 @@ impl TcpStream {
     pub fn remote_addr(&self) -> &SocketAddr {
         &self.dst_addr
     }
+
+    // vigil patch.
+    /// Aborts the connection: buffered data is discarded and a RST is sent
+    /// to the peer. Subsequent reads return EOF and writes fail.
+    pub fn abort(&self) {
+        self.abort_handle().abort();
+    }
+
+    // vigil patch.
+    /// A handle that can abort the connection after the stream has been
+    /// split or moved.
+    pub fn abort_handle(&self) -> TcpAbortHandle {
+        TcpAbortHandle {
+            notify: self.notify.clone(),
+            control: self.control.clone(),
+        }
+    }
+}
+
+// vigil patch.
+/// Aborts a [`TcpStream`]'s connection from anywhere; see [`TcpStream::abort`].
+#[derive(Clone)]
+pub struct TcpAbortHandle {
+    notify: SharedNotify,
+    control: SharedControl,
+}
+
+impl TcpAbortHandle {
+    pub fn abort(&self) {
+        let mut control = self.control.lock();
+        if matches!(control.recv_state, TcpSocketState::Closed)
+            && matches!(control.send_state, TcpSocketState::Closed)
+        {
+            return; // already gone
+        }
+        control.abort = true;
+        drop(control);
+        self.notify.notify_one();
+    }
+
+    /// Whether the connection ended without an orderly close (the peer
+    /// reset it or it timed out).
+    pub fn is_reset(&self) -> bool {
+        self.control.lock().reset
+    }
 }
 
 impl AsyncRead for TcpStream {
@@ -494,6 +583,10 @@ impl AsyncRead for TcpStream {
         if control.recv_buffer.is_empty() {
             // If socket is already closed / half closed, just return EOF directly.
             if matches!(control.recv_state, TcpSocketState::Closed) {
+                // vigil patch: report a reset as such, not as EOF.
+                if control.reset {
+                    return Err(std::io::ErrorKind::ConnectionReset.into()).into();
+                }
                 return Ok(()).into();
             }
 
@@ -529,7 +622,13 @@ impl AsyncWrite for TcpStream {
 
         // If state == Close | Closing | Closed, the TCP stream WR half is closed.
         if !matches!(control.send_state, TcpSocketState::Normal) {
-            return Err(std::io::ErrorKind::BrokenPipe.into()).into();
+            // vigil patch: distinguish a reset peer from a closed stream.
+            let kind = if control.reset {
+                std::io::ErrorKind::ConnectionReset
+            } else {
+                std::io::ErrorKind::BrokenPipe
+            };
+            return Err(kind.into()).into();
         }
 
         // Write to buffer

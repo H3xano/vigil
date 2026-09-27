@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["vigil-core", "vigil-jni", "vigil-cli"]
+# Vendored third-party crates are patched in below, not workspace members.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +26,12 @@ aes = "0.8"
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+
+# netstack-smoltcp has no way to abort a connection (so resets would reach
+# apps as FINs) and reports peer resets as EOF. vendor/netstack-smoltcp adds
+# both; see the header of its Cargo.toml.
+[patch.crates-io]
+netstack-smoltcp = { path = "vendor/netstack-smoltcp" }
 
 [profile.release]
 lto = "fat"
