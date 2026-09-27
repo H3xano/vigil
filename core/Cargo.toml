@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["vigil-core", "vigil-jni", "vigil-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/vigil-inspector/vigil"
+rust-version = "1.80"
+
+[workspace.dependencies]
+vigil-core = { path = "vigil-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
+futures = "0.3"
+netstack-smoltcp = "0.2.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+libc = "0.2"
+socket2 = { version = "0.5", features = ["all"] }
+parking_lot = "0.12"
+aes = "0.8"
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "unwind"
+strip = "symbols"

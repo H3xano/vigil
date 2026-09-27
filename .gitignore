@@ -1,0 +1,15 @@
+/core/target/
+scripts/e2e/last-events.jsonl
+scripts/e2e/.resolv.conf
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/jniLibs/
+android/app/release/
+*.keystore
+!android/app/debug.keystore
+.idea/
+*.iml
+.DS_Store

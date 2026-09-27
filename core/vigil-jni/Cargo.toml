@@ -1,0 +1,10 @@
+[package]
+name = "vigil-jni"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vigil-core.workspace = true
