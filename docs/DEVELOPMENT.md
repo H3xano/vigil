@@ -43,8 +43,8 @@ app. Every one was green at the 0.1.0 commit.
 
 ```sh
 cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-scripts/e2e-netns.sh          # 43 checks, needs internet, no root
-scripts/jni-smoke.sh          # 15 checks, no root
+scripts/e2e-netns.sh          # 49 checks, needs internet, no root
+scripts/jni-smoke.sh          # 26 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
@@ -98,8 +98,20 @@ UI elements found with `uiautomator dump`, and writes screenshots to
 - **ClientHellos exceed one segment** (post-quantum key shares): always parse
   the reassembled stream (`tls::parse_records` handles it).
 - **netstack-smoltcp creates a stream for every SYN,** retransmits included.
-  The gate deduplicates pending SYNs, and streams without parked metadata are
-  dropped.
+  The gate deduplicates pending SYNs and SYNs for already-admitted 4-tuples,
+  and streams without parked metadata are dropped.
+- **netstack-smoltcp is vendored** in `core/vendor/netstack-smoltcp` (via
+  `[patch.crates-io]`) to add `TcpStream::abort` and report peer resets as
+  `ConnectionReset`. Changes are marked `vigil patch`; re-apply them when
+  upgrading the crate.
+- **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
+  queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
+  then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
+- **Room schema changes need a migration** (`data/Database.kt`, `MIGRATION_1_2`
+  is hand-written because AutoMigration would copy whole tables) and the new
+  schema JSON under `app/schemas/` must be committed.
+- **Debug builds are `dev.vigil.inspector.debug`.** An older release install on
+  the emulator is a different package; target the right one with `am start`.
 - Stopping the engine must not race a blocking poll. All native calls go
   through `EngineHandle` (read lock), and `close()` takes the write lock.
 
@@ -111,6 +123,7 @@ core/vigil-core/src/
   engine/tcp.rs     SYN gate, relay, sniffing, policy decisions, alerts
   engine/udp.rs     UDP NAT, QUIC sniff window
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
+  engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
   proto/{dns,tls,quic,http}.rs   parsers (pure)
   intel.rs          DomainSet / IpSet / feed parsing
   policy.rs         Policy, feed categories, DoH host list
@@ -118,12 +131,13 @@ core/vigil-core/src/
   event.rs          event types + bounded queue
   config.rs         Config (JSON contract with the app)
 core/vigil-jni/src/lib.rs     JNI surface (mirrors engine/VigilNative.kt)
+core/vendor/netstack-smoltcp  patched netstack (TCP abort / reset reporting)
 android/app/src/main/java/dev/vigil/inspector/
   vpn/              VigilVpnService, routes, config factory, tile, ServiceState
   engine/           VigilNative, PlatformBridge, EngineHandle, event/config models
   processing/       EventProcessor, ForegroundTracker, AlertNotifier
   data/             Room DB, settings, app resolver, feed catalog/repository
-  export/           ECS records, syslog/HTTP formats, SiemExporter
+  export/           ECS records, syslog/HTTP formats, ExportPipeline (retry), ElasticBulk, SiemExporter
   ui/               MainActivity, ViewModel, theme, components, screens/
 ```
 

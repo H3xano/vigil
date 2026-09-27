@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Review fixes across engine, service and UI (details in `docs/STATUS.md`,
+  "Review fixes"): resource caps, alert-storm protection, NAT64 coverage,
+  DNS-over-TCP and UDP/53 IP-feed enforcement, real TCP resets, engine-error
+  auto-restart, reliable and de-duplicated SIEM export, feed download races,
+  Room schema v2, accessibility and contrast, onboarding.
+- New JNI call `nativeShutdown`; new config fields `nat64_prefixes` and
+  resource caps; invalid configs are rejected (`docs/EVENTS.md`).
 - CI runs on GitHub Actions (engine and Android jobs green); the release APK is
   uploaded as the `vigil-apk` artifact.
 - Handoff documentation: `docs/STATUS.md`, `docs/DEVELOPMENT.md`, `CLAUDE.md`.
