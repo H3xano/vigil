@@ -15,3 +15,5 @@ android/app/release/
 .DS_Store
 scripts/e2e/last-syslog.txt
 /dist/
+*.jks
+keystore.properties
