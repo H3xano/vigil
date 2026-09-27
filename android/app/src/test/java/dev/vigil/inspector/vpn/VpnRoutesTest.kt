@@ -52,3 +52,47 @@ class VpnRoutesTest {
         )
     }
 }
+
+class VpnRoutesV6Test {
+    private fun big(a: String) = VpnRoutes.v6ToBig(a)
+
+    private fun covers(routes: List<VpnRoutes.Cidr>, ip: String): Boolean {
+        val v = big(ip)
+        return routes.any { r ->
+            val start = big(r.address)
+            val size = java.math.BigInteger.ONE.shiftLeft(128 - r.prefix)
+            v >= start && v < start + size
+        }
+    }
+
+    @Test
+    fun tunnelsEverythingButLocalRanges() {
+        val r = VpnRoutes.ipv6(excludeLan = true)
+        for (ip in listOf("64:ff9b::808:808", "64:ff9b:1::1", "2001:4860:4860::8888", "2606:4700::1111", "::ffff:1.2.3.4", "4000::1", "fec0::1")) {
+            assertTrue("$ip must be tunnelled", covers(r, ip))
+        }
+        for (ip in listOf("fe80::1", "febf:ffff::1", "fd00::1", "fc12::5", "ff02::fb", "ff05::1:3")) {
+            assertFalse("$ip must stay direct", covers(r, ip))
+        }
+        assertTrue("virtual DNS", covers(r, "fd76:6967:696c::2"))
+    }
+
+    @Test
+    fun routesAreAlignedAndFew() {
+        val r = VpnRoutes.ipv6(excludeLan = true)
+        assertTrue("${r.size} routes", r.size <= 12)
+        for (c in r) {
+            val size = java.math.BigInteger.ONE.shiftLeft(128 - c.prefix)
+            assertEquals("$c aligned", java.math.BigInteger.ZERO, big(c.address).mod(size))
+        }
+    }
+
+    @Test
+    fun extraNat64PrefixInUlaSpaceIsTunnelled() {
+        val r = VpnRoutes.ipv6(excludeLan = true, extra = listOf("fd00:64::/96", "64:ff9b::/96", "garbage"))
+        assertTrue(covers(r, "fd00:64::102:304"))
+        assertFalse(covers(r, "fd00:65::1"))
+        assertEquals("global prefix already covered, not duplicated", VpnRoutes.ipv6(true).size + 1, r.size)
+        assertEquals(listOf(VpnRoutes.Cidr("::", 0)), VpnRoutes.ipv6(excludeLan = false, extra = listOf("fd00:64::/96")))
+    }
+}
