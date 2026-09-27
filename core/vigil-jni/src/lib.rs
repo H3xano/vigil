@@ -100,6 +100,11 @@ fn engine<'a>(handle: jlong) -> Option<&'a Engine> {
     }
 }
 
+/// The engine behind `handle` if it is still running (not shut down).
+fn running<'a>(handle: jlong) -> Option<&'a Engine> {
+    engine(handle).filter(|e| !e.is_shut_down())
+}
+
 fn jstr(env: &mut JNIEnv, s: &JString) -> Option<String> {
     env.get_string(s).ok().map(Into::into)
 }
@@ -161,6 +166,28 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStart<'
     })
 }
 
+/// Stops the engine (TUN loop, relays, runtime) and queues a `flow_end` for
+/// every open flow and a final `stopped` event, but keeps the handle valid:
+/// `nativePollEvents` still drains the queue (without waiting once it is
+/// empty), other calls become no-ops. `nativeStop` must still be called to
+/// free the handle. Calling it again is a no-op; returns true unless the
+/// handle is null.
+#[no_mangle]
+pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeShutdown<'l>(
+    _env: JNIEnv<'l>,
+    _c: JClass<'l>,
+    handle: jlong,
+) -> jboolean {
+    guard(JNI_FALSE, || match engine(handle) {
+        Some(e) => {
+            e.shutdown();
+            JNI_TRUE
+        }
+        None => JNI_FALSE,
+    })
+}
+
+/// Stops the engine if still running and frees the handle.
 #[no_mangle]
 pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStop<'l>(
     _env: JNIEnv<'l>,
@@ -211,16 +238,13 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeUpdateC
     config_json: JString<'l>,
 ) -> jboolean {
     guard(JNI_FALSE, || {
-        let (Some(e), Some(json)) = (engine(handle), jstr(&mut env, &config_json)) else {
+        let (Some(e), Some(json)) = (running(handle), jstr(&mut env, &config_json)) else {
             return JNI_FALSE;
         };
-        match Config::from_json(&json) {
-            Ok(c) => {
-                e.update_config(c);
-                JNI_TRUE
-            }
+        match Config::from_json(&json).and_then(|c| e.update_config(c)) {
+            Ok(()) => JNI_TRUE,
             Err(err) => {
-                log::error!("invalid config: {err}");
+                log::error!("config rejected: {err}");
                 JNI_FALSE
             }
         }
@@ -238,7 +262,7 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeLoadFee
     path: JString<'l>,
 ) -> jstring {
     let out = guard(None, || {
-        let e = engine(handle)?;
+        let e = running(handle)?;
         let id = jstr(&mut env, &id)?;
         let cat = jstr(&mut env, &category)?;
         let path = jstr(&mut env, &path)?;
@@ -265,7 +289,7 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeRemoveF
     handle: jlong,
     id: JString<'l>,
 ) -> jboolean {
-    guard(JNI_FALSE, || match (engine(handle), jstr(&mut env, &id)) {
+    guard(JNI_FALSE, || match (running(handle), jstr(&mut env, &id)) {
         (Some(e), Some(id)) if e.remove_feed(&id) => JNI_TRUE,
         _ => JNI_FALSE,
     })
@@ -278,7 +302,7 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStats<'
     handle: jlong,
 ) -> jstring {
     let out = guard(None, || {
-        engine(handle).and_then(|e| serde_json::to_string(&e.stats()).ok())
+        running(handle).and_then(|e| serde_json::to_string(&e.stats()).ok())
     });
     match out {
         Some(j) => new_jstring(&mut env, &j),

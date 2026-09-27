@@ -1,15 +1,15 @@
 //! DNS: inspection, sinkholing (including CNAME-cloaked trackers), upstream
 //! forwarding and IP→name learning.
 
-use super::tcp::connect_protected;
-use super::Shared;
+use super::{sock, Shared};
 use crate::event::{now_ms, DnsEvent, Event, Severity, Verdict};
 use crate::packet::PROTO_UDP;
 use crate::policy::{BlockReason, Decision};
 use crate::proto::dns::{self, RData};
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,7 +17,64 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UDP_TIMEOUT: Duration = Duration::from_millis(2500);
 const TCP_TIMEOUT: Duration = Duration::from_secs(5);
+const TCP_CLIENT_IDLE: Duration = Duration::from_secs(30);
 const MAX_UPSTREAMS_TRIED: usize = 3;
+
+/// Idle protected sockets kept per upstream resolver.
+const POOL_PER_SERVER: usize = 4;
+/// Resolvers for which sockets are pooled (hard-coded ones included).
+const POOL_SERVERS: usize = 32;
+/// Pooled sockets are replaced after this long, so a network change
+/// (which leaves a connected UDP socket with a stale source address)
+/// cannot pin queries to the old network for long.
+const POOL_MAX_AGE: Duration = Duration::from_secs(30);
+
+struct Pooled {
+    sock: tokio::net::UdpSocket,
+    created: Instant,
+}
+
+/// Reusable protected UDP sockets to upstream resolvers, so a query does not
+/// normally need a new socket and a `protect()` upcall.
+#[derive(Default)]
+pub(crate) struct UpstreamPool {
+    idle: Mutex<HashMap<SocketAddr, Vec<Pooled>>>,
+}
+
+impl UpstreamPool {
+    fn take(&self, server: SocketAddr) -> Option<Pooled> {
+        let mut idle = self.idle.lock();
+        let socks = idle.get_mut(&server)?;
+        while let Some(p) = socks.pop() {
+            if p.created.elapsed() < POOL_MAX_AGE {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    fn put(&self, server: SocketAddr, p: Pooled) {
+        if p.created.elapsed() >= POOL_MAX_AGE {
+            return;
+        }
+        let mut idle = self.idle.lock();
+        if !idle.contains_key(&server) && idle.len() >= POOL_SERVERS {
+            return;
+        }
+        let socks = idle.entry(server).or_default();
+        if socks.len() < POOL_PER_SERVER {
+            socks.push(p);
+        }
+    }
+
+    /// Drops sockets past their age.
+    pub fn expire(&self) {
+        self.idle.lock().retain(|_, socks| {
+            socks.retain(|p| p.created.elapsed() < POOL_MAX_AGE);
+            !socks.is_empty()
+        });
+    }
+}
 
 pub(crate) async fn handle_udp_query(
     shared: &Arc<Shared>,
@@ -30,23 +87,30 @@ pub(crate) async fn handle_udp_query(
     answer(shared, query, uid, upstream, "udp").await
 }
 
-/// Serves DNS-over-TCP addressed to the virtual resolver.
+/// Serves DNS over TCP: to the virtual resolver (`upstream = None`) or to a
+/// server the app addressed directly.
 pub(crate) async fn serve_tcp(
     shared: &Arc<Shared>,
     mut stream: netstack_smoltcp::TcpStream,
     uid: Option<u32>,
+    upstream: Option<SocketAddr>,
 ) {
     loop {
         let mut len = [0u8; 2];
-        match tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut len)).await {
+        match tokio::time::timeout(TCP_CLIENT_IDLE, stream.read_exact(&mut len)).await {
             Ok(Ok(_)) => {}
             _ => return,
         }
         let mut q = vec![0u8; u16::from_be_bytes(len) as usize];
-        if stream.read_exact(&mut q).await.is_err() {
-            return;
+        match tokio::time::timeout(TCP_CLIENT_IDLE, stream.read_exact(&mut q)).await {
+            Ok(Ok(_)) => {}
+            _ => return,
         }
-        let Some(resp) = answer(shared, &q, uid, None, "tcp").await else {
+        let resp = match shared.limits.dns.clone().try_acquire_owned() {
+            Ok(_permit) => answer(shared, &q, uid, upstream, "tcp").await,
+            Err(_) => dns::servfail_response(&q),
+        };
+        let Some(resp) = resp else {
             return;
         };
         let mut out = (resp.len() as u16).to_be_bytes().to_vec();
@@ -68,24 +132,32 @@ async fn answer(
 ) -> Option<Vec<u8>> {
     let cfg = shared.config();
     let started = Instant::now();
-    let parsed = dns::parse(query).filter(|m| !m.is_response && m.opcode == 0);
-    let Some(q) = parsed.as_ref().and_then(|m| m.first_question()).cloned() else {
+    let Some(msg) = dns::parse(query).filter(|m| !m.is_response && m.opcode == 0) else {
         // Not a query we understand: relay it untouched to where it was going.
         return match upstream {
-            Some(server) => forward(shared, query, &[server]).await.map(|(r, _)| r),
+            Some(server) => forward(shared, query, &[server], transport)
+                .await
+                .map(|(r, _)| r),
             None => dns::servfail_response(query),
         };
+    };
+    // Only the first question could be inspected, so a query with several
+    // (which no real resolver answers anyway) could smuggle a blocked name.
+    let [q] = &msg.questions[..] else {
+        return dns::refused_response(query);
     };
     shared.stats.dns_queries.fetch_add(1, Relaxed);
     let server_label = upstream
         .map(|s| s.to_string())
         .unwrap_or_else(|| "virtual".into());
     if let Some(server) = upstream {
+        let ip = server.ip().to_string();
         shared.alert(
             "hardcoded_dns",
             Severity::Info,
             uid,
-            &server.ip().to_string(),
+            &ip,
+            &ip,
             format!("App bypasses the system resolver and queries {server} directly"),
             serde_json::json!({ "qname": q.name }),
         );
@@ -108,12 +180,19 @@ async fn answer(
     if let Decision::Block(reason) = decision {
         return sinkhole(shared, query, &mut ev, &reason, &q.name, started);
     }
+    if let Some(server) = upstream {
+        // The resolver itself may be listed (e.g. a C2 DNS server).
+        let decision = shared.policy.read().check_ip(uid, server.ip());
+        if let Decision::Block(reason) = decision {
+            return refuse_server(shared, query, &mut ev, &reason, server, started);
+        }
+    }
 
     let servers: Vec<SocketAddr> = match upstream {
         Some(s) => vec![s],
         None => cfg.upstream_dns.clone(),
     };
-    let Some((resp, _server)) = forward(shared, query, &servers).await else {
+    let Some((resp, _server)) = forward(shared, query, &servers, transport).await else {
         ev.rcode = "SERVFAIL".into();
         ev.reason = Some("upstream unreachable".into());
         ev.latency_ms = started.elapsed().as_millis() as u64;
@@ -190,10 +269,13 @@ fn sinkhole(
     };
     ev.latency_ms = started.elapsed().as_millis() as u64;
     if reason.is_threat() {
+        // Keyed by the listed entry, not the name: DGA and DNS tunnelling
+        // produce endless distinct names under one listed domain.
         shared.alert(
             "threat_domain",
             Severity::High,
             ev.uid,
+            &reason.alert_key(),
             qname,
             format!("Lookup of {qname} sinkholed: listed by {}", reason.describe()),
             serde_json::json!({ "category": reason.category.map(|c| c.as_str()), "qtype": ev.qtype }),
@@ -203,41 +285,76 @@ fn sinkhole(
     resp
 }
 
-fn protected_udp(shared: &Shared, server: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
-    let bind: SocketAddr = if server.is_ipv4() {
-        "0.0.0.0:0".parse().unwrap()
-    } else {
-        "[::]:0".parse().unwrap()
-    };
-    let s = std::net::UdpSocket::bind(bind)?;
-    if !shared.platform.protect(s.as_raw_fd()) {
-        return Err(io::Error::other("could not protect socket"));
+/// Answers REFUSED for a query addressed to a listed resolver.
+fn refuse_server(
+    shared: &Shared,
+    query: &[u8],
+    ev: &mut DnsEvent,
+    reason: &BlockReason,
+    server: SocketAddr,
+    started: Instant,
+) -> Option<Vec<u8>> {
+    shared.stats.blocked.fetch_add(1, Relaxed);
+    ev.verdict = Verdict::Block;
+    ev.reason = Some(reason.describe());
+    ev.rcode = "REFUSED".into();
+    ev.latency_ms = started.elapsed().as_millis() as u64;
+    if reason.is_threat() {
+        let target = reason
+            .rule
+            .clone()
+            .unwrap_or_else(|| server.ip().to_string());
+        shared.alert(
+            "threat_ip",
+            Severity::High,
+            ev.uid,
+            &reason.alert_key(),
+            &target,
+            format!(
+                "DNS query to {server} refused: listed by {}",
+                reason.describe()
+            ),
+            serde_json::json!({ "dst": server.to_string(), "qname": ev.qname, "category": reason.category.map(|c| c.as_str()) }),
+        );
     }
-    s.set_nonblocking(true)?;
-    s.connect(server)?;
-    tokio::net::UdpSocket::from_std(s)
+    shared.emit(Event::Dns(ev.clone()));
+    dns::refused_response(query)
 }
 
 async fn query_udp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Result<Vec<u8>> {
-    let sock = protected_udp(shared, server)?;
-    sock.send(query).await?;
-    let mut buf = vec![0u8; 4096];
+    let p = match shared.dns_upstreams.take(server) {
+        Some(p) => {
+            sock::drain(&p.sock);
+            p
+        }
+        None => Pooled {
+            sock: sock::connect_udp(shared.platform.clone(), server).await?,
+            created: Instant::now(),
+        },
+    };
+    p.sock.send(query).await?;
     let deadline = tokio::time::Instant::now() + UDP_TIMEOUT;
     loop {
-        let n = tokio::time::timeout_at(deadline, sock.recv(&mut buf))
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns timeout"))??;
-        // Ignore stray datagrams with a different ID.
-        if n >= 2 && buf[..2] == query[..2] {
-            buf.truncate(n);
-            return Ok(buf);
+        let reply = tokio::time::timeout_at(
+            deadline,
+            sock::recv_with(&p.sock, |d| {
+                dns::answers_query(query, d).then(|| d.to_vec())
+            }),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns timeout"))??;
+        // Stray datagrams (other IDs, late answers to earlier queries on a
+        // reused socket) are skipped.
+        if let Some(resp) = reply {
+            shared.dns_upstreams.put(server, p);
+            return Ok(resp);
         }
     }
 }
 
 async fn query_tcp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Result<Vec<u8>> {
     let fut = async {
-        let mut s = connect_protected(shared, server).await?;
+        let mut s = sock::connect_tcp(shared.platform.clone(), server).await?;
         let mut msg = (query.len() as u16).to_be_bytes().to_vec();
         msg.extend_from_slice(query);
         s.write_all(&msg).await?;
@@ -252,12 +369,14 @@ async fn query_tcp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Res
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns tcp timeout"))?
 }
 
-/// Sends `query` to the first responsive server. Truncated UDP answers are
-/// retried over TCP.
+/// Sends `query` to the first responsive server. A truncated UDP answer is
+/// returned as is to UDP clients (they retry over TCP themselves, within
+/// their own EDNS size) and retried over TCP for TCP clients.
 async fn forward(
     shared: &Shared,
     query: &[u8],
     servers: &[SocketAddr],
+    transport: &'static str,
 ) -> Option<(Vec<u8>, SocketAddr)> {
     if query.len() < 12 {
         return None;
@@ -265,8 +384,7 @@ async fn forward(
     for &server in servers.iter().take(MAX_UPSTREAMS_TRIED) {
         match query_udp(shared, query, server).await {
             Ok(resp) => {
-                let truncated = resp.len() >= 4 && resp[2] & 0x02 != 0;
-                if truncated {
+                if transport == "tcp" && dns::is_truncated(&resp) {
                     if let Ok(full) = query_tcp(shared, query, server).await {
                         return Some((full, server));
                     }
@@ -277,4 +395,99 @@ async fn forward(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::test_shared;
+    use super::*;
+    use crate::config::Config;
+    use crate::intel::parse_feed;
+    use crate::policy::{FeedCategory, LoadedFeed};
+
+    /// A resolver on loopback that answers every query with a sinkhole-style
+    /// answer, optionally with the TC bit set. Returns its address.
+    async fn fake_resolver(truncate: bool) -> SocketAddr {
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            while let Ok((n, from)) = s.recv_from(&mut buf).await {
+                let mut resp =
+                    dns::sinkhole_response(&buf[..n], dns::SinkholeMode::NullIp, 5).unwrap();
+                if truncate {
+                    resp[2] |= 0x02;
+                }
+                let _ = s.send_to(&resp, from).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn refuses_multi_question_queries() {
+        let shared = test_shared(Config::default());
+        let q = dns::build_query(1, "a.example", dns::TYPE_A);
+        let mut two = q.clone();
+        two[5] = 2;
+        two.extend_from_slice(&q[12..]);
+        let r = answer(&shared, &two, None, None, "udp").await.unwrap();
+        assert_eq!(dns::parse(&r).unwrap().rcode, dns::RCODE_REFUSED);
+        let mut none = q[..12].to_vec();
+        none[5] = 0;
+        let r = answer(&shared, &none, None, None, "udp").await.unwrap();
+        assert_eq!(dns::parse(&r).unwrap().rcode, dns::RCODE_REFUSED);
+    }
+
+    #[tokio::test]
+    async fn truncated_answers_reach_udp_clients_as_truncated() {
+        let server = fake_resolver(true).await;
+        let shared = test_shared(Config {
+            upstream_dns: vec![server],
+            ..Default::default()
+        });
+        let q = dns::build_query(2, "big.example", dns::TYPE_TXT);
+        let r = answer(&shared, &q, None, None, "udp").await.unwrap();
+        assert!(dns::is_truncated(&r), "UDP client must see TC and retry");
+    }
+
+    #[tokio::test]
+    async fn upstream_sockets_are_reused() {
+        let server = fake_resolver(false).await;
+        let shared = test_shared(Config {
+            upstream_dns: vec![server],
+            ..Default::default()
+        });
+        for id in 0..5u16 {
+            let q = dns::build_query(id, "a.example", dns::TYPE_A);
+            let r = answer(&shared, &q, None, None, "udp").await.unwrap();
+            assert!(dns::answers_query(&q, &r));
+        }
+        assert_eq!(shared.dns_upstreams.idle.lock()[&server].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn listed_hardcoded_resolver_is_refused_with_alert() {
+        let server = fake_resolver(false).await;
+        let shared = test_shared(Config::default());
+        shared.policy.write().set_feed(
+            "c2ips",
+            LoadedFeed {
+                category: FeedCategory::C2,
+                feed: parse_feed("127.0.0.0/8\n"),
+            },
+        );
+        let q = dns::build_query(3, "a.example", dns::TYPE_A);
+        let r = answer(&shared, &q, Some(10123), Some(server), "udp")
+            .await
+            .unwrap();
+        assert_eq!(dns::parse(&r).unwrap().rcode, dns::RCODE_REFUSED);
+        let events = shared.events.poll(100, Duration::ZERO);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Alert(a) if a.kind == "threat_ip")));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Dns(d) if d.verdict == Verdict::Block && d.rcode == "REFUSED")
+        ));
+    }
 }

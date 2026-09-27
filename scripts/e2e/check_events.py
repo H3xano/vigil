@@ -39,4 +39,8 @@ check("quic-sni-extracted", any(f["domain"] == "quic-probe.vigil-test.example" f
 check("quic-threat-blocked", any(f["verdict"] == "block" for f in quic))
 check("threat-alert", any(a["kind"] == "threat_domain" and a["severity"] == "high" for a in alerts), alerts)
 check("stats-emitted", len(stats) >= 1 and stats[-1]["packets_out"] > 0)
-check("connect-error-reported", any(ends.get(i, {}).get("error", "") and "connect" in ends[i]["error"] for i in flows))
+check("dns-tcp-hardcoded-inspected", any(d["server"].startswith("9.9.9.9") and d["transport"] == "tcp" for d in dns), [d["server"] for d in dns])
+rst = [f for f in flows.values() if f["dst_port"] == 18765]
+check("upstream-reset-flow-reported", any("reset" in (ends.get(f["id"], {}).get("error") or "").lower() for f in rst), [(f["id"], ends.get(f["id"])) for f in rst])
+check("engine-stopped", any(e["type"] == "engine" and e["state"] == "stopped" for e in events))
+check("connect-error-reported",any(ends.get(i, {}).get("error", "") and "connect" in ends[i]["error"] for i in flows))

@@ -7,7 +7,7 @@
 use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> u64 {
@@ -146,13 +146,28 @@ pub struct EngineEvent {
     pub message: String,
 }
 
-/// Bounded multi-producer event queue. When full the oldest events are
-/// dropped (and counted) so a stalled consumer can never exhaust memory.
+/// How far from the front [`EventQueue::push`] looks for a low-value event
+/// to drop before giving up and dropping the oldest event.
+const DROP_SCAN: usize = 64;
+
+impl Event {
+    /// Periodic snapshots that a later event supersedes. Dropped first when
+    /// the queue is full, to keep `flow`/`flow_end` pairs intact.
+    fn is_superseded_later(&self) -> bool {
+        matches!(self, Event::Stats(_) | Event::FlowUpdate(_))
+    }
+}
+
+/// Bounded multi-producer event queue. When full, an old event is dropped
+/// (and counted) so a stalled consumer can never exhaust memory: preferably
+/// a `stats` or `flow_update` near the front, otherwise the oldest event.
 pub struct EventQueue {
     inner: Mutex<VecDeque<Event>>,
     cv: Condvar,
     capacity: usize,
     dropped: AtomicU64,
+    /// Set once the engine has shut down: polls no longer wait.
+    closed: AtomicBool,
 }
 
 impl EventQueue {
@@ -160,15 +175,21 @@ impl EventQueue {
         Self {
             inner: Mutex::new(VecDeque::with_capacity(1024)),
             cv: Condvar::new(),
-            capacity,
+            capacity: capacity.max(1),
             dropped: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
         }
     }
 
     pub fn push(&self, e: Event) {
         let mut q = self.inner.lock();
         if q.len() >= self.capacity {
-            q.pop_front();
+            let victim = q
+                .iter()
+                .take(DROP_SCAN)
+                .position(Event::is_superseded_later)
+                .unwrap_or(0);
+            q.remove(victim);
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
         q.push_back(e);
@@ -177,9 +198,10 @@ impl EventQueue {
     }
 
     /// Waits up to `timeout` for at least one event, then drains up to `max`.
+    /// Returns immediately once the queue is [closed](Self::close).
     pub fn poll(&self, max: usize, timeout: Duration) -> Vec<Event> {
         let mut q = self.inner.lock();
-        if q.is_empty() {
+        if q.is_empty() && !self.closed.load(Ordering::Acquire) {
             self.cv.wait_for(&mut q, timeout);
         }
         let n = q.len().min(max);
@@ -189,6 +211,19 @@ impl EventQueue {
     /// Wakes a blocked [`poll`](Self::poll) call.
     pub fn wake(&self) {
         self.cv.notify_all();
+    }
+
+    /// Marks the queue as final: queued events can still be drained, but
+    /// polls on an empty queue return at once instead of waiting.
+    pub fn close(&self) {
+        let q = self.inner.lock();
+        self.closed.store(true, Ordering::Release);
+        drop(q);
+        self.cv.notify_all();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     pub fn dropped(&self) -> u64 {
@@ -242,5 +277,46 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert!(matches!(&got[0], Event::FlowEnd(f) if f.id == 3));
         assert!(q.poll(10, Duration::from_millis(1)).is_empty());
+    }
+
+    #[test]
+    fn queue_drops_snapshots_before_flow_events() {
+        let q = EventQueue::new(3);
+        q.push(Event::Flow(FlowEvent {
+            id: 1,
+            ..Default::default()
+        }));
+        q.push(Event::Stats(StatsEvent::default()));
+        q.push(Event::FlowUpdate(FlowUpdateEvent::default()));
+        q.push(Event::FlowEnd(FlowEndEvent {
+            id: 1,
+            ..Default::default()
+        }));
+        q.push(Event::FlowEnd(FlowEndEvent {
+            id: 2,
+            ..Default::default()
+        }));
+        assert_eq!(q.dropped(), 2);
+        let got = q.poll(10, Duration::ZERO);
+        assert!(matches!(&got[0], Event::Flow(f) if f.id == 1));
+        assert!(matches!(&got[1], Event::FlowEnd(f) if f.id == 1));
+        // With nothing cheaper to drop, the oldest goes.
+        q.push(Event::FlowEnd(FlowEndEvent::default()));
+        q.push(Event::FlowEnd(FlowEndEvent::default()));
+        q.push(Event::FlowEnd(FlowEndEvent::default()));
+        q.push(Event::FlowEnd(FlowEndEvent::default()));
+        assert_eq!(q.dropped(), 3);
+    }
+
+    #[test]
+    fn closed_queue_drains_without_waiting() {
+        let q = EventQueue::new(10);
+        q.push(Event::FlowEnd(FlowEndEvent::default()));
+        q.close();
+        assert!(q.is_closed());
+        assert_eq!(q.poll(10, Duration::from_secs(5)).len(), 1);
+        let t = std::time::Instant::now();
+        assert!(q.poll(10, Duration::from_secs(5)).is_empty());
+        assert!(t.elapsed() < Duration::from_secs(1));
     }
 }

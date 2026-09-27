@@ -2,10 +2,10 @@
 //! lists and encrypted-DNS handling.
 
 use crate::config::Config;
-use crate::intel::{DomainSet, Feed};
+use crate::intel::{nat64_embedded, DomainSet, Feed};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -59,6 +59,8 @@ pub struct BlockReason {
     /// The list entry that matched, if any.
     pub rule: Option<String>,
     pub category: Option<FeedCategory>,
+    /// The match was on the destination address (an IP feed), not a name.
+    pub ip_match: bool,
 }
 
 impl BlockReason {
@@ -67,7 +69,15 @@ impl BlockReason {
             code: code.into(),
             rule: None,
             category: None,
+            ip_match: false,
         }
+    }
+
+    /// Identity of the list entry that matched, used to deduplicate alerts:
+    /// many names under one listed suffix (DGA, DNS tunnelling) are one
+    /// finding.
+    pub fn alert_key(&self) -> String {
+        format!("{}|{}", self.code, self.rule.as_deref().unwrap_or(""))
     }
 
     pub fn describe(&self) -> String {
@@ -129,6 +139,7 @@ pub struct Policy {
     deny: DomainSet,
     feeds: BTreeMap<String, Arc<LoadedFeed>>,
     doh: DomainSet,
+    nat64: Vec<Ipv6Addr>,
     pub block_encrypted_dns: bool,
 }
 
@@ -140,6 +151,7 @@ impl Policy {
             deny: DomainSet::default(),
             feeds: BTreeMap::new(),
             doh: DomainSet::from_names(DOH_HOSTS),
+            nat64: Vec::new(),
             block_encrypted_dns: false,
         };
         p.apply_config(cfg);
@@ -151,6 +163,12 @@ impl Policy {
         self.allow = DomainSet::from_names(&cfg.allow_domains);
         self.deny = DomainSet::from_names(&cfg.deny_domains);
         self.block_encrypted_dns = cfg.block_encrypted_dns;
+        self.nat64 = cfg.nat64_prefixes();
+    }
+
+    /// The IPv4 address behind a NAT64-synthesised IPv6 address.
+    pub fn nat64_v4(&self, ip: IpAddr) -> Option<Ipv4Addr> {
+        nat64_embedded(ip, &self.nat64)
     }
 
     pub fn set_feed(&mut self, id: &str, feed: LoadedFeed) {
@@ -173,17 +191,24 @@ impl Policy {
         self.doh.match_suffix(domain).is_some()
     }
 
-    /// Decision for a connection before any hostname is known.
+    /// Decision for a connection before any hostname is known. Addresses
+    /// inside a NAT64 prefix are also matched by their embedded IPv4
+    /// address (reported as the rule).
     pub fn check_ip(&self, uid: Option<u32>, ip: IpAddr) -> Decision {
         if self.is_app_blocked(uid) {
             return Decision::Block(BlockReason::simple("app"));
         }
+        let embedded = self.nat64_v4(ip).map(IpAddr::V4);
         for (id, lf) in &self.feeds {
-            if lf.feed.ips.contains(ip) {
+            let hit = embedded
+                .filter(|v4| lf.feed.ips.contains(*v4))
+                .or_else(|| lf.feed.ips.contains(ip).then_some(ip));
+            if let Some(hit) = hit {
                 return Decision::Block(BlockReason {
                     code: format!("feed:{id}"),
-                    rule: Some(ip.to_string()),
+                    rule: Some(hit.to_string()),
                     category: Some(lf.category),
+                    ip_match: true,
                 });
             }
         }
@@ -203,6 +228,7 @@ impl Policy {
                 code: "custom".into(),
                 rule: Some(rule.to_string()),
                 category: Some(FeedCategory::Custom),
+                ip_match: false,
             });
         }
         // Threat feeds take precedence so hits are reported with the most
@@ -214,6 +240,7 @@ impl Policy {
                     code: format!("feed:{id}"),
                     rule: Some(rule.to_string()),
                     category: Some(lf.category),
+                    ip_match: false,
                 };
                 if lf.category.is_threat() {
                     return Decision::Block(reason);
@@ -293,6 +320,35 @@ mod tests {
         ));
         assert_eq!(
             p.check_ip(Some(1), "198.51.100.1".parse().unwrap()),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn nat64_addresses_match_ipv4_feeds() {
+        let mut p = policy();
+        let ip: IpAddr = "64:ff9b::203.0.113.9".parse().unwrap();
+        let Decision::Block(r) = p.check_ip(Some(1), ip) else {
+            panic!("well-known prefix must always apply")
+        };
+        assert_eq!(r.rule.as_deref(), Some("203.0.113.9"));
+        assert!(r.ip_match && r.is_threat());
+        assert_eq!(r.alert_key(), "feed:urlhaus|203.0.113.9");
+        let local: IpAddr = "2001:db8:64::cb00:7109".parse().unwrap();
+        assert_eq!(p.check_ip(Some(1), local), Decision::Allow);
+        p.apply_config(&Config {
+            nat64_prefixes: vec!["2001:db8:64::/96".into()],
+            ..Default::default()
+        });
+        assert!(matches!(p.check_ip(Some(1), local), Decision::Block(_)));
+        assert_eq!(p.nat64_v4(local), Some(Ipv4Addr::new(203, 0, 113, 9)));
+        // Plain IPv4-mapped and unrelated IPv6 addresses keep working.
+        assert!(matches!(
+            p.check_ip(Some(1), "::ffff:203.0.113.9".parse().unwrap()),
+            Decision::Block(_)
+        ));
+        assert_eq!(
+            p.check_ip(Some(1), "2001:db8::1".parse().unwrap()),
             Decision::Allow
         );
     }

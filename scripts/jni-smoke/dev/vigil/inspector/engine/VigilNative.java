@@ -4,6 +4,7 @@ package dev.vigil.inspector.engine;
 public final class VigilNative {
     public static native String nativeVersion();
     public static native long nativeStart(int tunFd, String configJson, Object bridge);
+    public static native boolean nativeShutdown(long handle);
     public static native void nativeStop(long handle);
     public static native String nativePollEvents(long handle, int max, int timeoutMs);
     public static native boolean nativeUpdateConfig(long handle, String configJson);

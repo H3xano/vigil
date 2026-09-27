@@ -377,6 +377,19 @@ pub fn is_special(ip: IpAddr) -> bool {
     }
 }
 
+/// The IPv4 address embedded in `ip` if it lies inside one of the NAT64 /96
+/// `prefixes` (RFC 6052: the IPv4 address is the last 32 bits).
+pub fn nat64_embedded(ip: IpAddr, prefixes: &[Ipv6Addr]) -> Option<Ipv4Addr> {
+    let IpAddr::V6(a) = ip else {
+        return None;
+    };
+    let bits = u128::from(a);
+    prefixes
+        .iter()
+        .any(|p| u128::from(*p) >> 32 == bits >> 32)
+        .then(|| Ipv4Addr::from(bits as u32))
+}
+
 pub fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))
 }
@@ -388,6 +401,24 @@ pub fn v6(s: &str) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nat64_extraction() {
+        let wk: Ipv6Addr = "64:ff9b::".parse().unwrap();
+        let local: Ipv6Addr = "2001:db8:64:ff9b::".parse().unwrap();
+        let p = [wk, local];
+        assert_eq!(
+            nat64_embedded(v6("64:ff9b::203.0.113.9"), &p),
+            Some(Ipv4Addr::new(203, 0, 113, 9))
+        );
+        assert_eq!(
+            nat64_embedded(v6("2001:db8:64:ff9b::c000:0201"), &p),
+            Some(Ipv4Addr::new(192, 0, 2, 1))
+        );
+        assert_eq!(nat64_embedded(v6("64:ff9b:1::203.0.113.9"), &p), None);
+        assert_eq!(nat64_embedded(v6("2001:db8::1"), &p), None);
+        assert_eq!(nat64_embedded(v4(203, 0, 113, 9), &p), None);
+    }
 
     #[test]
     fn domain_suffix_matching() {

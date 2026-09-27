@@ -23,6 +23,16 @@ public final class Smoke {
     }
     static int failures = 0;
 
+    /** Sorted ids of all events of one type in a stream of JSON batches. */
+    static java.util.List<Long> ids(String json, String type) {
+        java.util.List<Long> out = new java.util.ArrayList<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+            .compile("\\{\"type\":\"" + type + "\",\"id\":(\\d+)").matcher(json);
+        while (m.find()) out.add(Long.parseLong(m.group(1)));
+        java.util.Collections.sort(out);
+        return out;
+    }
+
     public static void main(String[] args) throws Exception {
         System.load(args[0]);
         int fd = Integer.parseInt(args[1]);
@@ -32,7 +42,10 @@ public final class Smoke {
         check("inspect-feed", VigilNative.nativeInspectFeedFile(feed.toString()).contains("\"domains\":2"));
         long h = VigilNative.nativeStart(fd, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"]}", new Bridge());
         check("start", h != 0);
+        check("invalid-config-start-refused", VigilNative.nativeStart(fd, "{\"mtu\":100}", new Bridge()) == 0);
         check("bad-config-rejected", !VigilNative.nativeUpdateConfig(h, "{not json"));
+        check("invalid-config-rejected", !VigilNative.nativeUpdateConfig(h, "{\"upstream_dns\":[]}")
+            && !VigilNative.nativeUpdateConfig(h, "{\"beacon\":{\"min_interval_s\":60,\"max_interval_s\":1}}"));
         check("config-update", VigilNative.nativeUpdateConfig(h, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"],\"sinkhole\":\"nxdomain\"}"));
         String summary = VigilNative.nativeLoadFeedFile(h, "smoke", "malware", feed.toString());
         check("load-feed", summary != null && summary.contains("\"ip_ranges\":1"));
@@ -53,7 +66,31 @@ public final class Smoke {
         check("uid-upcalls", uidCalls.get() >= 2);
         check("protect-upcalls", protectCalls.get() >= 1);
         check("remove-feed", VigilNative.nativeRemoveFeed(h, "smoke") && !VigilNative.nativeRemoveFeed(h, "smoke"));
+
+        // Shutdown keeps the handle: the queue drains, then polls return at once.
+        check("shutdown", VigilNative.nativeShutdown(h));
+        StringBuilder rest = new StringBuilder();
+        String b;
+        while ((b = VigilNative.nativePollEvents(h, 500, 0)) != null) rest.append(b).append('\n');
+        check("shutdown-drains-stopped", rest.toString().contains("\"state\":\"stopped\""));
+        long t0 = System.currentTimeMillis();
+        check("poll-after-shutdown-empty", VigilNative.nativePollEvents(h, 10, 2000) == null);
+        check("poll-after-shutdown-fast", System.currentTimeMillis() - t0 < 1000);
+        String all2 = ev + rest;
+        check("every-flow-ended", ids(all2, "flow").equals(ids(all2, "flow_end")));
+        check("shutdown-twice", VigilNative.nativeShutdown(h));
+        check("calls-after-shutdown-inert",
+            !VigilNative.nativeUpdateConfig(h, "{}")
+            && VigilNative.nativeStats(h) == null
+            && VigilNative.nativeLoadFeedFile(h, "x", "malware", feed.toString()) == null
+            && !VigilNative.nativeRemoveFeed(h, "x"));
         VigilNative.nativeStop(h);
+        check("shutdown-null-handle", !VigilNative.nativeShutdown(0));
+
+        // nativeStop without nativeShutdown still works.
+        long h2 = VigilNative.nativeStart(fd, "{\"upstream_dns\":[\"127.0.0.1:9\"]}", new Bridge());
+        check("restart", h2 != 0);
+        VigilNative.nativeStop(h2);
         check("poll-after-stop-null-handle", VigilNative.nativePollEvents(0, 10, 0) == null);
         System.out.println("jni: " + (failures == 0 ? "all passed" : failures + " failed"));
         System.exit(failures == 0 ? 0 : 1);
