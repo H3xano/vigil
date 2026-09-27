@@ -40,7 +40,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
@@ -48,7 +47,11 @@ jobs:
         with:
           workspaces: core
       - run: cargo install cargo-ndk --locked
-      - run: sdkmanager "ndk;27.2.12479018"
+      - name: Android SDK packages
+        # The runner image ships an SDK in $ANDROID_HOME; add the pinned NDK and platform.
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0"
       - name: Build, lint and unit-test
         working-directory: android
         run: ./gradlew --no-daemon lintDebug testDebugUnitTest assembleRelease
