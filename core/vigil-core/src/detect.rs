@@ -16,6 +16,8 @@ const WINDOW: usize = 12;
 const BURST_GAP: Duration = Duration::from_secs(1);
 const REALERT_AFTER: Duration = Duration::from_secs(3600);
 const MAX_SERIES: usize = 20_000;
+/// Minimum time between two prunes of a full beacon table.
+const PRUNE_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BeaconHit {
@@ -29,8 +31,14 @@ struct Series {
     last_alert: Option<Instant>,
 }
 
+struct SeriesMap {
+    map: HashMap<(Option<u32>, String), Series>,
+    last_prune: Option<Instant>,
+}
+
 pub struct BeaconDetector {
-    series: Mutex<HashMap<(Option<u32>, String), Series>>,
+    series: Mutex<SeriesMap>,
+    max_series: usize,
 }
 
 impl Default for BeaconDetector {
@@ -41,9 +49,25 @@ impl Default for BeaconDetector {
 
 impl BeaconDetector {
     pub fn new() -> Self {
+        Self::with_capacity(MAX_SERIES)
+    }
+
+    pub fn with_capacity(max_series: usize) -> Self {
         Self {
-            series: Mutex::new(HashMap::new()),
+            series: Mutex::new(SeriesMap {
+                map: HashMap::new(),
+                last_prune: None,
+            }),
+            max_series,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.series.lock().map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn observe(
@@ -56,24 +80,38 @@ impl BeaconDetector {
         if !cfg.enabled {
             return None;
         }
-        let mut map = self.series.lock();
-        if map.len() >= MAX_SERIES && !map.contains_key(&(uid, target.to_string())) {
-            let horizon = Duration::from_secs_f64(cfg.max_interval_s * 2.0);
-            map.retain(|_, s| {
+        let mut guard = self.series.lock();
+        let sm = &mut *guard;
+        let key = (uid, target.to_string());
+        if sm.map.len() >= self.max_series && !sm.map.contains_key(&key) {
+            // Full: prune stale series, but at most once per PRUNE_EVERY so a
+            // stream of new targets cannot make every call O(n). Until then
+            // new targets are simply not tracked.
+            let due = sm
+                .last_prune
+                .map_or(true, |t| now.saturating_duration_since(t) >= PRUNE_EVERY);
+            if !due {
+                return None;
+            }
+            sm.last_prune = Some(now);
+            // A series is stale once it could no longer continue: its last
+            // connection is older than the largest interval considered.
+            let horizon = Duration::try_from_secs_f64(cfg.max_interval_s * 2.0)
+                .unwrap_or(Duration::MAX)
+                .max(BURST_GAP);
+            sm.map.retain(|_, s| {
                 s.times
                     .back()
-                    .is_some_and(|t| now.duration_since(*t) < horizon)
+                    .is_some_and(|t| now.saturating_duration_since(*t) < horizon)
             });
-            if map.len() >= MAX_SERIES {
+            if sm.map.len() >= self.max_series {
                 return None;
             }
         }
-        let s = map
-            .entry((uid, target.to_string()))
-            .or_insert_with(|| Series {
-                times: VecDeque::with_capacity(WINDOW),
-                last_alert: None,
-            });
+        let s = sm.map.entry(key).or_insert_with(|| Series {
+            times: VecDeque::with_capacity(WINDOW),
+            last_alert: None,
+        });
         if let Some(last) = s.times.back() {
             let gap = now.saturating_duration_since(*last);
             if gap < BURST_GAP {
@@ -121,33 +159,107 @@ impl BeaconDetector {
     }
 }
 
-/// Suppresses repeats of the same alert key within a window.
+/// Default bound on remembered alert keys.
+pub const ALERT_KEYS: usize = 10_000;
+/// Default budget of alerts per minute across all keys.
+pub const ALERTS_PER_MINUTE: u32 = 120;
+
+struct LimiterState {
+    /// Key → time it last raised an alert.
+    seen: HashMap<String, Instant>,
+    /// Keys in the order they were (re-)admitted. An entry is stale when the
+    /// map holds a newer time for its key.
+    order: VecDeque<(String, Instant)>,
+    minute_start: Option<Instant>,
+    minute_count: u32,
+    suppressed: u64,
+}
+
+/// Suppresses repeats of the same alert key within a window, remembers at
+/// most `max_keys` keys (the oldest are forgotten first) and caps the total
+/// number of alerts per minute. Every operation is amortised O(1).
 pub struct AlertLimiter {
-    seen: Mutex<HashMap<String, Instant>>,
+    state: Mutex<LimiterState>,
     window: Duration,
+    max_keys: usize,
+    per_minute: u32,
 }
 
 impl AlertLimiter {
     pub fn new(window: Duration) -> Self {
+        Self::with_limits(window, ALERT_KEYS, ALERTS_PER_MINUTE)
+    }
+
+    pub fn with_limits(window: Duration, max_keys: usize, per_minute: u32) -> Self {
         Self {
-            seen: Mutex::new(HashMap::new()),
+            state: Mutex::new(LimiterState {
+                seen: HashMap::new(),
+                order: VecDeque::new(),
+                minute_start: None,
+                minute_count: 0,
+                suppressed: 0,
+            }),
             window,
+            max_keys: max_keys.max(1),
+            per_minute,
         }
     }
 
     pub fn allow(&self, key: &str, now: Instant) -> bool {
-        let mut m = self.seen.lock();
-        if m.len() > 10_000 {
-            let w = self.window;
-            m.retain(|_, t| now.duration_since(*t) < w);
+        let mut guard = self.state.lock();
+        let st = &mut *guard;
+        // Forget keys whose window has passed, oldest first.
+        while let Some((k, t)) = st.order.front() {
+            if now.saturating_duration_since(*t) < self.window {
+                break;
+            }
+            if st.seen.get(k) == Some(t) {
+                st.seen.remove(k);
+            }
+            st.order.pop_front();
         }
-        match m.get(key) {
-            Some(t) if now.duration_since(*t) < self.window => false,
-            _ => {
-                m.insert(key.to_string(), now);
-                true
+        if st.seen.contains_key(key) {
+            // Still inside its window (expired keys were removed above).
+            return false;
+        }
+        let minute_over = st.minute_start.map_or(true, |t| {
+            now.saturating_duration_since(t) >= Duration::from_secs(60)
+        });
+        if minute_over {
+            st.minute_start = Some(now);
+            st.minute_count = 0;
+        }
+        if st.minute_count >= self.per_minute {
+            st.suppressed += 1;
+            return false;
+        }
+        st.minute_count += 1;
+        // Hard bound: forget the oldest keys (they may alert again early).
+        while st.seen.len() >= self.max_keys {
+            let Some((k, t)) = st.order.pop_front() else {
+                break;
+            };
+            if st.seen.get(&k) == Some(&t) {
+                st.seen.remove(&k);
             }
         }
+        st.seen.insert(key.to_string(), now);
+        st.order.push_back((key.to_string(), now));
+        true
+    }
+
+    /// Number of remembered keys.
+    pub fn len(&self) -> usize {
+        self.state.lock().seen.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Alerts dropped because the per-minute budget was exhausted.
+    pub fn suppressed(&self) -> u64 {
+        self.state.lock().suppressed
     }
 }
 
@@ -229,5 +341,61 @@ mod tests {
         assert!(!l.allow("a", t + Duration::from_secs(30)));
         assert!(l.allow("b", t));
         assert!(l.allow("a", t + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn limiter_is_bounded_and_forgets_oldest() {
+        let l = AlertLimiter::with_limits(Duration::from_secs(3600), 100, u32::MAX);
+        let t = Instant::now();
+        for i in 0..10_000 {
+            assert!(l.allow(&format!("k{i}"), t + Duration::from_millis(i)));
+        }
+        assert_eq!(l.len(), 100);
+        // The newest keys are still suppressed, the oldest were forgotten.
+        let later = t + Duration::from_secs(20);
+        assert!(!l.allow("k9999", later));
+        assert!(l.allow("k0", later));
+        // Expired keys are dropped as time passes.
+        assert!(l.allow("fresh", t + Duration::from_secs(7200)));
+        assert_eq!(l.len(), 1);
+    }
+
+    #[test]
+    fn limiter_global_budget() {
+        let l = AlertLimiter::with_limits(Duration::from_secs(3600), 1000, 5);
+        let t = Instant::now();
+        let allowed = (0..50).filter(|i| l.allow(&format!("k{i}"), t)).count();
+        assert_eq!(allowed, 5);
+        assert_eq!(l.suppressed(), 45);
+        // Suppressed keys were not remembered, so they can alert next minute.
+        assert!(l.allow("k10", t + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn beacon_table_bounded_without_per_call_scans() {
+        let d = BeaconDetector::with_capacity(10);
+        let t0 = Instant::now();
+        for i in 0..10 {
+            d.observe(&cfg(), Some(1), &format!("t{i}"), t0);
+        }
+        assert_eq!(d.len(), 10);
+        // Full of fresh series: new targets are ignored, nothing pruned.
+        assert!(d.observe(&cfg(), Some(1), "new", t0).is_none());
+        assert_eq!(d.len(), 10);
+        // Past the horizon (2 × max interval) the next miss prunes.
+        let later = t0 + Duration::from_secs(7201);
+        d.observe(&cfg(), Some(1), "new", later);
+        assert_eq!(d.len(), 1);
+    }
+
+    #[test]
+    fn beacon_survives_huge_interval_config() {
+        let d = BeaconDetector::with_capacity(1);
+        let mut c = cfg();
+        c.max_interval_s = f64::MAX;
+        let t0 = Instant::now();
+        d.observe(&c, None, "a", t0);
+        // Would panic with Duration::from_secs_f64.
+        assert!(d.observe(&c, None, "b", t0).is_none());
     }
 }
