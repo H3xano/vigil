@@ -1,10 +1,19 @@
 [package]
 name = "vigil-jni"
+description = "JNI bindings exposing the vigil engine to the Android app"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lib]
+name = "vigil"
 crate-type = ["cdylib"]
 
 [dependencies]
 vigil-core.workspace = true
+jni = "0.21"
+log.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
