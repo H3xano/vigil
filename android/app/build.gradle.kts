@@ -109,7 +109,8 @@ val cargoBuild by tasks.registering(Exec::class) {
         .firstOrNull { it != null && file(it).exists() } ?: "cargo"
     val args = mutableListOf(cargo, "ndk", "--platform", "29", "-o", jniLibsDir.asFile.absolutePath)
     rustAbis.forEach { args += listOf("-t", it) }
-    args += listOf("build", "--release", "-p", "vigil-jni")
+    // --locked: build exactly the dependency versions in Cargo.lock.
+    args += listOf("build", "--release", "--locked", "-p", "vigil-jni")
     commandLine(args)
     doFirst {
         environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
