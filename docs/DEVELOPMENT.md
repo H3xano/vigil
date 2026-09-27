@@ -76,6 +76,49 @@ collector on the host (the emulator reaches the host at `10.0.2.2`), taps
 UI elements found with `uiautomator dump`, and writes screenshots to
 `docs/screenshots/`.
 
+## Distribution
+
+**Versioning.** `versionName` and `versionCode` are literals in
+`android/app/build.gradle.kts` (F-Droid's update checker reads them from
+there, so don't compute them). `versionCode = major * 10000 + minor * 100 +
+patch`, e.g. 0.2.0 → 200, 1.4.2 → 10402. The APK is universal (all three ABIs,
+no splits), so there are no per-ABI offsets. Keep the Rust workspace version
+in `core/Cargo.toml` in step (the Settings screen shows it as the engine
+version). Release tags are `vX.Y.Z`.
+
+**F-Droid metadata** lives in `fastlane/metadata/android/en-US/`, which
+F-Droid reads from the tagged commit: `title.txt`, `short_description.txt`
+(≤ 80 characters), `full_description.txt`, `changelogs/<versionCode>.txt`,
+`images/icon.png` (512×512, regenerate with
+`python3 packaging/fdroid/render_icon.py` after changing the launcher icon)
+and `images/phoneScreenshots/` (copies of `docs/screenshots/`, numbered for
+ordering). Add a changelog file for every release. The draft fdroiddata
+recipe is `packaging/fdroid/dev.vigil.inspector.yml`; it pins Rust, rustup,
+cargo-ndk and the NDK, and must be bumped with them.
+
+**Reproducible builds.** The release APK is bit-for-bit reproducible across
+checkout directories: the `cargoBuild` task passes `--remap-path-prefix` for
+the checkout and `CARGO_HOME` plus `-Wl,--build-id=none`, cargo builds with
+`--locked`, and `vcsInfo` is off for release. F-Droid can therefore publish
+the upstream-signed APK (`Binaries` + `AllowedAPKSigningKeys` in the recipe),
+provided the release is built from a clean checkout of the tag with the same
+toolchain as the recipe (Rust, cargo-ndk, NDK; JDK 17 or 21). Pass
+`-Pvigil.unsignedRelease=true` to get `app-release-unsigned.apk`, which is
+what F-Droid builds. To check:
+
+```sh
+git clone --branch vX.Y.Z <repo> /tmp/a && git clone --branch vX.Y.Z <repo> /tmp/b/elsewhere
+# copy android/local.properties into both, then in each android/ directory:
+./gradlew --no-build-cache assembleRelease -Pvigil.unsignedRelease=true
+sha256sum /tmp/a/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+          /tmp/b/elsewhere/android/app/build/outputs/apk/release/app-release-unsigned.apk
+# against a signed release APK (pip install apksigcopier):
+apksigcopier compare --unsigned vigil-X.Y.Z.apk app-release-unsigned.apk
+```
+
+`--no-build-cache` matters: `org.gradle.caching` is on, and a cache hit
+would make the second build trivially identical.
+
 ## Gotchas already paid for
 
 - **toybox `nc` quits on stdin EOF,** even without vigil. Feed it
