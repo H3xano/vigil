@@ -91,6 +91,7 @@ val cargoBuild by tasks.registering(Exec::class) {
     workingDir = rustDir
     inputs.dir(rustDir.resolve("vigil-core/src"))
     inputs.dir(rustDir.resolve("vigil-jni/src"))
+    inputs.dir(rustDir.resolve("vendor"))
     inputs.files(rustDir.resolve("Cargo.toml"), rustDir.resolve("Cargo.lock"))
     outputs.dir(jniLibsDir)
     val cargo = listOf(System.getenv("CARGO_HOME")?.let { "$it/bin/cargo" }, "${System.getProperty("user.home")}/.cargo/bin/cargo")
