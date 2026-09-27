@@ -1,0 +1,64 @@
+# Draft fdroiddata recipe for vigil (goes to metadata/dev.vigil.inspector.yml
+# in https://gitlab.com/fdroid/fdroiddata). Descriptions, screenshots, icon and
+# changelogs come from fastlane/metadata/android/ in the source repo.
+#
+# BLOCKER: F-Droid only builds from public source. github.com/H3xano/vigil is
+# private; make it public before submitting.
+#
+# Reproducible build: unsigned release APKs built from clean clones in
+# different directories (including one with fdroidserver's signing-config
+# stripping applied) were bit-for-bit identical, and `apksigcopier compare`
+# accepted a signed build against them (see "Distribution" in
+# docs/DEVELOPMENT.md). Not yet checked on a second machine or on F-Droid's
+# buildserver. This lets F-Droid publish the upstream-signed APK (Binaries +
+# AllowedAPKSigningKeys). Upstream must build its release with the same
+# toolchain pinned below: Rust 1.98.1, NDK 27.2.12479018, cargo-ndk 4.1.2,
+# JDK 17 or 21, from a clean checkout of the tag.
+Categories:
+  - Network Analyzer
+  - Security
+  - Firewall
+License: Apache-2.0
+AuthorName: H3xano
+SourceCode: https://github.com/H3xano/vigil
+IssueTracker: https://github.com/H3xano/vigil/issues
+Changelog: https://github.com/H3xano/vigil/blob/HEAD/CHANGELOG.md
+
+AutoName: vigil
+
+RepoType: git
+Repo: https://github.com/H3xano/vigil.git
+# Upstream release asset naming (same as v0.1.0: vigil-<version>.apk).
+Binaries: https://github.com/H3xano/vigil/releases/download/v%v/vigil-%v.apk
+
+Builds:
+  - versionName: 0.2.0
+    versionCode: 200
+    commit: v0.2.0
+    subdir: android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y curl
+    srclibs:
+      - rustup@1.29.1
+    prebuild:
+      - $$rustup$$/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain 1.98.1 --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - $HOME/.cargo/bin/cargo install cargo-ndk --version 4.1.2 --locked
+      - cd ../../core && $HOME/.cargo/bin/cargo fetch --locked
+    # The Gradle task cargoBuild (android/app/build.gradle.kts) runs
+    # `cargo ndk ... build --release --locked` from $HOME/.cargo/bin and
+    # applies --remap-path-prefix and --build-id=none itself.
+    gradle:
+      - yes
+    gradleprops:
+      - vigil.unsignedRelease=true
+    ndk: 27.2.12479018
+
+# SHA-256 of the upstream signing certificate, lower-case hex without colons
+# (`apksigner verify --print-certs vigil-0.2.0.apk`).
+AllowedAPKSigningKeys: TODO_CERT_SHA256
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v\d+\.\d+\.\d+$
+CurrentVersion: 0.2.0
+CurrentVersionCode: 200

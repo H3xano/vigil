@@ -22,8 +22,11 @@ android {
         // getConnectionOwnerUid (per-app attribution) requires Android 10.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // versionCode = major * 10000 + minor * 100 + patch, kept as a literal
+        // so F-Droid's update checker can read it. The APK is universal (no
+        // ABI splits), so there are no per-ABI offsets. See docs/DEVELOPMENT.md.
+        versionCode = 200
+        versionName = "0.2.0"
         ndk { abiFilters += rustAbis }
     }
 
@@ -47,7 +50,15 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            // -Pvigil.unsignedRelease=true produces app-release-unsigned.apk,
+            // for F-Droid, which signs or verifies the APK itself.
+            signingConfig = if (findProperty("vigil.unsignedRelease") == "true") {
+                null
+            } else {
+                signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            }
+            // Reproducible builds: keep git state out of the APK.
+            vcsInfo.include = false
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -98,10 +109,22 @@ val cargoBuild by tasks.registering(Exec::class) {
         .firstOrNull { it != null && file(it).exists() } ?: "cargo"
     val args = mutableListOf(cargo, "ndk", "--platform", "29", "-o", jniLibsDir.asFile.absolutePath)
     rustAbis.forEach { args += listOf("-t", it) }
-    args += listOf("build", "--release", "-p", "vigil-jni")
+    // --locked: build exactly the dependency versions in Cargo.lock.
+    args += listOf("build", "--release", "--locked", "-p", "vigil-jni")
     commandLine(args)
     doFirst {
         environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+        // Reproducible builds: remap the checkout and cargo-home paths that
+        // panic locations embed, and drop the linker's build-id note. Flags
+        // already set in CARGO_ENCODED_RUSTFLAGS are kept.
+        val cargoHome = System.getenv("CARGO_HOME") ?: "${System.getProperty("user.home")}/.cargo"
+        val flags = listOfNotNull(
+            System.getenv("CARGO_ENCODED_RUSTFLAGS")?.takeIf { it.isNotEmpty() },
+            "--remap-path-prefix=${rustDir.canonicalPath}=/vigil/core",
+            "--remap-path-prefix=${file(cargoHome).canonicalPath}=/cargo",
+            "-Clink-arg=-Wl,--build-id=none",
+        )
+        environment("CARGO_ENCODED_RUSTFLAGS", flags.joinToString("\u001f"))
     }
 }
 tasks.named("preBuild") { dependsOn(cargoBuild) }
