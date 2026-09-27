@@ -154,7 +154,8 @@ fn read_name(msg: &[u8], r: &mut Reader<'_>) -> Option<String> {
                 pos += len;
             }
             0xc0 => {
-                let ptr = (u16::from_be_bytes([*msg.get(pos)?, *msg.get(pos + 1)?]) & 0x3fff) as usize;
+                let ptr =
+                    (u16::from_be_bytes([*msg.get(pos)?, *msg.get(pos + 1)?]) & 0x3fff) as usize;
                 if !jumped {
                     r.skip(pos + 2 - r.pos())?;
                     jumped = true;
@@ -182,7 +183,10 @@ fn parse_svcb_hints(rdata: &[u8], msg: &[u8], rdata_offset: usize) -> Option<Vec
         let key = r.u16()?;
         let val = r.vec16()?;
         match key {
-            4 => out.extend(val.chunks_exact(4).map(|c| IpAddr::V4(Ipv4Addr::new(c[0], c[1], c[2], c[3])))),
+            4 => out.extend(
+                val.chunks_exact(4)
+                    .map(|c| IpAddr::V4(Ipv4Addr::new(c[0], c[1], c[2], c[3]))),
+            ),
             6 => out.extend(val.chunks_exact(16).map(|c| {
                 let mut a = [0u8; 16];
                 a.copy_from_slice(c);
@@ -210,16 +214,26 @@ pub fn parse(msg: &[u8]) -> Option<Message> {
         let name = read_name(msg, &mut r)?;
         let qtype = r.u16()?;
         let qclass = r.u16()?;
-        questions.push(Question { name, qtype, qclass });
+        questions.push(Question {
+            name,
+            qtype,
+            qclass,
+        });
     }
     let mut answers = Vec::new();
     for _ in 0..an.min(256) {
-        let Some(name) = read_name(msg, &mut r) else { break };
-        let (Some(rtype), Some(_class), Some(ttl), Some(rdlen)) = (r.u16(), r.u16(), r.u32(), r.u16()) else {
+        let Some(name) = read_name(msg, &mut r) else {
+            break;
+        };
+        let (Some(rtype), Some(_class), Some(ttl), Some(rdlen)) =
+            (r.u16(), r.u16(), r.u32(), r.u16())
+        else {
             break;
         };
         let rdata_offset = r.pos();
-        let Some(rdata) = r.bytes(rdlen as usize) else { break };
+        let Some(rdata) = r.bytes(rdlen as usize) else {
+            break;
+        };
         let data = match (rtype, rdata.len()) {
             (TYPE_A, 4) => RData::A(Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3])),
             (TYPE_AAAA, 16) => {
@@ -230,7 +244,9 @@ pub fn parse(msg: &[u8]) -> Option<Message> {
             (TYPE_CNAME, _) => {
                 let mut rr = Reader::new(msg);
                 rr.skip(rdata_offset)?;
-                read_name(msg, &mut rr).map(RData::Cname).unwrap_or(RData::Other)
+                read_name(msg, &mut rr)
+                    .map(RData::Cname)
+                    .unwrap_or(RData::Other)
             }
             (TYPE_HTTPS | TYPE_SVCB, _) => parse_svcb_hints(rdata, msg, rdata_offset)
                 .filter(|h| !h.is_empty())
@@ -238,7 +254,12 @@ pub fn parse(msg: &[u8]) -> Option<Message> {
                 .unwrap_or(RData::Other),
             _ => RData::Other,
         };
-        answers.push(Record { name, rtype, ttl, data });
+        answers.push(Record {
+            name,
+            rtype,
+            ttl,
+            data,
+        });
     }
     Some(Message {
         id,
@@ -364,20 +385,40 @@ mod tests {
         m[2] = 0x81;
         m[3] = 0x80;
         m[7] = 2; // ancount
-        // answer 1: www.example.com CNAME edge.example.net
+                  // answer 1: www.example.com CNAME edge.example.net
         m.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60]);
         let cname: Vec<u8> = [&[4u8][..], b"edge", &[7], b"example", &[3], b"net", &[0]].concat();
         m.extend_from_slice(&(cname.len() as u16).to_be_bytes());
         let cname_off = m.len();
         m.extend_from_slice(&cname);
         // answer 2: edge.example.net A 93.184.216.34 (name is a pointer to the cname rdata)
-        m.extend_from_slice(&[0xc0 | (cname_off >> 8) as u8, cname_off as u8, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 93, 184, 216, 34]);
+        m.extend_from_slice(&[
+            0xc0 | (cname_off >> 8) as u8,
+            cname_off as u8,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            0,
+            30,
+            0,
+            4,
+            93,
+            184,
+            216,
+            34,
+        ]);
         let p = parse(&m).unwrap();
         assert!(p.is_response);
         assert_eq!(p.answers.len(), 2);
         assert_eq!(p.answers[0].data, RData::Cname("edge.example.net".into()));
         assert_eq!(p.answers[1].name, "edge.example.net");
-        assert_eq!(p.answer_ips().collect::<Vec<_>>(), vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]);
+        assert_eq!(
+            p.answer_ips().collect::<Vec<_>>(),
+            vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]
+        );
         assert_eq!(p.min_ttl(), Some(30));
     }
 

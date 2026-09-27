@@ -35,7 +35,9 @@ fn ip_bytes(ip: IpAddr) -> Vec<u8> {
 
 impl JniPlatform {
     fn with_env<T>(&self, default: T, f: impl FnOnce(&mut JNIEnv) -> jni::errors::Result<T>) -> T {
-        let Ok(mut env) = self.vm.attach_current_thread_as_daemon() else { return default };
+        let Ok(mut env) = self.vm.attach_current_thread_as_daemon() else {
+            return default;
+        };
         let r = env.with_local_frame(16, |env| f(env));
         match r {
             Ok(v) => v,
@@ -74,7 +76,10 @@ impl Platform for JniPlatform {
     }
 
     fn protect(&self, fd: RawFd) -> bool {
-        self.with_env(false, |env| env.call_method(self.bridge.as_obj(), "protect", "(I)Z", &[JValue::Int(fd)])?.z())
+        self.with_env(false, |env| {
+            env.call_method(self.bridge.as_obj(), "protect", "(I)Z", &[JValue::Int(fd)])?
+                .z()
+        })
     }
 }
 
@@ -100,16 +105,25 @@ fn jstr(env: &mut JNIEnv, s: &JString) -> Option<String> {
 }
 
 fn new_jstring(env: &mut JNIEnv, s: &str) -> jstring {
-    env.new_string(s).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    env.new_string(s)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 fn init_logging() {
     #[cfg(target_os = "android")]
-    android_logger::init_once(android_logger::Config::default().with_tag("vigil-core").with_max_level(log::LevelFilter::Info));
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_tag("vigil-core")
+            .with_max_level(log::LevelFilter::Info),
+    );
 }
 
 #[no_mangle]
-pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeVersion<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>) -> jstring {
+pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeVersion<'l>(
+    mut env: JNIEnv<'l>,
+    _c: JClass<'l>,
+) -> jstring {
     new_jstring(&mut env, env!("CARGO_PKG_VERSION"))
 }
 
@@ -123,7 +137,9 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStart<'
 ) -> jlong {
     init_logging();
     guard(0, || {
-        let Some(json) = jstr(&mut env, &config_json) else { return 0 };
+        let Some(json) = jstr(&mut env, &config_json) else {
+            return 0;
+        };
         let config = match Config::from_json(&json) {
             Ok(c) => c,
             Err(e) => {
@@ -131,7 +147,9 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStart<'
                 return 0;
             }
         };
-        let (Ok(vm), Ok(bridge)) = (env.get_java_vm(), env.new_global_ref(&bridge)) else { return 0 };
+        let (Ok(vm), Ok(bridge)) = (env.get_java_vm(), env.new_global_ref(&bridge)) else {
+            return 0;
+        };
         let platform = Arc::new(JniPlatform { vm, bridge });
         match Engine::start(tun_fd, config, platform) {
             Ok(engine) => Box::into_raw(Box::new(engine)) as jlong,
@@ -144,7 +162,11 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStart<'
 }
 
 #[no_mangle]
-pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStop<'l>(_env: JNIEnv<'l>, _c: JClass<'l>, handle: jlong) {
+pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStop<'l>(
+    _env: JNIEnv<'l>,
+    _c: JClass<'l>,
+    handle: jlong,
+) {
     guard((), || {
         if handle != 0 {
             let engine = unsafe { Box::from_raw(handle as *mut Engine) };
@@ -165,7 +187,10 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativePollEve
 ) -> jstring {
     let json = guard(None, || {
         let e = engine(handle)?;
-        let batch = e.events().poll(max.max(1) as usize, Duration::from_millis(timeout_ms.max(0) as u64));
+        let batch = e.events().poll(
+            max.max(1) as usize,
+            Duration::from_millis(timeout_ms.max(0) as u64),
+        );
         if batch.is_empty() {
             None
         } else {
@@ -186,7 +211,9 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeUpdateC
     config_json: JString<'l>,
 ) -> jboolean {
     guard(JNI_FALSE, || {
-        let (Some(e), Some(json)) = (engine(handle), jstr(&mut env, &config_json)) else { return JNI_FALSE };
+        let (Some(e), Some(json)) = (engine(handle), jstr(&mut env, &config_json)) else {
+            return JNI_FALSE;
+        };
         match Config::from_json(&json) {
             Ok(c) => {
                 e.update_config(c);
@@ -215,7 +242,8 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeLoadFee
         let id = jstr(&mut env, &id)?;
         let cat = jstr(&mut env, &category)?;
         let path = jstr(&mut env, &path)?;
-        let category: FeedCategory = serde_json::from_value(serde_json::Value::String(cat)).unwrap_or_default();
+        let category: FeedCategory =
+            serde_json::from_value(serde_json::Value::String(cat)).unwrap_or_default();
         match e.load_feed_file(&id, category, std::path::Path::new(&path)) {
             Ok(summary) => serde_json::to_string(&summary).ok(),
             Err(err) => {
@@ -249,7 +277,9 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStats<'
     _c: JClass<'l>,
     handle: jlong,
 ) -> jstring {
-    let out = guard(None, || engine(handle).and_then(|e| serde_json::to_string(&e.stats()).ok()));
+    let out = guard(None, || {
+        engine(handle).and_then(|e| serde_json::to_string(&e.stats()).ok())
+    });
     match out {
         Some(j) => new_jstring(&mut env, &j),
         None => std::ptr::null_mut(),

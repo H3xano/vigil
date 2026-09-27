@@ -63,7 +63,11 @@ pub(crate) fn on_packet(shared: &Arc<Shared>, u: UdpInfo, payload: &[u8]) {
 }
 
 fn protected_udp(shared: &Shared, dst: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
-    let bind: SocketAddr = if dst.is_ipv4() { "0.0.0.0:0".parse().unwrap() } else { "[::]:0".parse().unwrap() };
+    let bind: SocketAddr = if dst.is_ipv4() {
+        "0.0.0.0:0".parse().unwrap()
+    } else {
+        "[::]:0".parse().unwrap()
+    };
     let sock = std::net::UdpSocket::bind(bind)?;
     if !shared.platform.protect(sock.as_raw_fd()) {
         return Err(io::Error::other("could not protect socket"));
@@ -104,8 +108,14 @@ async fn flow(shared: &Arc<Shared>, key: FlowKey, mut rx: mpsc::Receiver<Vec<u8>
         let mut sniffer = QuicSniffer::new();
         let deadline = tokio::time::Instant::now() + QUIC_SNIFF_WINDOW;
         loop {
-            let Ok(Some(d)) = tokio::time::timeout_at(deadline, rx.recv()).await else { break };
-            let res = if held.is_empty() && !quic::looks_like_initial(&d) { Sniff::NotMatched } else { sniffer.feed(&d) };
+            let Ok(Some(d)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+                break;
+            };
+            let res = if held.is_empty() && !quic::looks_like_initial(&d) {
+                Sniff::NotMatched
+            } else {
+                sniffer.feed(&d)
+            };
             held.push(d);
             match res {
                 Sniff::Found(ch) => {
@@ -117,8 +127,8 @@ async fn flow(shared: &Arc<Shared>, key: FlowKey, mut rx: mpsc::Receiver<Vec<u8>
                     ev.alpn = ch.alpn.first().cloned();
                     ev.tls_version = Some(tls::version_name(ch.max_version()));
                     ev.ja4 = Some(ch.ja4('q'));
-                    ev.ech = ch.ech;
-                    if ch.ech {
+                    ev.ech = ch.ech_active();
+                    if ch.ech_active() {
                         ev.tags.push("ech");
                     }
                     break;

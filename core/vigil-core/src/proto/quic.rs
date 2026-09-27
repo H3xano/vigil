@@ -22,10 +22,12 @@ pub const VERSION_1: u32 = 0x0000_0001;
 pub const VERSION_2: u32 = 0x6b33_43cf;
 
 const SALT_V1: [u8; 20] = [
-    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
+    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad,
+    0xcc, 0xbb, 0x7f, 0x0a,
 ];
 const SALT_V2: [u8; 20] = [
-    0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
+    0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93, 0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb,
+    0xf9, 0xbd, 0x2e, 0xd9,
 ];
 
 /// Maximum number of Initial datagrams we inspect per flow before giving up.
@@ -60,7 +62,11 @@ pub fn client_initial_keys(version: u32, dcid: &[u8]) -> Option<InitialKeys> {
     let mut client_secret = [0u8; 32];
     hkdf_expand_label(&initial, "client in", &mut client_secret);
     let client = Hkdf::<Sha256>::from_prk(&client_secret).ok()?;
-    let mut keys = InitialKeys { key: [0; 16], iv: [0; 12], hp: [0; 16] };
+    let mut keys = InitialKeys {
+        key: [0; 16],
+        iv: [0; 12],
+        hp: [0; 16],
+    };
     hkdf_expand_label(&client, &format!("{prefix} key"), &mut keys.key);
     hkdf_expand_label(&client, &format!("{prefix} iv"), &mut keys.iv);
     hkdf_expand_label(&client, &format!("{prefix} hp"), &mut keys.hp);
@@ -141,7 +147,15 @@ pub fn decrypt_initial(datagram: &[u8]) -> Option<Vec<u8>> {
     let ciphertext = &datagram[pn_offset + pn_len..end];
     let cipher = Aes128Gcm::new_from_slice(&keys.key).ok()?;
     let nonce = nonce_for(&keys.iv, pn);
-    cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: ciphertext, aad: &header }).ok()
+    cipher
+        .decrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: ciphertext,
+                aad: &header,
+            },
+        )
+        .ok()
 }
 
 /// Walks QUIC frames and yields `(offset, data)` for every CRYPTO frame.
@@ -174,8 +188,12 @@ fn crypto_frames(plain: &[u8]) -> Vec<(u64, &[u8])> {
                 }
             }
             0x06 => {
-                let (Some(off), Some(len)) = (r.varint(), r.varint()) else { break };
-                let Some(data) = r.bytes(len as usize) else { break };
+                let (Some(off), Some(len)) = (r.varint(), r.varint()) else {
+                    break;
+                };
+                let Some(data) = r.bytes(len as usize) else {
+                    break;
+                };
                 out.push((off, data));
             }
             0x1c => {
@@ -293,7 +311,15 @@ pub fn seal_initial(version: u32, dcid: &[u8], pn: u32, frames: &[(u64, &[u8])])
     header.extend_from_slice(&pn.to_be_bytes());
     let cipher = Aes128Gcm::new_from_slice(&keys.key).unwrap();
     let nonce = nonce_for(&keys.iv, pn as u64);
-    let ct = cipher.encrypt(Nonce::from_slice(&nonce), Payload { msg: &payload, aad: &header }).unwrap();
+    let ct = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: &payload,
+                aad: &header,
+            },
+        )
+        .unwrap();
     let mut pkt = header;
     pkt.extend_from_slice(&ct);
     let mask = header_protection_mask(&keys.hp, &pkt[pn_offset + 4..pn_offset + 20]);
@@ -319,7 +345,10 @@ mod tests {
     use super::*;
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]
@@ -345,7 +374,9 @@ mod tests {
             let pkt = seal_initial(version, &[1, 2, 3, 4, 5, 6, 7, 8], 0, &[(0, &hello)]);
             assert!(looks_like_initial(&pkt));
             let mut s = QuicSniffer::new();
-            let Sniff::Found(ch) = s.feed(&pkt) else { panic!("version {version:#x}") };
+            let Sniff::Found(ch) = s.feed(&pkt) else {
+                panic!("version {version:#x}")
+            };
             assert_eq!(ch.sni.as_deref(), Some("quic.example.com"));
             assert!(ch.ja4('q').starts_with("q13d"));
         }
@@ -362,7 +393,9 @@ mod tests {
         let d2 = seal_initial(VERSION_1, &dcid, 1, &[(400, b)]);
         let mut s = QuicSniffer::new();
         assert_eq!(s.feed(&d1), Sniff::NeedMore);
-        let Sniff::Found(ch) = s.feed(&d2) else { panic!() };
+        let Sniff::Found(ch) = s.feed(&d2) else {
+            panic!()
+        };
         assert_eq!(ch.sni.as_deref(), Some("split.example.net"));
     }
 

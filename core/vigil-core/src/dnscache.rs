@@ -20,7 +20,10 @@ pub struct DnsCache {
 
 impl DnsCache {
     pub fn new(capacity: usize) -> Self {
-        Self { map: Mutex::new(HashMap::with_capacity(1024)), capacity }
+        Self {
+            map: Mutex::new(HashMap::with_capacity(1024)),
+            capacity,
+        }
     }
 
     pub fn insert(&self, ip: IpAddr, name: &str, ttl_s: u32, now: Instant) {
@@ -45,7 +48,9 @@ impl DnsCache {
 
     pub fn lookup(&self, ip: IpAddr, now: Instant) -> Option<String> {
         let m = self.map.lock();
-        m.get(&ip).filter(|(_, exp)| *exp > now).map(|(n, _)| n.clone())
+        m.get(&ip)
+            .filter(|(_, exp)| *exp > now)
+            .map(|(n, _)| n.clone())
     }
 
     pub fn len(&self) -> usize {

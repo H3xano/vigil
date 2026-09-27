@@ -41,7 +41,10 @@ fn main() {
         Some("parse-feed") => parse_feed(&args[1..]),
         Some("quic-probe") => quic_probe(&args[1..]),
         Some("default-config") => {
-            println!("{}", serde_json::to_string_pretty(&Config::default()).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&Config::default()).unwrap()
+            );
             Ok(())
         }
         _ => {
@@ -69,18 +72,32 @@ fn run(args: &[String]) -> io::Result<()> {
     let mut stats = true;
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{a} needs a value")));
+        let mut val = || {
+            it.next().cloned().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("{a} needs a value"))
+            })
+        };
         match a.as_str() {
             "--tun" => tun_name = Some(val()?),
             "--fd-socket" => fd_socket = Some(val()?),
             "--config" => {
                 let text = std::fs::read_to_string(val()?)?;
-                config = Config::from_json(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                config = Config::from_json(&text)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             }
             "--feed" => feeds.push(val()?),
-            "--upstream" => upstreams.push(val()?.parse::<SocketAddr>().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?),
+            "--upstream" => upstreams.push(
+                val()?
+                    .parse::<SocketAddr>()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+            ),
             "--no-stats" => stats = false,
-            other => return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("unknown option {other}\n{USAGE}"))),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown option {other}\n{USAGE}"),
+                ))
+            }
         }
     }
     if !upstreams.is_empty() {
@@ -89,7 +106,12 @@ fn run(args: &[String]) -> io::Result<()> {
     let tun: OwnedFd = match (tun_name, fd_socket) {
         (Some(name), None) => open_tun(&name)?,
         (None, Some(path)) => receive_fd(&path)?,
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("need exactly one of --tun / --fd-socket\n{USAGE}"))),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("need exactly one of --tun / --fd-socket\n{USAGE}"),
+            ))
+        }
     };
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
@@ -101,10 +123,17 @@ fn run(args: &[String]) -> io::Result<()> {
     for spec in feeds {
         let mut parts = spec.splitn(3, ':');
         let (Some(id), Some(cat), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "--feed wants ID:CATEGORY:FILE"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--feed wants ID:CATEGORY:FILE",
+            ));
         };
-        let summary = engine.load_feed_file(id, parse_category(cat)?, std::path::Path::new(path))?;
-        eprintln!("vigil-cli: feed {}", serde_json::to_string(&summary).unwrap());
+        let summary =
+            engine.load_feed_file(id, parse_category(cat)?, std::path::Path::new(path))?;
+        eprintln!(
+            "vigil-cli: feed {}",
+            serde_json::to_string(&summary).unwrap()
+        );
     }
     eprintln!("vigil-cli: engine running");
     let events = engine.events();
@@ -156,7 +185,10 @@ fn receive_fd(path: &str) -> io::Result<OwnedFd> {
     let (conn, _) = listener.accept()?;
     let mut data = [0u8; 16];
     let mut cmsg = [0u8; 64];
-    let mut iov = libc::iovec { iov_base: data.as_mut_ptr().cast(), iov_len: data.len() };
+    let mut iov = libc::iovec {
+        iov_base: data.as_mut_ptr().cast(),
+        iov_len: data.len(),
+    };
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
@@ -167,7 +199,10 @@ fn receive_fd(path: &str) -> io::Result<OwnedFd> {
     }
     let hdr = unsafe { libc::CMSG_FIRSTHDR(&msg) };
     if hdr.is_null() || unsafe { (*hdr).cmsg_type } != libc::SCM_RIGHTS {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "no descriptor received"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "no descriptor received",
+        ));
     }
     let fd: RawFd = unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(hdr) as *const RawFd) };
     let _ = std::fs::remove_file(path);
@@ -175,9 +210,12 @@ fn receive_fd(path: &str) -> io::Result<OwnedFd> {
 }
 
 fn parse_feed(args: &[String]) -> io::Result<()> {
-    let path = args.first().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, USAGE))?;
+    let path = args
+        .first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, USAGE))?;
     let started = std::time::Instant::now();
-    let feed = vigil_core::intel::parse_feed_reader(io::BufReader::new(std::fs::File::open(path)?))?;
+    let feed =
+        vigil_core::intel::parse_feed_reader(io::BufReader::new(std::fs::File::open(path)?))?;
     println!(
         "{}",
         serde_json::json!({
@@ -195,9 +233,12 @@ fn quic_probe(args: &[String]) -> io::Result<()> {
     let (Some(dst), Some(sni)) = (args.first(), args.get(1)) else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE));
     };
-    let dst: SocketAddr = dst.parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let dst: SocketAddr = dst
+        .parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let hello = tls::build_client_hello(Some(sni), &["h3"], 0);
-    let dcid: [u8; 8] = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add(i as u8 * 31));
+    let dcid: [u8; 8] =
+        std::array::from_fn(|i| (std::process::id() as u8).wrapping_add(i as u8 * 31));
     let pkt = quic::seal_initial(quic::VERSION_1, &dcid, 0, &[(0, &hello)]);
     let sock = UdpSocket::bind(if dst.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
     sock.set_read_timeout(Some(Duration::from_secs(3)))?;

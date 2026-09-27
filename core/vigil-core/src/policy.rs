@@ -23,7 +23,10 @@ pub enum FeedCategory {
 impl FeedCategory {
     /// Threat categories raise alerts in addition to blocking.
     pub fn is_threat(self) -> bool {
-        matches!(self, FeedCategory::Malware | FeedCategory::Phishing | FeedCategory::C2)
+        matches!(
+            self,
+            FeedCategory::Malware | FeedCategory::Phishing | FeedCategory::C2
+        )
     }
 
     pub fn as_str(self) -> &'static str {
@@ -60,7 +63,11 @@ pub struct BlockReason {
 
 impl BlockReason {
     fn simple(code: &str) -> Self {
-        Self { code: code.into(), rule: None, category: None }
+        Self {
+            code: code.into(),
+            rule: None,
+            category: None,
+        }
     }
 
     pub fn describe(&self) -> String {
@@ -203,8 +210,11 @@ impl Policy {
         let mut hit: Option<BlockReason> = None;
         for (id, lf) in &self.feeds {
             if let Some(rule) = lf.feed.domains.match_suffix(domain) {
-                let reason =
-                    BlockReason { code: format!("feed:{id}"), rule: Some(rule.to_string()), category: Some(lf.category) };
+                let reason = BlockReason {
+                    code: format!("feed:{id}"),
+                    rule: Some(rule.to_string()),
+                    category: Some(lf.category),
+                };
                 if lf.category.is_threat() {
                     return Decision::Block(reason);
                 }
@@ -235,8 +245,20 @@ mod tests {
             ..Default::default()
         };
         let mut p = Policy::new(&cfg);
-        p.set_feed("easyprivacy", LoadedFeed { category: FeedCategory::Tracking, feed: parse_feed("tracker.com\nbad.example\n") });
-        p.set_feed("urlhaus", LoadedFeed { category: FeedCategory::Malware, feed: parse_feed("bad.example\n203.0.113.0/24\n") });
+        p.set_feed(
+            "easyprivacy",
+            LoadedFeed {
+                category: FeedCategory::Tracking,
+                feed: parse_feed("tracker.com\nbad.example\n"),
+            },
+        );
+        p.set_feed(
+            "urlhaus",
+            LoadedFeed {
+                category: FeedCategory::Malware,
+                feed: parse_feed("bad.example\n203.0.113.0/24\n"),
+            },
+        );
         p
     }
 
@@ -244,21 +266,35 @@ mod tests {
     fn decisions() {
         let p = policy();
         assert_eq!(p.check_domain(Some(1), "news.example"), Decision::Allow);
-        let Decision::Block(r) = p.check_domain(Some(1), "x.tracker.com") else { panic!() };
+        let Decision::Block(r) = p.check_domain(Some(1), "x.tracker.com") else {
+            panic!()
+        };
         assert_eq!(r.code, "feed:easyprivacy");
         assert_eq!(r.rule.as_deref(), Some("tracker.com"));
         assert!(!r.is_threat());
         assert_eq!(p.check_domain(Some(1), "good.tracker.com"), Decision::Allow);
         // Threat categories win over tracking lists regardless of order.
-        let Decision::Block(r) = p.check_domain(None, "cdn.bad.example") else { panic!() };
+        let Decision::Block(r) = p.check_domain(None, "cdn.bad.example") else {
+            panic!()
+        };
         assert_eq!(r.code, "feed:urlhaus");
         assert!(r.is_threat());
-        let Decision::Block(r) = p.check_domain(Some(1), "annoying.example") else { panic!() };
+        let Decision::Block(r) = p.check_domain(Some(1), "annoying.example") else {
+            panic!()
+        };
         assert_eq!(r.code, "custom");
-        let Decision::Block(r) = p.check_domain(Some(10500), "news.example") else { panic!() };
+        let Decision::Block(r) = p.check_domain(Some(10500), "news.example") else {
+            panic!()
+        };
         assert_eq!(r.code, "app");
-        assert!(matches!(p.check_ip(Some(1), "203.0.113.9".parse().unwrap()), Decision::Block(_)));
-        assert_eq!(p.check_ip(Some(1), "198.51.100.1".parse().unwrap()), Decision::Allow);
+        assert!(matches!(
+            p.check_ip(Some(1), "203.0.113.9".parse().unwrap()),
+            Decision::Block(_)
+        ));
+        assert_eq!(
+            p.check_ip(Some(1), "198.51.100.1".parse().unwrap()),
+            Decision::Allow
+        );
     }
 
     #[test]

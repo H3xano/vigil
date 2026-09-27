@@ -54,7 +54,8 @@ import dev.vigil.inspector.vpn.VigilVpnService
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
-    private var pendingDestination: String? = null
+    /** Destination requested by an intent (launcher shortcut or notification). */
+    private val destination = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) VigilVpnService.start(this)
@@ -64,13 +65,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        pendingDestination = intent?.getStringExtra(EXTRA_DESTINATION)
+        destination.value = intent?.getStringExtra(EXTRA_DESTINATION)
         setContent {
             VigilTheme {
                 val nav = rememberNavController()
-                LaunchedEffect(Unit) {
-                    pendingDestination?.let { nav.navigate(it) }
-                    pendingDestination = null
+                val target by destination.collectAsStateWithLifecycle()
+                LaunchedEffect(target) {
+                    target?.let { route ->
+                        nav.navigate(route) {
+                            popUpTo("dashboard") { saveState = true }
+                            launchSingleTop = true
+                        }
+                        destination.value = null
+                    }
                 }
                 VigilScaffold(nav)
             }
@@ -80,6 +87,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        intent.getStringExtra(EXTRA_DESTINATION)?.let { destination.value = it }
     }
 
     /** Starts inspection, asking for VPN consent (and notifications) first. */

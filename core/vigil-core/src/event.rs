@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -52,6 +55,9 @@ pub struct FlowEvent {
     pub alpn: Option<String>,
     pub tls_version: Option<&'static str>,
     pub ja4: Option<String>,
+    /// Real Encrypted Client Hello in use: `domain` is only the provider's
+    /// public name. (GREASE ECH, sent by browsers on every handshake, is not
+    /// reported.)
     pub ech: bool,
     pub http_method: Option<String>,
     pub verdict: Option<Verdict>,
@@ -151,7 +157,12 @@ pub struct EventQueue {
 
 impl EventQueue {
     pub fn new(capacity: usize) -> Self {
-        Self { inner: Mutex::new(VecDeque::with_capacity(1024)), cv: Condvar::new(), capacity, dropped: AtomicU64::new(0) }
+        Self {
+            inner: Mutex::new(VecDeque::with_capacity(1024)),
+            cv: Condvar::new(),
+            capacity,
+            dropped: AtomicU64::new(0),
+        }
     }
 
     pub fn push(&self, e: Event) {
@@ -199,11 +210,21 @@ mod tests {
 
     #[test]
     fn serialises_with_type_tag() {
-        let e = Event::FlowEnd(FlowEndEvent { id: 3, ts: 1, tx: 10, rx: 20, duration_ms: 5, error: None });
+        let e = Event::FlowEnd(FlowEndEvent {
+            id: 3,
+            ts: 1,
+            tx: 10,
+            rx: 20,
+            duration_ms: 5,
+            error: None,
+        });
         let j = serde_json::to_value(&e).unwrap();
         assert_eq!(j["type"], "flow_end");
         assert_eq!(j["rx"], 20);
-        let f = Event::Flow(FlowEvent { verdict: Some(Verdict::Block), ..Default::default() });
+        let f = Event::Flow(FlowEvent {
+            verdict: Some(Verdict::Block),
+            ..Default::default()
+        });
         assert_eq!(serde_json::to_value(&f).unwrap()["verdict"], "block");
     }
 
@@ -211,7 +232,10 @@ mod tests {
     fn queue_drops_oldest() {
         let q = EventQueue::new(2);
         for i in 0..5 {
-            q.push(Event::FlowEnd(FlowEndEvent { id: i, ..Default::default() }));
+            q.push(Event::FlowEnd(FlowEndEvent {
+                id: i,
+                ..Default::default()
+            }));
         }
         assert_eq!(q.dropped(), 3);
         let got = q.poll(10, Duration::from_millis(1));

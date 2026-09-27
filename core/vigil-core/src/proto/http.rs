@@ -5,7 +5,9 @@
 
 use super::tls::Sniff;
 
-const METHODS: &[&str] = &["GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH", "CONNECT", "TRACE"];
+const METHODS: &[&str] = &[
+    "GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH", "CONNECT", "TRACE",
+];
 /// Give up if the header block is larger than this.
 pub const MAX_HEADER_LEN: usize = 16 * 1024;
 
@@ -21,14 +23,23 @@ pub fn parse_request(buf: &[u8]) -> Sniff<HttpRequest> {
     let plausible = METHODS.iter().any(|m| {
         let m = m.as_bytes();
         let n = prefix_len.min(m.len() + 1);
-        let want: Vec<u8> = m.iter().copied().chain(std::iter::once(b' ')).take(n).collect();
+        let want: Vec<u8> = m
+            .iter()
+            .copied()
+            .chain(std::iter::once(b' '))
+            .take(n)
+            .collect();
         buf.starts_with(&want)
     });
     if !plausible {
         return Sniff::NotMatched;
     }
     let Some(end) = find(buf, b"\r\n\r\n") else {
-        return if buf.len() > MAX_HEADER_LEN { Sniff::NotMatched } else { Sniff::NeedMore };
+        return if buf.len() > MAX_HEADER_LEN {
+            Sniff::NotMatched
+        } else {
+            Sniff::NeedMore
+        };
     };
     let Ok(head) = std::str::from_utf8(&buf[..end]) else {
         return Sniff::NotMatched;
@@ -48,7 +59,10 @@ pub fn parse_request(buf: &[u8]) -> Sniff<HttpRequest> {
     if host.is_none() && method == "CONNECT" {
         host = Some(strip_port(target).to_string());
     }
-    Sniff::Found(HttpRequest { method, host: host.and_then(|h| super::normalize_host(&h)) })
+    Sniff::Found(HttpRequest {
+        method,
+        host: host.and_then(|h| super::normalize_host(&h)),
+    })
 }
 
 fn strip_port(hostport: &str) -> &str {
@@ -74,21 +88,29 @@ mod tests {
         let r = parse_request(b"GET /track?id=1 HTTP/1.1\r\nUser-Agent: x\r\nHost: Telemetry.Example.com:8080\r\n\r\n");
         assert_eq!(
             r,
-            Sniff::Found(HttpRequest { method: "GET".into(), host: Some("telemetry.example.com".into()) })
+            Sniff::Found(HttpRequest {
+                method: "GET".into(),
+                host: Some("telemetry.example.com".into())
+            })
         );
     }
 
     #[test]
     fn incremental() {
         assert_eq!(parse_request(b"PO"), Sniff::NeedMore);
-        assert_eq!(parse_request(b"POST / HTTP/1.1\r\nHost: a"), Sniff::NeedMore);
+        assert_eq!(
+            parse_request(b"POST / HTTP/1.1\r\nHost: a"),
+            Sniff::NeedMore
+        );
         assert_eq!(parse_request(b"\x16\x03\x01"), Sniff::NotMatched);
         assert_eq!(parse_request(b"GETX"), Sniff::NotMatched);
     }
 
     #[test]
     fn connect_target() {
-        let Sniff::Found(r) = parse_request(b"CONNECT proxy.example:443 HTTP/1.1\r\n\r\n") else { panic!() };
+        let Sniff::Found(r) = parse_request(b"CONNECT proxy.example:443 HTTP/1.1\r\n\r\n") else {
+            panic!()
+        };
         assert_eq!(r.host.as_deref(), Some("proxy.example"));
     }
 }

@@ -114,7 +114,10 @@ mod tests {
     fn varint_decoding() {
         // RFC 9000 appendix A.1 examples.
         let cases: &[(&[u8], u64)] = &[
-            (&[0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c], 151_288_809_941_952_652),
+            (
+                &[0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c],
+                151_288_809_941_952_652,
+            ),
             (&[0x9d, 0x7f, 0x3e, 0x7d], 494_878_333),
             (&[0x7b, 0xbd], 15_293),
             (&[0x25], 37),
@@ -128,7 +131,10 @@ mod tests {
 
     #[test]
     fn host_normalisation() {
-        assert_eq!(normalize_host("WWW.Example.COM.").as_deref(), Some("www.example.com"));
+        assert_eq!(
+            normalize_host("WWW.Example.COM.").as_deref(),
+            Some("www.example.com")
+        );
         assert_eq!(normalize_host(""), None);
         assert_eq!(normalize_host("bad host"), None);
     }

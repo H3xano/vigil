@@ -31,7 +31,11 @@ pub(crate) async fn handle_udp_query(
 }
 
 /// Serves DNS-over-TCP addressed to the virtual resolver.
-pub(crate) async fn serve_tcp(shared: &Arc<Shared>, mut stream: netstack_smoltcp::TcpStream, uid: Option<u32>) {
+pub(crate) async fn serve_tcp(
+    shared: &Arc<Shared>,
+    mut stream: netstack_smoltcp::TcpStream,
+    uid: Option<u32>,
+) {
     loop {
         let mut len = [0u8; 2];
         match tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut len)).await {
@@ -42,7 +46,9 @@ pub(crate) async fn serve_tcp(shared: &Arc<Shared>, mut stream: netstack_smoltcp
         if stream.read_exact(&mut q).await.is_err() {
             return;
         }
-        let Some(resp) = answer(shared, &q, uid, None, "tcp").await else { return };
+        let Some(resp) = answer(shared, &q, uid, None, "tcp").await else {
+            return;
+        };
         let mut out = (resp.len() as u16).to_be_bytes().to_vec();
         out.extend_from_slice(&resp);
         if stream.write_all(&out).await.is_err() {
@@ -71,7 +77,9 @@ async fn answer(
         };
     };
     shared.stats.dns_queries.fetch_add(1, Relaxed);
-    let server_label = upstream.map(|s| s.to_string()).unwrap_or_else(|| "virtual".into());
+    let server_label = upstream
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "virtual".into());
     if let Some(server) = upstream {
         shared.alert(
             "hardcoded_dns",
@@ -125,7 +133,10 @@ async fn answer(
             if let RData::Cname(target) = &rec.data {
                 if let Decision::Block(mut reason) = policy.check_domain(uid, target) {
                     drop(policy);
-                    reason.rule = Some(format!("{} via CNAME {target}", reason.rule.unwrap_or_default()));
+                    reason.rule = Some(format!(
+                        "{} via CNAME {target}",
+                        reason.rule.unwrap_or_default()
+                    ));
                     return sinkhole(shared, query, &mut ev, &reason, &q.name, started);
                 }
             }
@@ -145,7 +156,12 @@ async fn answer(
             RData::A(ip) => Some(ip.to_string()),
             RData::Aaaa(ip) => Some(ip.to_string()),
             RData::Cname(n) => Some(format!("CNAME {n}")),
-            RData::Hints(h) => Some(h.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")),
+            RData::Hints(h) => Some(
+                h.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
             RData::Other => None,
         })
         .take(16)
@@ -188,7 +204,11 @@ fn sinkhole(
 }
 
 fn protected_udp(shared: &Shared, server: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
-    let bind: SocketAddr = if server.is_ipv4() { "0.0.0.0:0".parse().unwrap() } else { "[::]:0".parse().unwrap() };
+    let bind: SocketAddr = if server.is_ipv4() {
+        "0.0.0.0:0".parse().unwrap()
+    } else {
+        "[::]:0".parse().unwrap()
+    };
     let s = std::net::UdpSocket::bind(bind)?;
     if !shared.platform.protect(s.as_raw_fd()) {
         return Err(io::Error::other("could not protect socket"));
@@ -227,12 +247,18 @@ async fn query_tcp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Res
         s.read_exact(&mut resp).await?;
         Ok(resp)
     };
-    tokio::time::timeout(TCP_TIMEOUT, fut).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns tcp timeout"))?
+    tokio::time::timeout(TCP_TIMEOUT, fut)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns tcp timeout"))?
 }
 
 /// Sends `query` to the first responsive server. Truncated UDP answers are
 /// retried over TCP.
-async fn forward(shared: &Shared, query: &[u8], servers: &[SocketAddr]) -> Option<(Vec<u8>, SocketAddr)> {
+async fn forward(
+    shared: &Shared,
+    query: &[u8],
+    servers: &[SocketAddr],
+) -> Option<(Vec<u8>, SocketAddr)> {
     if query.len() < 12 {
         return None;
     }

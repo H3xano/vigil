@@ -22,7 +22,9 @@ impl TunDevice {
         if flags < 0 || unsafe { libc::fcntl(dup, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { fd: AsyncFd::new(owned)? })
+        Ok(Self {
+            fd: AsyncFd::new(owned)?,
+        })
     }
 
     /// Reads one packet.
@@ -30,7 +32,8 @@ impl TunDevice {
         loop {
             let mut guard = self.fd.readable().await?;
             match guard.try_io(|inner| {
-                let n = unsafe { libc::read(inner.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                let n =
+                    unsafe { libc::read(inner.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
                 if n < 0 {
                     Err(io::Error::last_os_error())
                 } else {

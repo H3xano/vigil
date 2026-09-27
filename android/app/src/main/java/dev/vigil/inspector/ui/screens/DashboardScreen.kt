@@ -42,6 +42,7 @@ import dev.vigil.inspector.ui.components.StatTile
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.formatCount
 import dev.vigil.inspector.ui.formatRelative
+import dev.vigil.inspector.ui.plural
 import dev.vigil.inspector.ui.theme.VigilColors
 import dev.vigil.inspector.vpn.VpnStatus
 
@@ -200,7 +201,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                         drawStopIndicator = {},
                     )
                     Text(
-                        "${a.flows} connections · ${a.destinations} destinations" + if (a.blocked > 0) " · ${a.blocked} blocked" else "",
+                        "${plural(a.flows, "connection")} · ${plural(a.destinations, "destination")}" + if (a.blocked > 0) " · ${a.blocked} blocked" else "",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

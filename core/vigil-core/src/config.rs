@@ -49,7 +49,13 @@ pub struct BeaconConfig {
 
 impl Default for BeaconConfig {
     fn default() -> Self {
-        Self { enabled: true, min_events: 6, max_jitter: 0.15, min_interval_s: 10.0, max_interval_s: 3600.0 }
+        Self {
+            enabled: true,
+            min_events: 6,
+            max_jitter: 0.15,
+            min_interval_s: 10.0,
+            max_interval_s: 3600.0,
+        }
     }
 }
 
@@ -95,7 +101,10 @@ mod tests {
 
     #[test]
     fn partial_json_uses_defaults() {
-        let c = Config::from_json(r#"{"sinkhole":"nxdomain","blocked_uids":[10123],"beacon":{"min_events":4}}"#).unwrap();
+        let c = Config::from_json(
+            r#"{"sinkhole":"nxdomain","blocked_uids":[10123],"beacon":{"min_events":4}}"#,
+        )
+        .unwrap();
         assert_eq!(c.sinkhole, SinkholeMode::Nxdomain);
         assert_eq!(c.blocked_uids, vec![10123]);
         assert_eq!(c.beacon.min_events, 4);

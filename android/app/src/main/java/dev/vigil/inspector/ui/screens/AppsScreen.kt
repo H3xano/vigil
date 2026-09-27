@@ -46,6 +46,7 @@ import dev.vigil.inspector.ui.components.Tag
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.formatCount
 import dev.vigil.inspector.ui.formatRelative
+import dev.vigil.inspector.ui.plural
 import dev.vigil.inspector.ui.theme.VigilColors
 
 @Composable
@@ -77,7 +78,7 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
                     Column(Modifier.weight(1f)) {
                         Text(label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            "${formatBytes(a.tx + a.rx)} · ${a.destinations} destinations · ${formatRelative(a.lastSeen)}",
+                            "${formatBytes(a.tx + a.rx)} · ${plural(a.destinations, "destination")} · ${formatRelative(a.lastSeen)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -155,7 +156,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                             Column(Modifier.weight(1f)) {
                                 Text(d.destination, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     color = if (d.blocked == d.flows) VigilColors.Block else MaterialTheme.colorScheme.onSurface)
-                                Text("${d.flows} connections · ${formatBytes(d.bytes)} · first ${formatRelative(d.firstSeen)}",
+                                Text("${plural(d.flows, "connection")} · ${formatBytes(d.bytes)} · first ${formatRelative(d.firstSeen)}",
                                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (d.blocked > 0) Tag("${d.blocked} blocked", VigilColors.Block, filled = true)

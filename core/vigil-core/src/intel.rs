@@ -54,15 +54,14 @@ impl DomainSet {
     pub fn match_suffix<'a>(&'a self, name: &str) -> Option<&'a str> {
         let mut candidate = name;
         loop {
-            if let Ok(i) =
-                self.index.binary_search_by(|&(s, l)| self.arena[s as usize..(s + l) as usize].cmp(candidate))
+            if let Ok(i) = self
+                .index
+                .binary_search_by(|&(s, l)| self.arena[s as usize..(s + l) as usize].cmp(candidate))
             {
                 return Some(self.get(i));
             }
-            match candidate.find('.') {
-                Some(dot) => candidate = &candidate[dot + 1..],
-                None => return None,
-            }
+            let dot = candidate.find('.')?;
+            candidate = &candidate[dot + 1..];
         }
     }
 
@@ -107,7 +106,10 @@ impl DomainSetBuilder {
         self.index.dedup_by(|a, b| get(a) == get(b));
         self.index.shrink_to_fit();
         self.arena.shrink_to_fit();
-        DomainSet { arena: self.arena, index: self.index }
+        DomainSet {
+            arena: self.arena,
+            index: self.index,
+        }
     }
 }
 
@@ -198,7 +200,10 @@ impl IpSet {
                 IpRange::V6(s, e) => v6.push((s, e)),
             }
         }
-        Self { v4: merge(v4), v6: merge(v6) }
+        Self {
+            v4: merge(v4),
+            v6: merge(v6),
+        }
     }
 
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -284,7 +289,11 @@ struct FeedBuilder {
 
 impl FeedBuilder {
     fn finish(self) -> Feed {
-        Feed { domains: self.domains.build(), ips: IpSet::from_ranges(self.ranges), rejected: self.rejected }
+        Feed {
+            domains: self.domains.build(),
+            ips: IpSet::from_ranges(self.ranges),
+            rejected: self.rejected,
+        }
     }
 
     fn line(&mut self, raw: &str) {
@@ -292,7 +301,12 @@ impl FeedBuilder {
     }
 }
 
-fn parse_line(raw: &str, domains: &mut DomainSetBuilder, ranges: &mut Vec<IpRange>, rejected: &mut usize) {
+fn parse_line(
+    raw: &str,
+    domains: &mut DomainSetBuilder,
+    ranges: &mut Vec<IpRange>,
+    rejected: &mut usize,
+) {
     // Cosmetic (element-hiding) rules contain '#' and must be recognised
     // before comment stripping.
     if raw.contains("##") || raw.contains("#@#") || raw.contains("#?#") || raw.contains("#$#") {
@@ -307,7 +321,8 @@ fn parse_line(raw: &str, domains: &mut DomainSetBuilder, ranges: &mut Vec<IpRang
     }
     if let Some(rule) = line.strip_prefix("||") {
         let (body, modifiers) = rule.split_once('$').unwrap_or((rule, ""));
-        let modifiers_ok = modifiers.is_empty() || modifiers.split(',').all(|m| m == "important" || m == "all");
+        let modifiers_ok =
+            modifiers.is_empty() || modifiers.split(',').all(|m| m == "important" || m == "all");
         match body.strip_suffix('^') {
             Some(d) if modifiers_ok && !d.contains('/') && !d.contains('*') && domains.push(d) => {}
             _ => *rejected += 1,
@@ -347,10 +362,17 @@ fn parse_line(raw: &str, domains: &mut DomainSetBuilder, ranges: &mut Vec<IpRang
 pub fn is_special(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(a) => {
-            a.is_loopback() || a.is_link_local() || a.is_multicast() || a.is_broadcast() || a.is_unspecified()
+            a.is_loopback()
+                || a.is_link_local()
+                || a.is_multicast()
+                || a.is_broadcast()
+                || a.is_unspecified()
         }
         IpAddr::V6(a) => {
-            a.is_loopback() || a.is_multicast() || a.is_unspecified() || (a.segments()[0] & 0xffc0) == 0xfe80
+            a.is_loopback()
+                || a.is_multicast()
+                || a.is_unspecified()
+                || (a.segments()[0] & 0xffc0) == 0xfe80
         }
     }
 }
@@ -383,9 +405,15 @@ mod tests {
     #[test]
     fn ip_ranges() {
         let set = IpSet::from_ranges(
-            ["10.0.0.0/8", "192.0.2.1", "192.0.2.2", "2001:db8::/32", "11.0.0.0/8"]
-                .iter()
-                .map(|s| parse_cidr(s).unwrap()),
+            [
+                "10.0.0.0/8",
+                "192.0.2.1",
+                "192.0.2.2",
+                "2001:db8::/32",
+                "11.0.0.0/8",
+            ]
+            .iter()
+            .map(|s| parse_cidr(s).unwrap()),
         );
         // 10/8 and 11/8 merge; 192.0.2.1 and .2 merge.
         assert_eq!(set.len(), 3);
@@ -422,7 +450,13 @@ plain.example.io
 not_a_domain
 ";
         let f = parse_feed(text);
-        for d in ["ads.example.com", "tracker.example.com", "metrics.example.net", "plain.example.io", "wild.example"] {
+        for d in [
+            "ads.example.com",
+            "tracker.example.com",
+            "metrics.example.net",
+            "plain.example.io",
+            "wild.example",
+        ] {
             assert!(f.domains.contains_exact(d), "{d}");
         }
         assert_eq!(f.domains.len(), 5);

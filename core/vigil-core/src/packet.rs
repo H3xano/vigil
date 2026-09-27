@@ -238,7 +238,10 @@ pub fn build_udp(src: SocketAddr, dst: SocketAddr, payload: &[u8]) -> Option<Vec
     pkt.extend_from_slice(&(l4_len as u16).to_be_bytes());
     pkt.extend_from_slice(&[0, 0]);
     pkt.extend_from_slice(payload);
-    let mut c = fold(sum16(&pkt[off..], pseudo_header_sum(src.ip(), dst.ip(), PROTO_UDP, l4_len)));
+    let mut c = fold(sum16(
+        &pkt[off..],
+        pseudo_header_sum(src.ip(), dst.ip(), PROTO_UDP, l4_len),
+    ));
     if c == 0 {
         c = 0xffff;
     }
@@ -251,7 +254,10 @@ pub fn build_rst_for(syn: &TcpInfo) -> Option<Vec<u8>> {
     let (src, dst) = (syn.dst, syn.src);
     let mut pkt = ip_header(src.ip(), dst.ip(), PROTO_TCP, 20)?;
     let off = pkt.len();
-    let ack = syn.seq.wrapping_add(syn.payload_len as u32).wrapping_add(if syn.flags & TCP_SYN != 0 { 1 } else { 0 });
+    let ack = syn
+        .seq
+        .wrapping_add(syn.payload_len as u32)
+        .wrapping_add(if syn.flags & TCP_SYN != 0 { 1 } else { 0 });
     let seq = if syn.flags & TCP_ACK != 0 { syn.ack } else { 0 };
     pkt.extend_from_slice(&src.port().to_be_bytes());
     pkt.extend_from_slice(&dst.port().to_be_bytes());
@@ -260,7 +266,10 @@ pub fn build_rst_for(syn: &TcpInfo) -> Option<Vec<u8>> {
     pkt.push(5 << 4);
     pkt.push(TCP_RST | TCP_ACK);
     pkt.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
-    let c = fold(sum16(&pkt[off..], pseudo_header_sum(src.ip(), dst.ip(), PROTO_TCP, 20)));
+    let c = fold(sum16(
+        &pkt[off..],
+        pseudo_header_sum(src.ip(), dst.ip(), PROTO_TCP, 20),
+    ));
     pkt[off + 16..off + 18].copy_from_slice(&c.to_be_bytes());
     Some(pkt)
 }
@@ -268,7 +277,10 @@ pub fn build_rst_for(syn: &TcpInfo) -> Option<Vec<u8>> {
 /// Verifies an L4 checksum; used by tests.
 pub fn l4_checksum_ok(p: &[u8], ip: &IpInfo) -> bool {
     let seg = &p[ip.l4_offset..ip.end];
-    fold(sum16(seg, pseudo_header_sum(ip.src, ip.dst, ip.proto, seg.len()))) == 0
+    fold(sum16(
+        seg,
+        pseudo_header_sum(ip.src, ip.dst, ip.proto, seg.len()),
+    )) == 0
 }
 
 #[cfg(test)]
@@ -281,7 +293,10 @@ mod tests {
 
     #[test]
     fn udp_roundtrip_v4_v6() {
-        for (s, d) in [("10.0.0.1:53", "10.0.0.2:40000"), ("[fd00::1]:53", "[fd00::2]:40000")] {
+        for (s, d) in [
+            ("10.0.0.1:53", "10.0.0.2:40000"),
+            ("[fd00::1]:53", "[fd00::2]:40000"),
+        ] {
             let pkt = build_udp(sa(s), sa(d), b"hello").unwrap();
             let ip = parse_ip(&pkt).unwrap();
             assert_eq!(ip.proto, PROTO_UDP);

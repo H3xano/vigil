@@ -39,8 +39,9 @@ pub struct ClientHello {
     /// Extension types in wire order (GREASE included, as seen).
     pub extensions: Vec<u16>,
     pub signature_algorithms: Vec<u16>,
-    /// An `encrypted_client_hello` extension was offered. When true the SNI
-    /// above is the *outer* (public) name, not the real destination.
+    /// An `encrypted_client_hello` extension is present. Browsers send a
+    /// GREASE version of it on every handshake, so on its own this does not
+    /// mean the SNI is hidden; see [`ClientHello::ech_active`].
     pub ech: bool,
 }
 
@@ -83,10 +84,30 @@ fn truncated_sha256(s: &str) -> String {
 }
 
 fn hex_list(items: impl Iterator<Item = u16>) -> String {
-    items.map(|v| format!("{v:04x}")).collect::<Vec<_>>().join(",")
+    items
+        .map(|v| format!("{v:04x}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
+/// Client-facing public names used by deployed ECH providers. Real ECH
+/// cannot be distinguished from GREASE ECH byte-for-byte, but a real one
+/// always carries the provider's public name as the outer SNI.
+const ECH_PUBLIC_NAMES: &[&str] = &["cloudflare-ech.com", "public.ech.cloudflare.com"];
+
 impl ClientHello {
+    /// True when the handshake most likely uses real ECH, i.e. the visible
+    /// SNI is only the provider's public name and the real destination is
+    /// encrypted.
+    pub fn ech_active(&self) -> bool {
+        self.ech
+            && self.sni.as_deref().is_some_and(|s| {
+                ECH_PUBLIC_NAMES
+                    .iter()
+                    .any(|p| s == *p || s.ends_with(&format!(".{p}")))
+            })
+    }
+
     /// Highest non-GREASE version offered (supported_versions if present,
     /// otherwise the legacy record version).
     pub fn max_version(&self) -> u16 {
@@ -116,8 +137,18 @@ impl ClientHello {
     /// JA4 TLS client fingerprint (FoxIO JA4 specification).
     /// `transport` is `'t'` for TCP and `'q'` for QUIC.
     pub fn ja4(&self, transport: char) -> String {
-        let ciphers: Vec<u16> = self.ciphers.iter().copied().filter(|c| !is_grease(*c)).collect();
-        let exts: Vec<u16> = self.extensions.iter().copied().filter(|e| !is_grease(*e)).collect();
+        let ciphers: Vec<u16> = self
+            .ciphers
+            .iter()
+            .copied()
+            .filter(|c| !is_grease(*c))
+            .collect();
+        let exts: Vec<u16> = self
+            .extensions
+            .iter()
+            .copied()
+            .filter(|e| !is_grease(*e))
+            .collect();
         let a = format!(
             "{}{}{}{:02}{:02}{}",
             transport,
@@ -131,14 +162,21 @@ impl ClientHello {
         sorted_ciphers.sort_unstable();
         let b = truncated_sha256(&hex_list(sorted_ciphers.into_iter()));
 
-        let mut sorted_exts: Vec<u16> =
-            exts.into_iter().filter(|e| *e != EXT_SERVER_NAME && *e != EXT_ALPN).collect();
+        let mut sorted_exts: Vec<u16> = exts
+            .into_iter()
+            .filter(|e| *e != EXT_SERVER_NAME && *e != EXT_ALPN)
+            .collect();
         sorted_exts.sort_unstable();
         let c = if sorted_exts.is_empty() {
             "000000000000".to_string()
         } else {
             let mut s = hex_list(sorted_exts.into_iter());
-            let sigs: Vec<u16> = self.signature_algorithms.iter().copied().filter(|v| !is_grease(*v)).collect();
+            let sigs: Vec<u16> = self
+                .signature_algorithms
+                .iter()
+                .copied()
+                .filter(|v| !is_grease(*v))
+                .collect();
             if !sigs.is_empty() {
                 s.push('_');
                 s.push_str(&hex_list(sigs.into_iter()));
@@ -172,7 +210,11 @@ pub fn parse_records(stream: &[u8]) -> Sniff<ClientHello> {
             // Partial record: parse what we have so far only if it may already
             // contain the complete handshake message (it cannot, since the
             // record isn't complete), so ask for more.
-            return if handshake.len() + r.remaining() > MAX_HELLO_LEN { Sniff::NotMatched } else { Sniff::NeedMore };
+            return if handshake.len() + r.remaining() > MAX_HELLO_LEN {
+                Sniff::NotMatched
+            } else {
+                Sniff::NeedMore
+            };
         };
         handshake.extend_from_slice(frag);
         match parse_handshake(&handshake) {
@@ -184,27 +226,28 @@ pub fn parse_records(stream: &[u8]) -> Sniff<ClientHello> {
 }
 
 fn plausible_record_prefix(b: &[u8]) -> bool {
-    match b {
-        [] => true,
-        [0x16] => true,
-        [0x16, 3, ..] => true,
-        _ => false,
-    }
+    matches!(b, [] | [0x16] | [0x16, 3, ..])
 }
 
 /// Parses a handshake message sequence that should start with a ClientHello.
 pub fn parse_handshake(msg: &[u8]) -> Sniff<ClientHello> {
     let mut r = Reader::new(msg);
-    let Some(htype) = r.u8() else { return Sniff::NeedMore };
+    let Some(htype) = r.u8() else {
+        return Sniff::NeedMore;
+    };
     if htype != 0x01 {
         return Sniff::NotMatched;
     }
-    let Some(len) = r.u24() else { return Sniff::NeedMore };
+    let Some(len) = r.u24() else {
+        return Sniff::NeedMore;
+    };
     let len = len as usize;
     if len > MAX_HELLO_LEN {
         return Sniff::NotMatched;
     }
-    let Some(body) = r.bytes(len) else { return Sniff::NeedMore };
+    let Some(body) = r.bytes(len) else {
+        return Sniff::NeedMore;
+    };
     match parse_client_hello_body(body) {
         Some(ch) => Sniff::Found(ch),
         None => Sniff::NotMatched,
@@ -213,11 +256,17 @@ pub fn parse_handshake(msg: &[u8]) -> Sniff<ClientHello> {
 
 fn parse_client_hello_body(body: &[u8]) -> Option<ClientHello> {
     let mut r = Reader::new(body);
-    let mut ch = ClientHello { legacy_version: r.u16()?, ..Default::default() };
+    let mut ch = ClientHello {
+        legacy_version: r.u16()?,
+        ..Default::default()
+    };
     r.skip(32)?; // random
     r.vec8()?; // legacy_session_id
     let suites = r.vec16()?;
-    ch.ciphers = suites.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    ch.ciphers = suites
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     r.vec8()?; // legacy_compression_methods
     if r.is_empty() {
         return Some(ch);
@@ -235,7 +284,9 @@ fn parse_client_hello_body(body: &[u8]) -> Option<ClientHello> {
                     let name_type = list.u8()?;
                     let name = list.vec16()?;
                     if name_type == 0 && ch.sni.is_none() {
-                        ch.sni = std::str::from_utf8(name).ok().and_then(super::normalize_host);
+                        ch.sni = std::str::from_utf8(name)
+                            .ok()
+                            .and_then(super::normalize_host);
                     }
                 }
             }
@@ -248,11 +299,17 @@ fn parse_client_hello_body(body: &[u8]) -> Option<ClientHello> {
             }
             EXT_SUPPORTED_VERSIONS => {
                 let v = d.vec8()?;
-                ch.supported_versions = v.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                ch.supported_versions = v
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
             }
             EXT_SIGNATURE_ALGORITHMS => {
                 let v = d.vec16()?;
-                ch.signature_algorithms = v.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                ch.signature_algorithms = v
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
             }
             EXT_ECH => ch.ech = true,
             _ => {}
@@ -325,11 +382,26 @@ mod tests {
     fn extracts_sni_alpn_and_versions() {
         let hs = build_client_hello(Some("Analytics.OEM.com"), &["h2", "http/1.1"], 0);
         let stream = wrap_records(&hs, 16384);
-        let Sniff::Found(ch) = parse_records(&stream) else { panic!("not parsed") };
+        let Sniff::Found(ch) = parse_records(&stream) else {
+            panic!("not parsed")
+        };
         assert_eq!(ch.sni.as_deref(), Some("analytics.oem.com"));
         assert_eq!(ch.alpn, vec!["h2", "http/1.1"]);
         assert_eq!(ch.max_version(), 0x0304);
         assert!(!ch.ech);
+        assert!(!ch.ech_active());
+    }
+
+    #[test]
+    fn grease_ech_is_not_reported_as_active() {
+        let mut ch = ClientHello {
+            ech: true,
+            sni: Some("en.wikipedia.org".into()),
+            ..Default::default()
+        };
+        assert!(!ch.ech_active(), "GREASE ECH keeps the real SNI visible");
+        ch.sni = Some("cloudflare-ech.com".into());
+        assert!(ch.ech_active());
     }
 
     #[test]
@@ -338,9 +410,15 @@ mod tests {
         let hs = build_client_hello(Some("pq.example.org"), &["h2"], 1800);
         let stream = wrap_records(&hs, 700);
         for cut in [0, 1, 5, 600, 705, 1500, stream.len() - 1] {
-            assert_eq!(parse_records(&stream[..cut]), Sniff::NeedMore, "cut at {cut}");
+            assert_eq!(
+                parse_records(&stream[..cut]),
+                Sniff::NeedMore,
+                "cut at {cut}"
+            );
         }
-        let Sniff::Found(ch) = parse_records(&stream) else { panic!() };
+        let Sniff::Found(ch) = parse_records(&stream) else {
+            panic!()
+        };
         assert_eq!(ch.sni.as_deref(), Some("pq.example.org"));
     }
 
@@ -348,13 +426,18 @@ mod tests {
     fn rejects_non_tls() {
         assert_eq!(parse_records(b"GET / HTTP/1.1\r\n"), Sniff::NotMatched);
         assert_eq!(parse_records(b"SSH-2.0-OpenSSH"), Sniff::NotMatched);
-        assert_eq!(parse_records(&[0x17, 3, 3, 0, 5, 1, 2, 3, 4, 5]), Sniff::NotMatched);
+        assert_eq!(
+            parse_records(&[0x17, 3, 3, 0, 5, 1, 2, 3, 4, 5]),
+            Sniff::NotMatched
+        );
     }
 
     #[test]
     fn ja4_structure() {
         let hs = build_client_hello(Some("example.com"), &["h2"], 0);
-        let Sniff::Found(ch) = parse_handshake(&hs) else { panic!() };
+        let Sniff::Found(ch) = parse_handshake(&hs) else {
+            panic!()
+        };
         let ja4 = ch.ja4('t');
         // 2 non-GREASE ciphers; SNI, ALPN, supported_versions, sig_algs, padding = 5 extensions.
         assert!(ja4.starts_with("t13d0205h2_"), "{ja4}");
@@ -363,7 +446,9 @@ mod tests {
         assert_eq!(parts[1], truncated_sha256("1301,1302"));
         assert_eq!(parts[2], truncated_sha256("000d,0015,002b_0403,0804"));
         let no_sni = build_client_hello(None, &[], 0);
-        let Sniff::Found(ch) = parse_handshake(&no_sni) else { panic!() };
+        let Sniff::Found(ch) = parse_handshake(&no_sni) else {
+            panic!()
+        };
         assert!(ch.ja4('q').starts_with("q13i020300_"));
     }
 

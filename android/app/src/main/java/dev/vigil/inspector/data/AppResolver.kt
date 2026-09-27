@@ -13,6 +13,8 @@ data class AppInfo(
     val label: String,
     val isSystem: Boolean,
     val isInstalledPackage: Boolean,
+    /** Package whose icon represents this app (differs from key for shared UIDs). */
+    val iconPackage: String? = null,
 )
 
 /** Maps Linux UIDs to apps, with caching. */
@@ -39,8 +41,10 @@ class AppResolver(context: Context) {
         else runCatching { pm.getApplicationInfo(key, 0).uid }.getOrNull()
     }.distinct()
 
-    fun icon(key: String): Drawable? =
-        if (key.contains('.') && !key.startsWith("uid:")) runCatching { pm.getApplicationIcon(key) }.getOrNull() else null
+    fun icon(key: String): Drawable? {
+        val pkg = byKey(key).iconPackage ?: return null
+        return runCatching { pm.getApplicationIcon(pkg) }.getOrNull()
+    }
 
     fun invalidate() {
         byUid.clear()
@@ -55,7 +59,7 @@ class AppResolver(context: Context) {
             val main = packages.firstOrNull { pm.getLaunchIntentForPackage(it) != null } ?: packages[0]
             val info = fromPackage(main, uid)
             if (info != null) {
-                return info.copy(key = "uid:$uid", label = "${info.label} (+${packages.size - 1} shared)")
+                return info.copy(key = "uid:$uid", label = "${info.label} (+${packages.size - 1} shared)", iconPackage = main)
             }
         }
         val name = SPECIAL_UIDS[uid] ?: pm.getNameForUid(uid) ?: "UID $uid"
@@ -70,6 +74,7 @@ class AppResolver(context: Context) {
             label = pm.getApplicationLabel(ai).toString(),
             isSystem = ai.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0,
             isInstalledPackage = true,
+            iconPackage = pkg,
         )
     } catch (e: PackageManager.NameNotFoundException) {
         null

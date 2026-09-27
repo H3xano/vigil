@@ -11,13 +11,13 @@
 pub mod config;
 pub mod detect;
 pub mod dnscache;
+pub mod engine;
 pub mod event;
 pub mod intel;
 pub mod packet;
+pub mod platform;
 pub mod policy;
 pub mod proto;
-pub mod engine;
-pub mod platform;
 pub mod tun;
 
 pub use config::Config;

@@ -20,7 +20,10 @@ mod udp;
 use crate::config::Config;
 use crate::detect::{AlertLimiter, BeaconDetector};
 use crate::dnscache::DnsCache;
-use crate::event::{now_ms, AlertEvent, EngineEvent, Event, EventQueue, FlowEndEvent, FlowEvent, FlowUpdateEvent, Severity, StatsEvent};
+use crate::event::{
+    now_ms, AlertEvent, EngineEvent, Event, EventQueue, FlowEndEvent, FlowEvent, FlowUpdateEvent,
+    Severity, StatsEvent,
+};
 use crate::intel::{parse_feed, parse_feed_reader};
 use crate::packet::{self, PROTO_TCP, PROTO_UDP};
 use crate::platform::Platform;
@@ -85,7 +88,12 @@ pub(crate) struct FlowCounters {
 
 impl FlowCounters {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { tx: AtomicU64::new(0), rx: AtomicU64::new(0), started: Instant::now(), reported: AtomicU64::new(0) })
+        Arc::new(Self {
+            tx: AtomicU64::new(0),
+            rx: AtomicU64::new(0),
+            started: Instant::now(),
+            reported: AtomicU64::new(0),
+        })
     }
 
     fn end_event(&self, id: u64, error: Option<String>) -> FlowEndEvent {
@@ -150,28 +158,62 @@ impl Shared {
     }
 
     fn emit_flow_updates(&self) {
-        let flows: Vec<_> = self.open_flows.lock().iter().map(|(id, c)| (*id, c.clone())).collect();
+        let flows: Vec<_> = self
+            .open_flows
+            .lock()
+            .iter()
+            .map(|(id, c)| (*id, c.clone()))
+            .collect();
         for (id, c) in flows {
             let (tx, rx) = (c.tx.load(Relaxed), c.rx.load(Relaxed));
             let sum = tx.wrapping_add(rx);
             if c.reported.swap(sum, Relaxed) != sum {
-                self.emit(Event::FlowUpdate(FlowUpdateEvent { id, ts: now_ms(), tx, rx }));
+                self.emit(Event::FlowUpdate(FlowUpdateEvent {
+                    id,
+                    ts: now_ms(),
+                    tx,
+                    rx,
+                }));
             }
         }
     }
 
-    pub fn alert(&self, kind: &'static str, severity: Severity, uid: Option<u32>, target: &str, message: String, detail: serde_json::Value) {
+    pub fn alert(
+        &self,
+        kind: &'static str,
+        severity: Severity,
+        uid: Option<u32>,
+        target: &str,
+        message: String,
+        detail: serde_json::Value,
+    ) {
         let key = format!("{kind}|{uid:?}|{target}");
         if !self.limiter.allow(&key, Instant::now()) {
             return;
         }
-        self.emit(Event::Alert(AlertEvent { ts: now_ms(), kind, severity, uid, target: target.to_string(), message, detail }));
+        self.emit(Event::Alert(AlertEvent {
+            ts: now_ms(),
+            kind,
+            severity,
+            uid,
+            target: target.to_string(),
+            message,
+            detail,
+        }));
     }
 
     /// Resolves the owning UID off the async workers (Binder IPC may block).
-    pub async fn lookup_uid(self: &Arc<Self>, proto: u8, src: SocketAddr, dst: SocketAddr) -> Option<u32> {
+    pub async fn lookup_uid(
+        self: &Arc<Self>,
+        proto: u8,
+        src: SocketAddr,
+        dst: SocketAddr,
+    ) -> Option<u32> {
         let me = self.clone();
-        tokio::task::spawn_blocking(move || me.platform.owner_uid(proto, src, dst)).await.ok().flatten()
+        tokio::task::spawn_blocking(move || me.platform.owner_uid(proto, src, dst))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Queues a packet for the TUN writer, dropping it if the queue is full.
@@ -250,11 +292,22 @@ impl Engine {
         runtime.spawn(async move {
             if let Err(e) = run(s.clone(), tun, tun_rx).await {
                 log::error!("engine stopped: {e}");
-                s.emit(Event::Engine(EngineEvent { ts: now_ms(), state: "error", message: e.to_string() }));
+                s.emit(Event::Engine(EngineEvent {
+                    ts: now_ms(),
+                    state: "error",
+                    message: e.to_string(),
+                }));
             }
         });
-        shared.emit(Event::Engine(EngineEvent { ts: now_ms(), state: "started", message: String::new() }));
-        Ok(Engine { shared, runtime: Some(runtime) })
+        shared.emit(Event::Engine(EngineEvent {
+            ts: now_ms(),
+            state: "started",
+            message: String::new(),
+        }));
+        Ok(Engine {
+            shared,
+            runtime: Some(runtime),
+        })
     }
 
     pub fn events(&self) -> Arc<EventQueue> {
@@ -277,9 +330,19 @@ impl Engine {
     }
 
     /// Streams a feed from a file (bounded memory for multi-million entry lists).
-    pub fn load_feed_file(&self, id: &str, category: FeedCategory, path: &std::path::Path) -> io::Result<FeedSummary> {
+    pub fn load_feed_file(
+        &self,
+        id: &str,
+        category: FeedCategory,
+        path: &std::path::Path,
+    ) -> io::Result<FeedSummary> {
         let file = std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
-        Ok(install_feed(&self.shared.policy, id, category, parse_feed_reader(file)?))
+        Ok(install_feed(
+            &self.shared.policy,
+            id,
+            category,
+            parse_feed_reader(file)?,
+        ))
     }
 
     pub fn remove_feed(&self, id: &str) -> bool {
@@ -299,7 +362,11 @@ impl Engine {
         if let Some(rt) = self.runtime.take() {
             self.shared.close_all_flows("engine stopped");
             rt.shutdown_timeout(Duration::from_secs(2));
-            self.shared.emit(Event::Engine(EngineEvent { ts: now_ms(), state: "stopped", message: String::new() }));
+            self.shared.emit(Event::Engine(EngineEvent {
+                ts: now_ms(),
+                state: "stopped",
+                message: String::new(),
+            }));
             self.shared.events.wake();
         }
     }
@@ -311,7 +378,12 @@ impl Drop for Engine {
     }
 }
 
-fn install_feed(policy: &RwLock<Policy>, id: &str, category: FeedCategory, feed: crate::intel::Feed) -> FeedSummary {
+fn install_feed(
+    policy: &RwLock<Policy>,
+    id: &str,
+    category: FeedCategory,
+    feed: crate::intel::Feed,
+) -> FeedSummary {
     let summary = FeedSummary {
         id: id.to_string(),
         domains: feed.domains.len(),
@@ -323,7 +395,11 @@ fn install_feed(policy: &RwLock<Policy>, id: &str, category: FeedCategory, feed:
     summary
 }
 
-async fn run(shared: Arc<Shared>, tun: Arc<TunDevice>, mut tun_rx: mpsc::Receiver<Vec<u8>>) -> io::Result<()> {
+async fn run(
+    shared: Arc<Shared>,
+    tun: Arc<TunDevice>,
+    mut tun_rx: mpsc::Receiver<Vec<u8>>,
+) -> io::Result<()> {
     let cfg = shared.config();
     let (stack, runner, _udp, listener) = netstack_smoltcp::StackBuilder::default()
         .enable_tcp(true)
@@ -407,13 +483,17 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
     let drop_it = || {
         shared.stats.dropped_packets.fetch_add(1, Relaxed);
     };
-    let Some(ip) = packet::parse_ip(pkt) else { return drop_it() };
+    let Some(ip) = packet::parse_ip(pkt) else {
+        return drop_it();
+    };
     if ip.fragment {
         return drop_it();
     }
     match ip.proto {
         PROTO_TCP => {
-            let Some(t) = packet::parse_tcp(pkt, &ip) else { return drop_it() };
+            let Some(t) = packet::parse_tcp(pkt, &ip) else {
+                return drop_it();
+            };
             if t.is_initial_syn() {
                 gate.on_syn(pkt[..ip.end].to_vec(), t);
             } else if stack_in.try_send(pkt[..ip.end].to_vec()).is_err() {
@@ -421,7 +501,9 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
             }
         }
         PROTO_UDP => {
-            let Some(u) = packet::parse_udp(pkt, &ip) else { return drop_it() };
+            let Some(u) = packet::parse_udp(pkt, &ip) else {
+                return drop_it();
+            };
             udp::on_packet(shared, u, &pkt[u.payload_offset..u.payload_end]);
         }
         _ => drop_it(),
@@ -439,6 +521,9 @@ async fn housekeeping(shared: Arc<Shared>) {
             shared.emit(Event::Stats(shared.snapshot()));
         }
         // Admitted SYNs whose stream never materialised (e.g. the client gave up).
-        shared.tcp_meta.lock().retain(|_, m| m.admitted.elapsed() < Duration::from_secs(60));
+        shared
+            .tcp_meta
+            .lock()
+            .retain(|_, m| m.admitted.elapsed() < Duration::from_secs(60));
     }
 }

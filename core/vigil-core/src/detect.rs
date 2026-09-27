@@ -41,24 +41,39 @@ impl Default for BeaconDetector {
 
 impl BeaconDetector {
     pub fn new() -> Self {
-        Self { series: Mutex::new(HashMap::new()) }
+        Self {
+            series: Mutex::new(HashMap::new()),
+        }
     }
 
-    pub fn observe(&self, cfg: &BeaconConfig, uid: Option<u32>, target: &str, now: Instant) -> Option<BeaconHit> {
+    pub fn observe(
+        &self,
+        cfg: &BeaconConfig,
+        uid: Option<u32>,
+        target: &str,
+        now: Instant,
+    ) -> Option<BeaconHit> {
         if !cfg.enabled {
             return None;
         }
         let mut map = self.series.lock();
         if map.len() >= MAX_SERIES && !map.contains_key(&(uid, target.to_string())) {
             let horizon = Duration::from_secs_f64(cfg.max_interval_s * 2.0);
-            map.retain(|_, s| s.times.back().is_some_and(|t| now.duration_since(*t) < horizon));
+            map.retain(|_, s| {
+                s.times
+                    .back()
+                    .is_some_and(|t| now.duration_since(*t) < horizon)
+            });
             if map.len() >= MAX_SERIES {
                 return None;
             }
         }
         let s = map
             .entry((uid, target.to_string()))
-            .or_insert_with(|| Series { times: VecDeque::with_capacity(WINDOW), last_alert: None });
+            .or_insert_with(|| Series {
+                times: VecDeque::with_capacity(WINDOW),
+                last_alert: None,
+            });
         if let Some(last) = s.times.back() {
             let gap = now.saturating_duration_since(*last);
             if gap < BURST_GAP {
@@ -76,11 +91,17 @@ impl BeaconDetector {
         if s.times.len() < cfg.min_events.max(3) {
             return None;
         }
-        if s.last_alert.is_some_and(|t| now.duration_since(t) < REALERT_AFTER) {
+        if s.last_alert
+            .is_some_and(|t| now.duration_since(t) < REALERT_AFTER)
+        {
             return None;
         }
-        let intervals: Vec<f64> =
-            s.times.iter().zip(s.times.iter().skip(1)).map(|(a, b)| b.duration_since(*a).as_secs_f64()).collect();
+        let intervals: Vec<f64> = s
+            .times
+            .iter()
+            .zip(s.times.iter().skip(1))
+            .map(|(a, b)| b.duration_since(*a).as_secs_f64())
+            .collect();
         let n = intervals.len() as f64;
         let mean = intervals.iter().sum::<f64>() / n;
         if mean < cfg.min_interval_s || mean > cfg.max_interval_s {
@@ -92,7 +113,11 @@ impl BeaconDetector {
             return None;
         }
         s.last_alert = Some(now);
-        Some(BeaconHit { mean_interval_s: mean, jitter, samples: s.times.len() })
+        Some(BeaconHit {
+            mean_interval_s: mean,
+            jitter,
+            samples: s.times.len(),
+        })
     }
 }
 
@@ -104,7 +129,10 @@ pub struct AlertLimiter {
 
 impl AlertLimiter {
     pub fn new(window: Duration) -> Self {
-        Self { seen: Mutex::new(HashMap::new()), window }
+        Self {
+            seen: Mutex::new(HashMap::new()),
+            window,
+        }
     }
 
     pub fn allow(&self, key: &str, now: Instant) -> bool {
@@ -128,7 +156,13 @@ mod tests {
     use super::*;
 
     fn cfg() -> BeaconConfig {
-        BeaconConfig { enabled: true, min_events: 6, max_jitter: 0.15, min_interval_s: 10.0, max_interval_s: 3600.0 }
+        BeaconConfig {
+            enabled: true,
+            min_events: 6,
+            max_jitter: 0.15,
+            min_interval_s: 10.0,
+            max_interval_s: 3600.0,
+        }
     }
 
     #[test]
@@ -143,7 +177,14 @@ mod tests {
                 hits.push((i, h));
             }
             // A parallel connection in the same burst must not skew intervals.
-            assert!(d.observe(&cfg(), Some(10100), "c2.example", t + Duration::from_millis(50)).is_none());
+            assert!(d
+                .observe(
+                    &cfg(),
+                    Some(10100),
+                    "c2.example",
+                    t + Duration::from_millis(50)
+                )
+                .is_none());
         }
         assert_eq!(hits.len(), 1, "{hits:?}");
         let (i, h) = &hits[0];
@@ -158,7 +199,9 @@ mod tests {
         let t0 = Instant::now();
         let offsets = [0u64, 12, 200, 215, 900, 1000, 1400, 2900, 3000];
         for o in offsets {
-            assert!(d.observe(&cfg(), Some(1), "news.example", t0 + Duration::from_secs(o)).is_none());
+            assert!(d
+                .observe(&cfg(), Some(1), "news.example", t0 + Duration::from_secs(o))
+                .is_none());
         }
     }
 
@@ -167,7 +210,14 @@ mod tests {
         let d = BeaconDetector::new();
         let t0 = Instant::now();
         for i in 0..20 {
-            assert!(d.observe(&cfg(), Some(1), "poll.example", t0 + Duration::from_secs(2 * i)).is_none());
+            assert!(d
+                .observe(
+                    &cfg(),
+                    Some(1),
+                    "poll.example",
+                    t0 + Duration::from_secs(2 * i)
+                )
+                .is_none());
         }
     }
 

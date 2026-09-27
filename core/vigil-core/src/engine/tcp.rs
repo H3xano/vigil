@@ -31,7 +31,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 const COPY_BUF: usize = 16 * 1024;
 
 pub(crate) enum MetaKind {
-    Relay { upstream: tokio::net::TcpStream, event: FlowEvent },
+    Relay {
+        upstream: tokio::net::TcpStream,
+        event: Box<FlowEvent>,
+    },
     LocalDns,
 }
 
@@ -48,13 +51,17 @@ pub(crate) struct Gate {
 }
 
 enum GateResult {
-    Admit(FlowMeta),
+    Admit(Box<FlowMeta>),
     Reject,
 }
 
 impl Gate {
     pub fn new(shared: Arc<Shared>, stack_in: mpsc::Sender<Vec<u8>>) -> Self {
-        Self { shared, stack_in, pending: Arc::new(Mutex::new(HashSet::new())) }
+        Self {
+            shared,
+            stack_in,
+            pending: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 
     pub fn on_syn(&self, pkt: Vec<u8>, syn: TcpInfo) {
@@ -68,7 +75,7 @@ impl Gate {
         tokio::spawn(async move {
             match gate(&shared, &syn).await {
                 GateResult::Admit(meta) => {
-                    shared.tcp_meta.lock().insert(key, meta);
+                    shared.tcp_meta.lock().insert(key, *meta);
                     let _ = stack_in.send(pkt).await;
                 }
                 GateResult::Reject => {
@@ -82,7 +89,14 @@ impl Gate {
     }
 }
 
-fn base_event(shared: &Shared, id: u64, uid: Option<u32>, src: SocketAddr, dst: SocketAddr, proto: &'static str) -> FlowEvent {
+fn base_event(
+    shared: &Shared,
+    id: u64,
+    uid: Option<u32>,
+    src: SocketAddr,
+    dst: SocketAddr,
+    proto: &'static str,
+) -> FlowEvent {
     let mut ev = FlowEvent {
         id,
         ts: now_ms(),
@@ -104,17 +118,30 @@ fn base_event(shared: &Shared, id: u64, uid: Option<u32>, src: SocketAddr, dst: 
 pub(crate) fn emit_closed_flow(shared: &Shared, ev: FlowEvent, error: Option<String>) {
     let id = ev.id;
     shared.emit(Event::Flow(ev));
-    shared.emit(Event::FlowEnd(FlowEndEvent { id, ts: now_ms(), error, ..Default::default() }));
+    shared.emit(Event::FlowEnd(FlowEndEvent {
+        id,
+        ts: now_ms(),
+        error,
+        ..Default::default()
+    }));
 }
 
 /// Applies a block decision to an event, raising threat alerts.
-pub(crate) fn mark_blocked(shared: &Shared, ev: &mut FlowEvent, reason: &crate::policy::BlockReason) {
+pub(crate) fn mark_blocked(
+    shared: &Shared,
+    ev: &mut FlowEvent,
+    reason: &crate::policy::BlockReason,
+) {
     ev.verdict = Some(Verdict::Block);
     ev.reason = Some(reason.describe());
     shared.stats.blocked.fetch_add(1, Relaxed);
     if reason.is_threat() {
         let target = ev.domain.clone().unwrap_or_else(|| ev.dst_ip.clone());
-        let kind = if reason.rule.as_deref() == Some(ev.dst_ip.as_str()) { "threat_ip" } else { "threat_domain" };
+        let kind = if reason.rule.as_deref() == Some(ev.dst_ip.as_str()) {
+            "threat_ip"
+        } else {
+            "threat_domain"
+        };
         shared.alert(
             kind,
             Severity::High,
@@ -134,7 +161,11 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
         // DNS over TCP is answered locally; anything else (notably the
         // Private DNS probe on 853) is refused so the OS falls back to UDP.
         return if dst.port() == 53 {
-            GateResult::Admit(FlowMeta { uid, admitted: Instant::now(), kind: MetaKind::LocalDns })
+            GateResult::Admit(Box::new(FlowMeta {
+                uid,
+                admitted: Instant::now(),
+                kind: MetaKind::LocalDns,
+            }))
         } else {
             GateResult::Reject
         };
@@ -156,9 +187,14 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
     }
     let connect = connect_protected(shared, dst);
     match tokio::time::timeout(Duration::from_millis(cfg.tcp_connect_timeout_ms), connect).await {
-        Ok(Ok(upstream)) => {
-            GateResult::Admit(FlowMeta { uid, admitted: Instant::now(), kind: MetaKind::Relay { upstream, event: ev } })
-        }
+        Ok(Ok(upstream)) => GateResult::Admit(Box::new(FlowMeta {
+            uid,
+            admitted: Instant::now(),
+            kind: MetaKind::Relay {
+                upstream,
+                event: Box::new(ev),
+            },
+        })),
         Ok(Err(e)) => {
             ev.verdict = Some(Verdict::Allow);
             emit_closed_flow(shared, ev, Some(format!("connect: {e}")));
@@ -172,8 +208,15 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
     }
 }
 
-pub(crate) async fn connect_protected(shared: &Shared, dst: SocketAddr) -> io::Result<tokio::net::TcpStream> {
-    let sock = if dst.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
+pub(crate) async fn connect_protected(
+    shared: &Shared,
+    dst: SocketAddr,
+) -> io::Result<tokio::net::TcpStream> {
+    let sock = if dst.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
     if !shared.platform.protect(sock.as_raw_fd()) {
         return Err(io::Error::other("could not protect socket"));
     }
@@ -193,7 +236,7 @@ pub(crate) async fn accept_loop(shared: Arc<Shared>, mut listener: netstack_smol
         tokio::spawn(async move {
             match meta.kind {
                 MetaKind::LocalDns => dns::serve_tcp(&s, stream, meta.uid).await,
-                MetaKind::Relay { upstream, event } => relay(&s, stream, upstream, event).await,
+                MetaKind::Relay { upstream, event } => relay(&s, stream, upstream, *event).await,
             }
         });
     }
@@ -228,7 +271,13 @@ async fn sniff<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> (Sniffed, 
     }
 }
 
-async fn copy_counting<R, W>(r: &mut R, w: &mut W, counter: &AtomicU64, last: &AtomicU64, epoch: Instant) -> io::Result<()>
+async fn copy_counting<R, W>(
+    r: &mut R,
+    w: &mut W,
+    counter: &AtomicU64,
+    last: &AtomicU64,
+    epoch: Instant,
+) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -256,8 +305,8 @@ fn apply_sniffed(shared: &Shared, ev: &mut FlowEvent, sniffed: &Sniffed) {
             ev.alpn = ch.alpn.first().cloned();
             ev.tls_version = Some(tls::version_name(ch.max_version()));
             ev.ja4 = Some(ch.ja4('t'));
-            ev.ech = ch.ech;
-            if ch.ech {
+            ev.ech = ch.ech_active();
+            if ch.ech_active() {
                 ev.tags.push("ech");
             }
         }
@@ -277,7 +326,10 @@ fn apply_sniffed(shared: &Shared, ev: &mut FlowEvent, sniffed: &Sniffed) {
 
 /// Policy decision once the destination name is known. Returns the block
 /// reason, if any.
-pub(crate) fn decide_named(shared: &Shared, ev: &mut FlowEvent) -> Option<crate::policy::BlockReason> {
+pub(crate) fn decide_named(
+    shared: &Shared,
+    ev: &mut FlowEvent,
+) -> Option<crate::policy::BlockReason> {
     let authoritative = matches!(ev.domain_source, Some("sni" | "http" | "quic"));
     let policy = shared.policy.read();
     if let (true, Some(domain)) = (authoritative, ev.domain.as_deref()) {
@@ -310,7 +362,10 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
         );
     }
     let cfg = shared.config();
-    if let Some(hit) = shared.beacon.observe(&cfg.beacon, ev.uid, &target, Instant::now()) {
+    if let Some(hit) = shared
+        .beacon
+        .observe(&cfg.beacon, ev.uid, &target, Instant::now())
+    {
         shared.alert(
             "beacon",
             Severity::Medium,
@@ -322,7 +377,12 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
     }
 }
 
-async fn relay(shared: &Arc<Shared>, client: netstack_smoltcp::TcpStream, upstream: tokio::net::TcpStream, mut ev: FlowEvent) {
+async fn relay(
+    shared: &Arc<Shared>,
+    client: netstack_smoltcp::TcpStream,
+    upstream: tokio::net::TcpStream,
+    mut ev: FlowEvent,
+) {
     let _active = GaugeGuard::new(&shared.stats.tcp_active);
     let started = Instant::now();
     let id = ev.id;
@@ -352,7 +412,11 @@ async fn relay(shared: &Arc<Shared>, client: netstack_smoltcp::TcpStream, upstre
             uw.write_all(&buf).await?;
             counters.tx.fetch_add(buf.len() as u64, Relaxed);
         }
-        let r = if eof { Ok(()) } else { copy_counting(&mut cr, &mut uw, &counters.tx, &last, started).await };
+        let r = if eof {
+            Ok(())
+        } else {
+            copy_counting(&mut cr, &mut uw, &counters.tx, &last, started).await
+        };
         let _ = uw.shutdown().await;
         r
     };
