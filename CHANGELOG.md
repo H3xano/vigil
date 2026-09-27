@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- CI runs on GitHub Actions (engine and Android jobs green); the release APK is
+  uploaded as the `vigil-apk` artifact.
+- Handoff documentation: `docs/STATUS.md`, `docs/DEVELOPMENT.md`, `CLAUDE.md`.
+
 ## 0.1.0 (2026-09-27)
 
 First release.
