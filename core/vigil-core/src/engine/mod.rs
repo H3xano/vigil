@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::detect::{AlertLimiter, BeaconDetector};
 use crate::dnscache::DnsCache;
 use crate::event::{now_ms, AlertEvent, EngineEvent, Event, EventQueue, FlowEndEvent, FlowEvent, FlowUpdateEvent, Severity, StatsEvent};
-use crate::intel::parse_feed;
+use crate::intel::{parse_feed, parse_feed_reader};
 use crate::packet::{self, PROTO_TCP, PROTO_UDP};
 use crate::platform::Platform;
 use crate::policy::{FeedCategory, LoadedFeed, Policy};
@@ -273,7 +273,13 @@ impl Engine {
     /// Parses and installs (or replaces) a feed. CPU-heavy for large lists;
     /// call from a background thread.
     pub fn load_feed(&self, id: &str, category: FeedCategory, text: &str) -> FeedSummary {
-        load_feed_into(&self.shared.policy, id, category, text)
+        install_feed(&self.shared.policy, id, category, parse_feed(text))
+    }
+
+    /// Streams a feed from a file (bounded memory for multi-million entry lists).
+    pub fn load_feed_file(&self, id: &str, category: FeedCategory, path: &std::path::Path) -> io::Result<FeedSummary> {
+        let file = std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
+        Ok(install_feed(&self.shared.policy, id, category, parse_feed_reader(file)?))
     }
 
     pub fn remove_feed(&self, id: &str) -> bool {
@@ -305,8 +311,7 @@ impl Drop for Engine {
     }
 }
 
-pub(crate) fn load_feed_into(policy: &RwLock<Policy>, id: &str, category: FeedCategory, text: &str) -> FeedSummary {
-    let feed = parse_feed(text);
+fn install_feed(policy: &RwLock<Policy>, id: &str, category: FeedCategory, feed: crate::intel::Feed) -> FeedSummary {
     let summary = FeedSummary {
         id: id.to_string(),
         domains: feed.domains.len(),

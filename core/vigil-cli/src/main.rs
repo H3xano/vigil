@@ -103,8 +103,7 @@ fn run(args: &[String]) -> io::Result<()> {
         let (Some(id), Some(cat), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "--feed wants ID:CATEGORY:FILE"));
         };
-        let text = std::fs::read_to_string(path)?;
-        let summary = engine.load_feed(id, parse_category(cat)?, &text);
+        let summary = engine.load_feed_file(id, parse_category(cat)?, std::path::Path::new(path))?;
         eprintln!("vigil-cli: feed {}", serde_json::to_string(&summary).unwrap());
     }
     eprintln!("vigil-cli: engine running");
@@ -177,9 +176,8 @@ fn receive_fd(path: &str) -> io::Result<OwnedFd> {
 
 fn parse_feed(args: &[String]) -> io::Result<()> {
     let path = args.first().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, USAGE))?;
-    let text = std::fs::read_to_string(path)?;
     let started = std::time::Instant::now();
-    let feed = vigil_core::intel::parse_feed(&text);
+    let feed = vigil_core::intel::parse_feed_reader(io::BufReader::new(std::fs::File::open(path)?))?;
     println!(
         "{}",
         serde_json::json!({

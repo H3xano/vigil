@@ -8,7 +8,6 @@
 //!   per label.
 //! * [`IpSet`] stores merged, sorted IPv4/IPv6 ranges.
 
-use crate::proto::normalize_host;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Default, Debug, Clone)]
@@ -24,16 +23,11 @@ impl DomainSet {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut v: Vec<String> = names.into_iter().filter_map(|n| normalize_host(n.as_ref())).collect();
-        v.sort_unstable();
-        v.dedup();
-        let mut arena = String::with_capacity(v.iter().map(|s| s.len()).sum());
-        let mut index = Vec::with_capacity(v.len());
-        for s in &v {
-            index.push((arena.len() as u32, s.len() as u32));
-            arena.push_str(s);
+        let mut b = DomainSetBuilder::default();
+        for n in names {
+            b.push(n.as_ref());
         }
-        Self { arena, index }
+        b.build()
     }
 
     pub fn len(&self) -> usize {
@@ -74,6 +68,46 @@ impl DomainSet {
 
     pub fn memory_bytes(&self) -> usize {
         self.arena.capacity() + self.index.capacity() * 8
+    }
+}
+
+/// Builds a [`DomainSet`] without allocating per name: names are normalised
+/// straight into the arena, then only the (offset, len) index is sorted.
+#[derive(Default)]
+pub struct DomainSetBuilder {
+    arena: String,
+    index: Vec<(u32, u32)>,
+}
+
+impl DomainSetBuilder {
+    pub fn push(&mut self, raw: &str) -> bool {
+        let s = raw.trim().trim_end_matches('.');
+        if s.is_empty() || s.len() > 253 || self.arena.len() + s.len() > u32::MAX as usize {
+            return false;
+        }
+        let start = self.arena.len();
+        for c in s.chars() {
+            match c {
+                'A'..='Z' => self.arena.push(c.to_ascii_lowercase()),
+                'a'..='z' | '0'..='9' | '-' | '.' | '_' => self.arena.push(c),
+                _ => {
+                    self.arena.truncate(start);
+                    return false;
+                }
+            }
+        }
+        self.index.push((start as u32, s.len() as u32));
+        true
+    }
+
+    pub fn build(mut self) -> DomainSet {
+        let arena = &self.arena;
+        let get = |&(s, l): &(u32, u32)| &arena[s as usize..(s + l) as usize];
+        self.index.sort_unstable_by(|a, b| get(a).cmp(get(b)));
+        self.index.dedup_by(|a, b| get(a) == get(b));
+        self.index.shrink_to_fit();
+        self.arena.shrink_to_fit();
+        DomainSet { arena: self.arena, index: self.index }
     }
 }
 
@@ -214,61 +248,98 @@ fn is_sink_address(s: &str) -> bool {
 ///
 /// Comments start with `#`, `!` or `;`.
 pub fn parse_feed(text: &str) -> Feed {
-    let mut domains = Vec::new();
-    let mut ranges = Vec::new();
-    let mut rejected = 0usize;
-    for raw in text.lines() {
-        // Cosmetic (element-hiding) rules contain '#' and must be recognised
-        // before comment stripping.
-        if raw.contains("##") || raw.contains("#@#") || raw.contains("#?#") || raw.contains("#$#") {
-            if !raw.trim_start().starts_with('#') {
-                rejected += 1;
-            }
-            continue;
+    parse_feed_lines(text.lines())
+}
+
+/// Streams a feed from a reader line by line, so the file never has to be
+/// held in memory in full. Invalid UTF-8 is replaced, not fatal.
+pub fn parse_feed_reader<R: std::io::BufRead>(mut r: R) -> std::io::Result<Feed> {
+    let mut buf = Vec::with_capacity(256);
+    let mut builder = FeedBuilder::default();
+    loop {
+        buf.clear();
+        if r.read_until(b'\n', &mut buf)? == 0 {
+            break;
         }
-        let line = raw.split(['#', ';']).next().unwrap_or("").trim();
-        if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
-            continue;
-        }
-        if let Some(rule) = line.strip_prefix("||") {
-            let (body, modifiers) = rule.split_once('$').unwrap_or((rule, ""));
-            let modifiers_ok = modifiers.is_empty() || modifiers.split(',').all(|m| m == "important" || m == "all");
-            match body.strip_suffix('^') {
-                Some(d) if modifiers_ok && !d.contains('/') && !d.contains('*') => domains.push(d.to_string()),
-                _ => rejected += 1,
-            }
-            continue;
-        }
-        if line.starts_with("@@") {
-            rejected += 1;
-            continue;
-        }
-        let mut fields = line.split_whitespace();
-        let first = fields.next().unwrap_or_default();
-        let rest: Vec<&str> = fields.collect();
-        if !rest.is_empty() && first.parse::<IpAddr>().is_ok() {
-            // hosts-file entry; sink addresses precede the blocked names.
-            if is_sink_address(first) {
-                domains.extend(
-                    rest.iter().filter(|h| **h != "localhost" && !h.ends_with(".localdomain")).map(|h| h.to_string()),
-                );
-            } else {
-                rejected += 1;
-            }
-            continue;
-        }
-        if let Some(r) = parse_cidr(first) {
-            ranges.push(r);
-            continue;
-        }
-        let name = first.strip_prefix("*.").unwrap_or(first);
-        if name.contains('.') && normalize_host(name).is_some() && !name.contains('*') {
-            domains.push(name.to_string());
-        } else {
-            rejected += 1;
-        }
+        let line = String::from_utf8_lossy(&buf);
+        builder.line(line.trim_end_matches(['\n', '\r']));
     }
-    Feed { domains: DomainSet::from_names(domains), ips: IpSet::from_ranges(ranges), rejected }
+    Ok(builder.finish())
+}
+
+pub fn parse_feed_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Feed {
+    let mut b = FeedBuilder::default();
+    for l in lines {
+        b.line(l);
+    }
+    b.finish()
+}
+
+#[derive(Default)]
+struct FeedBuilder {
+    domains: DomainSetBuilder,
+    ranges: Vec<IpRange>,
+    rejected: usize,
+}
+
+impl FeedBuilder {
+    fn finish(self) -> Feed {
+        Feed { domains: self.domains.build(), ips: IpSet::from_ranges(self.ranges), rejected: self.rejected }
+    }
+
+    fn line(&mut self, raw: &str) {
+        parse_line(raw, &mut self.domains, &mut self.ranges, &mut self.rejected);
+    }
+}
+
+fn parse_line(raw: &str, domains: &mut DomainSetBuilder, ranges: &mut Vec<IpRange>, rejected: &mut usize) {
+    // Cosmetic (element-hiding) rules contain '#' and must be recognised
+    // before comment stripping.
+    if raw.contains("##") || raw.contains("#@#") || raw.contains("#?#") || raw.contains("#$#") {
+        if !raw.trim_start().starts_with('#') {
+            *rejected += 1;
+        }
+        return;
+    }
+    let line = raw.split(['#', ';']).next().unwrap_or("").trim();
+    if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
+        return;
+    }
+    if let Some(rule) = line.strip_prefix("||") {
+        let (body, modifiers) = rule.split_once('$').unwrap_or((rule, ""));
+        let modifiers_ok = modifiers.is_empty() || modifiers.split(',').all(|m| m == "important" || m == "all");
+        match body.strip_suffix('^') {
+            Some(d) if modifiers_ok && !d.contains('/') && !d.contains('*') && domains.push(d) => {}
+            _ => *rejected += 1,
+        }
+        return;
+    }
+    if line.starts_with("@@") {
+        *rejected += 1;
+        return;
+    }
+    let mut fields = line.split_whitespace();
+    let first = fields.next().unwrap_or_default();
+    let mut rest = fields.peekable();
+    if rest.peek().is_some() && first.parse::<IpAddr>().is_ok() {
+        // hosts-file entry; sink addresses precede the blocked names.
+        if is_sink_address(first) {
+            for h in rest.filter(|h| *h != "localhost" && !h.ends_with(".localdomain")) {
+                domains.push(h);
+            }
+        } else {
+            *rejected += 1;
+        }
+        return;
+    }
+    if let Some(r) = parse_cidr(first) {
+        ranges.push(r);
+        return;
+    }
+    let name = first.strip_prefix("*.").unwrap_or(first);
+    if !(name.contains('.') && !name.contains('*') && domains.push(name)) {
+        *rejected += 1;
+    }
 }
 
 /// Whether an address is in a range that must never leave the device or be
@@ -359,5 +430,9 @@ not_a_domain
         assert!(f.ips.contains(v4(203, 0, 113, 7)));
         assert!(f.ips.contains(v6("2001:db8::1")));
         assert_eq!(f.rejected, 6);
+        let streamed = parse_feed_reader(std::io::Cursor::new(text.as_bytes())).unwrap();
+        assert_eq!(streamed.domains.len(), f.domains.len());
+        assert_eq!(streamed.ips.len(), f.ips.len());
+        assert_eq!(streamed.rejected, f.rejected);
     }
 }

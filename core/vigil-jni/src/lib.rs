@@ -216,14 +216,13 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeLoadFee
         let cat = jstr(&mut env, &category)?;
         let path = jstr(&mut env, &path)?;
         let category: FeedCategory = serde_json::from_value(serde_json::Value::String(cat)).unwrap_or_default();
-        let text = match std::fs::read(&path) {
-            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        match e.load_feed_file(&id, category, std::path::Path::new(&path)) {
+            Ok(summary) => serde_json::to_string(&summary).ok(),
             Err(err) => {
                 log::warn!("feed {id}: {err}");
-                return None;
+                None
             }
-        };
-        serde_json::to_string(&e.load_feed(&id, category, &text)).ok()
+        }
     });
     match out {
         Some(j) => new_jstring(&mut env, &j),
@@ -267,8 +266,8 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeInspect
 ) -> jstring {
     let out = guard(None, || {
         let path = jstr(&mut env, &path)?;
-        let bytes = std::fs::read(path).ok()?;
-        let feed = vigil_core::intel::parse_feed(&String::from_utf8_lossy(&bytes));
+        let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        let feed = vigil_core::intel::parse_feed_reader(file).ok()?;
         Some(
             serde_json::json!({
                 "domains": feed.domains.len(),
