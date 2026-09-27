@@ -19,6 +19,7 @@ pub const TYPE_ANY: u16 = 255;
 pub const RCODE_NOERROR: u8 = 0;
 pub const RCODE_SERVFAIL: u8 = 2;
 pub const RCODE_NXDOMAIN: u8 = 3;
+pub const RCODE_REFUSED: u8 = 5;
 
 const HEADER_LEN: usize = 12;
 const MAX_POINTER_JUMPS: usize = 16;
@@ -347,6 +348,41 @@ pub fn servfail_response(query: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Builds a REFUSED answer. The question is echoed when the query has
+/// exactly one; otherwise the answer has an empty question section.
+pub fn refused_response(query: &[u8]) -> Option<Vec<u8>> {
+    let qd = u16::from_be_bytes([*query.get(4)?, *query.get(5)?]);
+    let mut out = response_header(query, RCODE_REFUSED, 0)?;
+    match first_question_span(query).filter(|_| qd == 1) {
+        Some((qend, _)) => out.extend_from_slice(&query[HEADER_LEN..qend]),
+        None => out[4..6].copy_from_slice(&0u16.to_be_bytes()),
+    }
+    Some(out)
+}
+
+/// Whether `resp` answers `query`: same ID, and the same first question
+/// (compared case-insensitively) unless the response carries none, as some
+/// error responses do.
+pub fn answers_query(query: &[u8], resp: &[u8]) -> bool {
+    if query.len() < HEADER_LEN || resp.len() < HEADER_LEN || query[..2] != resp[..2] {
+        return false;
+    }
+    if resp[4..6] == [0, 0] {
+        return true;
+    }
+    match (first_question_span(query), first_question_span(resp)) {
+        (Some((qe, _)), Some((re, _))) => {
+            query[HEADER_LEN..qe].eq_ignore_ascii_case(&resp[HEADER_LEN..re])
+        }
+        _ => false,
+    }
+}
+
+/// Whether the TC (truncated) bit is set.
+pub fn is_truncated(msg: &[u8]) -> bool {
+    msg.len() >= 4 && msg[2] & 0x02 != 0
+}
+
 /// Encodes a standard recursive query. Used by tests and the CLI.
 pub fn build_query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(64);
@@ -457,6 +493,55 @@ mod tests {
         assert_eq!(p.questions[0].name, "c2.bad.example");
         let s = parse(&servfail_response(&q).unwrap()).unwrap();
         assert_eq!(s.rcode, RCODE_SERVFAIL);
+    }
+
+    #[test]
+    fn refused_for_any_question_count() {
+        let q = build_query(7, "a.example", TYPE_A);
+        let r = parse(&refused_response(&q).unwrap()).unwrap();
+        assert_eq!((r.id, r.rcode, r.is_response), (7, RCODE_REFUSED, true));
+        assert_eq!(r.questions.len(), 1);
+        // Two questions, and none: header-only answers.
+        let mut two = q.clone();
+        two[5] = 2;
+        two.extend_from_slice(&q[12..]);
+        assert_eq!(parse(&two).unwrap().questions.len(), 2);
+        let r = parse(&refused_response(&two).unwrap()).unwrap();
+        assert_eq!((r.rcode, r.questions.len()), (RCODE_REFUSED, 0));
+        let mut none = q[..12].to_vec();
+        none[5] = 0;
+        let r = parse(&refused_response(&none).unwrap()).unwrap();
+        assert_eq!((r.rcode, r.questions.len()), (RCODE_REFUSED, 0));
+        assert!(refused_response(&q[..5]).is_none());
+    }
+
+    #[test]
+    fn response_matching() {
+        let q = build_query(7, "a.example", TYPE_A);
+        let mut resp = sinkhole_response(&q, SinkholeMode::NullIp, 60).unwrap();
+        assert!(answers_query(&q, &resp));
+        resp[12 + 1] = b'A'; // 0x20 case randomisation echoed back
+        assert!(answers_query(&q, &resp));
+        let other = sinkhole_response(
+            &build_query(7, "b.example", TYPE_A),
+            SinkholeMode::NullIp,
+            60,
+        )
+        .unwrap();
+        assert!(!answers_query(&q, &other));
+        let other_id = sinkhole_response(
+            &build_query(8, "a.example", TYPE_A),
+            SinkholeMode::NullIp,
+            60,
+        )
+        .unwrap();
+        assert!(!answers_query(&q, &other_id));
+        let mut no_question = refused_response(&q).unwrap()[..12].to_vec();
+        no_question[5] = 0;
+        assert!(answers_query(&q, &no_question));
+        assert!(!is_truncated(&resp));
+        resp[2] |= 0x02;
+        assert!(is_truncated(&resp));
     }
 
     #[test]
