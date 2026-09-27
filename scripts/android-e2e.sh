@@ -54,6 +54,10 @@ adb exec-in run-as $pkg sh -c 'cat > shared_prefs/vigil.xml' < /tmp/vigil-prefs.
 # WorkManager may have restarted the process (feed download job) before the
 # edit landed; restart it so the edited settings are loaded.
 adb shell am force-stop $pkg
+# Re-grant consent: an appop set right after install can be reset while the
+# package is still being set up.
+adb shell appops set $pkg ACTIVATE_VPN allow
+adb shell appops get $pkg ACTIVATE_VPN | grep -q "ACTIVATE_VPN: allow" || { echo "could not grant VPN consent"; exit 1; }
 # Start the inspector exactly as the UI does (consent already granted).
 adb shell am start-foreground-service -n $pkg/dev.vigil.inspector.vpn.VigilVpnService -a dev.vigil.inspector.START >/dev/null
 for i in $(seq 30); do adb shell ip addr show tun0 2>/dev/null | grep -q 10.111.222.1 && break; sleep 1; done

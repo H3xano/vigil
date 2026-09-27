@@ -1,7 +1,7 @@
 # Project status and handoff
 
-Last updated: 2026-09-27, version 0.1.0 plus the post-release review fixes
-(unreleased, see "Review fixes" below).
+Last updated: 2026-09-28, version 0.2.0 (review fixes, lifecycle testing,
+release signing, F-Droid preparation).
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -64,10 +64,14 @@ longer crashes the app (checked by hand on the emulator).
   theme; TalkBack labels; onboarding, glossary help, feed progress, empty
   states; accurate privacy wording about feed downloads.
 
-**Not verified yet:** the engine-error restart and the overlap-free restart
-paths have only unit tests and code review, since nothing on the emulator
-triggers a TUN read error. Include them in the physical-phone testing
-(backlog 1), e.g. by toggling airplane mode repeatedly under load.
+**Lifecycle verified on the emulator (2026-09-28):**
+`scripts/android-lifecycle.sh` passes 21/21. It covers Wi-Fi/cellular
+switches, airplane mode toggled under load, Doze, an engine error (injected
+through a debug-only intent) that restarts the session, giving up after the
+restart budget without black-holing the device, process death (START_STICKY),
+and Private DNS automatic and strict. Always-on VPN starts 2 s after a reboot
+with the service left `exported="false"`. A real TUN read error has still
+never been observed, so the injected error stands in for it.
 
 ## Feature inventory
 
@@ -96,17 +100,21 @@ history.
 ## Backlog (priority order)
 
 1. **Test on physical phones systematically.** The owner's phone works
-   informally (record its model and Android version here). Still needed: at
-   least one Pixel and one Samsung
-   (One UI is known to be aggressive with background services). Check
-   always-on VPN at boot, Doze and battery drain over a day, Private DNS
-   "automatic" behaviour, IPv6-only carriers (464XLAT), and network
-   switches between Wi-Fi and cellular.
-2. **Release signing and distribution.** Create a release keystore and
-   `android/keystore.properties` (never commit either). Decide between
-   F-Droid and Play. Play needs a VpnService declaration and justification
-   for `QUERY_ALL_PACKAGES` (network monitoring qualifies, but it has to be
-   declared).
+   informally (record its model and Android version here). The lifecycle
+   behaviour passes on the emulator (see above); `scripts/android-lifecycle.sh`
+   also runs on a rooted/userdebug phone. Still needed on real hardware: at
+   least one Pixel and one Samsung (One UI is aggressive with background
+   services), battery drain over a day, and an IPv6-only carrier (464XLAT /
+   NAT64).
+2. **F-Droid submission.** Decided: F-Droid first, with reproducible builds so
+   F-Droid publishes the developer-signed APK. Done: release keystore (kept
+   outside the repo by the owner; certificate SHA-256
+   `dc7a34da…8db3bc`, full value in the recipe), fastlane metadata, the recipe
+   `packaging/fdroid/dev.vigil.inspector.yml`, pinned Rust
+   (`core/rust-toolchain.toml`), and a two-build reproducibility check on one
+   machine. **Blocker:** the repository is private; F-Droid needs public
+   source. Then submit the recipe to fdroiddata. Play remains an option later
+   (needs VpnService and `QUERY_ALL_PACKAGES` declarations).
 3. **ICMP relay.** `ping` through vigil currently fails. Android apps can
    open unprivileged ICMP datagram sockets (`SOCK_DGRAM`/`IPPROTO_ICMP`), so
    echo requests could be relayed in `engine/mod.rs` `dispatch()` (the
@@ -178,6 +186,8 @@ history.
 | App excluded from its own VPN | Covers feed download and export sockets too; `protect()` is still applied to relay sockets. |
 | Cleartext and user CAs allowed | Enterprise SIEM collectors on private CAs or plain HTTP on the LAN. Documented in `network_security_config.xml`. |
 | Apache-2.0 | Friendly to enterprise and SIEM users. |
+| F-Droid first, reproducible builds | Matches the open-source analyst audience, avoids Play's VpnService/QUERY_ALL_PACKAGES review, and reproducibility lets users keep one signing key across GitHub and F-Droid. |
+| Debug-only `INJECT_ENGINE_ERROR` intent | Lets the lifecycle script exercise the real restart path; guarded by `BuildConfig.DEBUG` and the service is not exported. |
 | Vendor netstack-smoltcp with a small patch | Upstream has no way to send a RST, so resets became FINs and truncated responses looked complete. Patch marked `vigil patch`. |
 | Global resource caps, evict longest-idle UDP flow | One noisy app (P2P, WebRTC) must not exhaust memory or fds and take down every app's connectivity. |
 | Threat alerts keyed by feed entry + UID | DGA/tunnelling produced one alert per random subdomain. |

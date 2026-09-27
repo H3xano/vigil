@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-09-28): GitHub pre-release, release-signed APK
 
 - Review fixes across engine, service and UI (details in `docs/STATUS.md`,
   "Review fixes"): resource caps, alert-storm protection, NAT64 coverage,
@@ -12,6 +12,11 @@
 - CI runs on GitHub Actions (engine and Android jobs green); the release APK is
   uploaded as the `vigil-apk` artifact.
 - Handoff documentation: `docs/STATUS.md`, `docs/DEVELOPMENT.md`, `CLAUDE.md`.
+- Release signing with a dedicated key (no longer debug-signed); reproducible
+  release builds; pinned Rust toolchain; F-Droid metadata and recipe draft.
+- `scripts/android-lifecycle.sh`: network switches, airplane mode, Doze,
+  engine-error restart and restart budget, process death, Private DNS,
+  always-on VPN at boot.
 
 ## 0.1.0 (2026-09-27): released as a GitHub pre-release (debug-signed APK)
 

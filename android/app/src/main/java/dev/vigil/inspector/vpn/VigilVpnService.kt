@@ -17,6 +17,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import dev.vigil.inspector.BuildConfig
 import dev.vigil.inspector.R
 import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.data.Settings
@@ -98,6 +99,9 @@ class VigilVpnService : android.net.VpnService() {
         data class EngineError(val sessionId: Long, val message: String) : Command
         data class Crash(val message: String) : Command
         data object Destroy : Command
+
+        /** Debug builds only: simulates an engine error in the current session. */
+        data object InjectEngineError : Command
     }
 
     private class Session(
@@ -124,6 +128,11 @@ class VigilVpnService : android.net.VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             commands.trySend(Command.Stop(startId))
+            return START_NOT_STICKY
+        }
+        if (BuildConfig.DEBUG && intent?.action == ACTION_INJECT_ENGINE_ERROR) {
+            // Test hook for scripts/android-lifecycle.sh; not compiled into release logic.
+            commands.trySend(Command.InjectEngineError)
             return START_NOT_STICKY
         }
         // ACTION_START, or null / SERVICE_INTERFACE when started as always-on VPN.
@@ -207,6 +216,7 @@ class VigilVpnService : android.net.VpnService() {
                     if (current?.id == cmd.sessionId) restart("engine error: ${cmd.message}")
                 }
             }
+            Command.InjectEngineError -> current?.let { handle(Command.EngineError(it.id, "injected by test")) }
             is Command.Crash -> giveUp("vigil hit an internal error (${cmd.message}). Inspection was stopped; open vigil to start it again.")
             Command.Destroy -> {
                 val s = current
@@ -587,6 +597,7 @@ class VigilVpnService : android.net.VpnService() {
         private const val MAX_DRAIN_BATCHES = 200
         const val ACTION_START = "dev.vigil.inspector.START"
         const val ACTION_STOP = "dev.vigil.inspector.STOP"
+        const val ACTION_INJECT_ENGINE_ERROR = "dev.vigil.inspector.INJECT_ENGINE_ERROR"
 
         /** Caller must have obtained VPN consent via [android.net.VpnService.prepare]. */
         fun start(context: Context) {

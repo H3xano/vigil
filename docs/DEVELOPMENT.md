@@ -47,6 +47,7 @@ scripts/e2e-netns.sh          # 49 checks, needs internet, no root
 scripts/jni-smoke.sh          # 26 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
+scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
 scripts/bench-throughput.sh                            # vs. real internet link
 ```
@@ -120,6 +121,17 @@ apksigcopier compare --unsigned vigil-X.Y.Z.apk app-release-unsigned.apk
 would make the second build trivially identical.
 
 ## Gotchas already paid for
+
+- **The emulator gets OOM-killed** (about 4 GB RSS) if Gradle/cargo builds run
+  alongside it on a 14 GB host. Build first, or stop the emulator
+  (`adb emu kill`) before parallel builds.
+- **Grant VPN consent after the first app launch.** An `appops set …
+  ACTIVATE_VPN allow` issued right after `adb install` can be reset while the
+  package is still being set up; the scripts re-grant and verify it.
+- **Restarts may bring the tunnel up as `tun1`** (the new TUN is established
+  before the old one closes). Look for 10.111.222.1 on any interface.
+- **Rust is pinned** in `core/rust-toolchain.toml` (keep it in sync with the
+  F-Droid recipe); rustup installs it on first use.
 
 - **toybox `nc` quits on stdin EOF,** even without vigil. Feed it
   `(cat req; sleep 3) | nc …` or the reply is lost.
