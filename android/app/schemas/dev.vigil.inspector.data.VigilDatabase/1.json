@@ -1,0 +1,572 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "6c6656aa86c4d12de9303a4955e29812",
+    "entities": [
+      {
+        "tableName": "flows",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `session` INTEGER NOT NULL, `engineId` INTEGER NOT NULL, `ts` INTEGER NOT NULL, `endTs` INTEGER, `proto` TEXT NOT NULL, `uid` INTEGER, `pkg` TEXT NOT NULL, `src` TEXT NOT NULL, `dstIp` TEXT NOT NULL, `dstPort` INTEGER NOT NULL, `domain` TEXT, `domainSource` TEXT, `appProto` TEXT, `alpn` TEXT, `tlsVersion` TEXT, `ja4` TEXT, `ech` INTEGER NOT NULL, `httpMethod` TEXT, `verdict` TEXT NOT NULL, `reason` TEXT, `tags` TEXT NOT NULL, `tx` INTEGER NOT NULL, `rx` INTEGER NOT NULL, `durationMs` INTEGER, `error` TEXT, `background` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "session",
+            "columnName": "session",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "engineId",
+            "columnName": "engineId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ts",
+            "columnName": "ts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endTs",
+            "columnName": "endTs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "proto",
+            "columnName": "proto",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uid",
+            "columnName": "uid",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "pkg",
+            "columnName": "pkg",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "src",
+            "columnName": "src",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dstIp",
+            "columnName": "dstIp",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dstPort",
+            "columnName": "dstPort",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "domain",
+            "columnName": "domain",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "domainSource",
+            "columnName": "domainSource",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "appProto",
+            "columnName": "appProto",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "alpn",
+            "columnName": "alpn",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "tlsVersion",
+            "columnName": "tlsVersion",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "ja4",
+            "columnName": "ja4",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "ech",
+            "columnName": "ech",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "httpMethod",
+            "columnName": "httpMethod",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "verdict",
+            "columnName": "verdict",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "tags",
+            "columnName": "tags",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tx",
+            "columnName": "tx",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rx",
+            "columnName": "rx",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "background",
+            "columnName": "background",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_flows_session_engineId",
+            "unique": true,
+            "columnNames": [
+              "session",
+              "engineId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_flows_session_engineId` ON `${TABLE_NAME}` (`session`, `engineId`)"
+          },
+          {
+            "name": "index_flows_ts",
+            "unique": false,
+            "columnNames": [
+              "ts"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_flows_ts` ON `${TABLE_NAME}` (`ts`)"
+          },
+          {
+            "name": "index_flows_pkg",
+            "unique": false,
+            "columnNames": [
+              "pkg"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_flows_pkg` ON `${TABLE_NAME}` (`pkg`)"
+          },
+          {
+            "name": "index_flows_domain",
+            "unique": false,
+            "columnNames": [
+              "domain"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_flows_domain` ON `${TABLE_NAME}` (`domain`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "dns_queries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `ts` INTEGER NOT NULL, `uid` INTEGER, `pkg` TEXT NOT NULL, `qname` TEXT NOT NULL, `qtype` TEXT NOT NULL, `rcode` TEXT NOT NULL, `answers` TEXT NOT NULL, `verdict` TEXT NOT NULL, `reason` TEXT, `latencyMs` INTEGER NOT NULL, `server` TEXT NOT NULL, `transport` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ts",
+            "columnName": "ts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uid",
+            "columnName": "uid",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "pkg",
+            "columnName": "pkg",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "qname",
+            "columnName": "qname",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "qtype",
+            "columnName": "qtype",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rcode",
+            "columnName": "rcode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "answers",
+            "columnName": "answers",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "verdict",
+            "columnName": "verdict",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "latencyMs",
+            "columnName": "latencyMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "server",
+            "columnName": "server",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transport",
+            "columnName": "transport",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_dns_queries_ts",
+            "unique": false,
+            "columnNames": [
+              "ts"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_dns_queries_ts` ON `${TABLE_NAME}` (`ts`)"
+          },
+          {
+            "name": "index_dns_queries_pkg",
+            "unique": false,
+            "columnNames": [
+              "pkg"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_dns_queries_pkg` ON `${TABLE_NAME}` (`pkg`)"
+          },
+          {
+            "name": "index_dns_queries_qname",
+            "unique": false,
+            "columnNames": [
+              "qname"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_dns_queries_qname` ON `${TABLE_NAME}` (`qname`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "alerts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `ts` INTEGER NOT NULL, `kind` TEXT NOT NULL, `severity` TEXT NOT NULL, `uid` INTEGER, `pkg` TEXT NOT NULL, `target` TEXT NOT NULL, `message` TEXT NOT NULL, `detail` TEXT NOT NULL, `seen` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ts",
+            "columnName": "ts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "severity",
+            "columnName": "severity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uid",
+            "columnName": "uid",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "pkg",
+            "columnName": "pkg",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "target",
+            "columnName": "target",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "detail",
+            "columnName": "detail",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "seen",
+            "columnName": "seen",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_alerts_ts",
+            "unique": false,
+            "columnNames": [
+              "ts"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_alerts_ts` ON `${TABLE_NAME}` (`ts`)"
+          },
+          {
+            "name": "index_alerts_pkg",
+            "unique": false,
+            "columnNames": [
+              "pkg"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_alerts_pkg` ON `${TABLE_NAME}` (`pkg`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "destinations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`pkg` TEXT NOT NULL, `destination` TEXT NOT NULL, `firstSeen` INTEGER NOT NULL, `lastSeen` INTEGER NOT NULL, `flows` INTEGER NOT NULL, PRIMARY KEY(`pkg`, `destination`))",
+        "fields": [
+          {
+            "fieldPath": "pkg",
+            "columnName": "pkg",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "destination",
+            "columnName": "destination",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstSeen",
+            "columnName": "firstSeen",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeen",
+            "columnName": "lastSeen",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flows",
+            "columnName": "flows",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "pkg",
+            "destination"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "feeds",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, `category` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `builtin` INTEGER NOT NULL, `description` TEXT NOT NULL, `authHeader` TEXT, `lastUpdated` INTEGER, `domains` INTEGER NOT NULL, `ipRanges` INTEGER NOT NULL, `lastError` TEXT, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "url",
+            "columnName": "url",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "builtin",
+            "columnName": "builtin",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authHeader",
+            "columnName": "authHeader",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastUpdated",
+            "columnName": "lastUpdated",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "domains",
+            "columnName": "domains",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ipRanges",
+            "columnName": "ipRanges",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "lastError",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '6c6656aa86c4d12de9303a4955e29812')"
+    ]
+  }
+}

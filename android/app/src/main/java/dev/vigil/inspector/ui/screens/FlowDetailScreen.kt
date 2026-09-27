@@ -1,0 +1,112 @@
+package dev.vigil.inspector.ui.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.components.AppIcon
+import dev.vigil.inspector.ui.components.Field
+import dev.vigil.inspector.ui.components.SectionTitle
+import dev.vigil.inspector.ui.formatBytes
+import dev.vigil.inspector.ui.formatDateTime
+import dev.vigil.inspector.ui.formatDuration
+import dev.vigil.inspector.ui.theme.VigilColors
+
+@Composable
+fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
+    val flow by remember(id) { vm.flow(id) }.collectAsState(initial = null)
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val clipboard = LocalClipboardManager.current
+    val f = flow
+    Column(Modifier.fillMaxSize()) {
+        VigilTopBar("Connection", nav)
+        if (f == null) return@Column
+        val label = vm.appLabel(f.pkg)
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                AppIcon(f.pkg, label, 44.dp)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(f.domain ?: f.dstIp, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
+                        color = if (f.isBlocked) VigilColors.Block else MaterialTheme.colorScheme.onSurface)
+                    Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            SectionTitle("Verdict")
+            Field("Verdict", if (f.isBlocked) "Blocked" else "Allowed")
+            Field("Reason", f.reason)
+            Field("Error", f.error)
+            SectionTitle("Destination")
+            Field("Domain", f.domain)
+            Field("Name source", when (f.domainSource) {
+                "sni" -> "TLS ClientHello (SNI)"
+                "quic" -> "QUIC Initial (SNI)"
+                "http" -> "HTTP Host header"
+                "dns" -> "Earlier DNS answer (hint)"
+                else -> null
+            })
+            Field("Address", "${f.dstIp}:${f.dstPort}", mono = true)
+            Field("Transport", f.proto.uppercase())
+            Field("Protocol", f.appProto?.uppercase())
+            SectionTitle("Handshake")
+            Field("TLS version", f.tlsVersion)
+            Field("ALPN", f.alpn)
+            Field("JA4", f.ja4, mono = true)
+            Field("ECH", if (f.ech) "Offered — the real destination name is encrypted" else null)
+            Field("HTTP method", f.httpMethod)
+            SectionTitle("Traffic")
+            Field("Started", formatDateTime(f.ts))
+            Field("Duration", f.durationMs?.let(::formatDuration) ?: if (f.isActive) "active" else null)
+            Field("Received", formatBytes(f.rx))
+            Field("Sent", formatBytes(f.tx))
+            Field("App state", when (f.background) { true -> "Background"; false -> "Foreground"; null -> null })
+            Field("Source", f.src, mono = true)
+            Field("UID", f.uid?.toString())
+            Field("Tags", f.tags.takeIf { it.isNotEmpty() })
+
+            SectionTitle("Actions")
+            val domain = f.domain
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (domain != null) {
+                    if (domain in settings.denyDomains) {
+                        OutlinedButton(onClick = { vm.removeRule(domain) }, Modifier.fillMaxWidth()) { Text("Remove block rule for $domain") }
+                    } else {
+                        Button(onClick = { vm.denyDomain(domain) }, Modifier.fillMaxWidth()) { Text("Block $domain") }
+                    }
+                    if (f.isBlocked && domain !in settings.allowDomains) {
+                        OutlinedButton(onClick = { vm.allowDomain(domain) }, Modifier.fillMaxWidth()) { Text("Always allow $domain") }
+                    }
+                }
+                OutlinedButton(onClick = { nav.navigate("app/${f.pkg}") }, Modifier.fillMaxWidth()) { Text("Open $label") }
+                OutlinedButton(onClick = {
+                    clipboard.setText(AnnotatedString(listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")))
+                }, Modifier.fillMaxWidth()) { Text("Copy indicators") }
+            }
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+}

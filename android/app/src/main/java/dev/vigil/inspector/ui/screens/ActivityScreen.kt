@@ -1,0 +1,197 @@
+package dev.vigil.inspector.ui.screens
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import dev.vigil.inspector.data.DnsEntity
+import dev.vigil.inspector.data.FlowEntity
+import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.components.AppIcon
+import dev.vigil.inspector.ui.components.BlockedTag
+import dev.vigil.inspector.ui.components.EmptyState
+import dev.vigil.inspector.ui.components.Tag
+import dev.vigil.inspector.ui.formatBytes
+import dev.vigil.inspector.ui.formatTime
+import dev.vigil.inspector.ui.theme.VigilColors
+
+@Composable
+fun ActivityScreen(vm: MainViewModel, nav: NavController) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize()) {
+        VigilTopBar("Activity")
+        TabRow(selectedTabIndex = tab) {
+            Tab(tab == 0, onClick = { tab = 0 }, text = { Text("Connections") })
+            Tab(tab == 1, onClick = { tab = 1 }, text = { Text("DNS") })
+        }
+        if (tab == 0) FlowList(vm, nav) else DnsList(vm)
+    }
+}
+
+@Composable
+private fun SearchBar(query: String, onQuery: (String) -> Unit, blockedOnly: Boolean, onBlockedOnly: (Boolean) -> Unit, hint: String) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQuery,
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            placeholder = { Text(hint) },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+        )
+        Spacer(Modifier.width(8.dp))
+        FilterChip(selected = blockedOnly, onClick = { onBlockedOnly(!blockedOnly) }, label = { Text("Blocked") })
+    }
+}
+
+@Composable
+private fun FlowList(vm: MainViewModel, nav: NavController) {
+    val flows by vm.flows.collectAsStateWithLifecycle()
+    val query by vm.flowQuery.collectAsStateWithLifecycle()
+    val blockedOnly by vm.flowBlockedOnly.collectAsStateWithLifecycle()
+    SearchBar(query, { vm.flowQuery.value = it }, blockedOnly, { vm.flowBlockedOnly.value = it }, "Domain, IP or app")
+    if (flows.isEmpty()) {
+        EmptyState("No connections", if (query.isNotEmpty() || blockedOnly) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
+        return
+    }
+    LazyColumn {
+        items(flows, key = { it.id }) { f ->
+            FlowRow(f, vm.appLabel(f.pkg)) { nav.navigate("flow/${f.id}") }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+    }
+}
+
+@Composable
+fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        AppIcon(f.pkg, appLabel, 32.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (f.isActive) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(VigilColors.Allow))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    f.domain ?: "${f.dstIp}:${f.dstPort}",
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (f.isBlocked) VigilColors.Block else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Text(
+                "$appLabel · ${formatTime(f.ts)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 3.dp)) {
+                if (f.isBlocked) BlockedTag()
+                Tag((f.appProto ?: f.proto).uppercase())
+                if (f.dstPort != 443 && f.dstPort != 80) Tag(":${f.dstPort}")
+                if (f.background == true) Tag("background", VigilColors.Low, filled = true)
+                f.tagList.forEach { t ->
+                    when (t) {
+                        "encrypted_dns" -> Tag("DoH/DoT", VigilColors.Medium, filled = true)
+                        "plaintext_http" -> Tag("cleartext", VigilColors.Low, filled = true)
+                        "ech" -> Tag("ECH", VigilColors.Info, filled = true)
+                    }
+                }
+            }
+        }
+        if (!f.isBlocked) {
+            Column(horizontalAlignment = Alignment.End) {
+                Text("↓ ${formatBytes(f.rx)}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                Text("↑ ${formatBytes(f.tx)}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DnsList(vm: MainViewModel) {
+    val rows by vm.dns.collectAsStateWithLifecycle()
+    val query by vm.dnsQuery.collectAsStateWithLifecycle()
+    val blockedOnly by vm.dnsBlockedOnly.collectAsStateWithLifecycle()
+    SearchBar(query, { vm.dnsQuery.value = it }, blockedOnly, { vm.dnsBlockedOnly.value = it }, "Domain or app")
+    if (rows.isEmpty()) {
+        EmptyState("No lookups", if (query.isNotEmpty() || blockedOnly) "Nothing matches the current filter." else "DNS lookups appear here while inspection is running.")
+        return
+    }
+    LazyColumn {
+        items(rows, key = { it.id }) { d ->
+            DnsRow(d, vm.appLabel(d.pkg))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+    }
+}
+
+@Composable
+fun DnsRow(d: DnsEntity, appLabel: String) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        AppIcon(d.pkg, appLabel, 32.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                d.qname,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (d.isBlocked) VigilColors.Block else MaterialTheme.colorScheme.onSurface,
+            )
+            Text("$appLabel · ${formatTime(d.ts)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            if (d.answers.isNotEmpty()) {
+                Text(d.answers, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (d.isBlocked && d.reason != null) {
+                Text(d.reason, style = MaterialTheme.typography.bodySmall, color = VigilColors.Block, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (d.isBlocked) BlockedTag()
+                Tag(d.qtype)
+            }
+            if (d.server != "virtual") Text("→ ${d.server}", style = MaterialTheme.typography.labelSmall, color = VigilColors.Medium)
+            else if (!d.isBlocked) Text("${d.latencyMs} ms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}

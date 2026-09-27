@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Almond eye with iris ring, inside the 66dp safe zone. -->
+    <path
+        android:fillColor="#3DD9C1"
+        android:fillType="evenOdd"
+        android:pathData="M27,54C36,40 72,40 81,54C72,68 36,68 27,54ZM34.5,54C42,63.5 66,63.5 73.5,54C66,44.5 42,44.5 34.5,54Z" />
+    <path
+        android:fillColor="#3DD9C1"
+        android:fillType="evenOdd"
+        android:pathData="M44,54a10,10 0,1 0,20 0a10,10 0,1 0,-20 0ZM49.5,54a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0Z" />
+    <path
+        android:fillColor="#E6EDF3"
+        android:pathData="M51.8,54a2.2,2.2 0,1 0,4.4 0a2.2,2.2 0,1 0,-4.4 0Z" />
+</vector>

@@ -1,0 +1,81 @@
+package dev.vigil.inspector.data
+
+import android.content.Context
+import dev.vigil.inspector.engine.EngineJson
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.serialization.Serializable
+import java.util.UUID
+
+@Serializable
+data class ExportSettings(
+    val enabled: Boolean = false,
+    /** "syslog" or "http". */
+    val mode: String = "syslog",
+    val host: String = "",
+    val port: Int = 6514,
+    /** Syslog transport: "udp", "tcp" or "tls". */
+    val transport: String = "tls",
+    val url: String = "",
+    /** HTTP body format: "ndjson", "splunk_hec" or "elastic_bulk". */
+    val httpFormat: String = "ndjson",
+    val authHeader: String = "",
+    /** Android KeyChain alias of a client certificate for mutual TLS. */
+    val clientCertAlias: String? = null,
+    /** "alerts", "alerts_dns" or "all". */
+    val level: String = "alerts",
+)
+
+@Serializable
+data class Settings(
+    val sinkhole: String = "null_ip",
+    val blockEncryptedDns: Boolean = false,
+    /** Keep private/LAN destinations out of the tunnel (casting, printers...). */
+    val excludeLan: Boolean = true,
+    /** "network" (resolvers of the underlying network) or "custom". */
+    val upstreamMode: String = "network",
+    val customUpstreams: List<String> = listOf("1.1.1.1", "9.9.9.9"),
+    val blockedPackages: Set<String> = emptySet(),
+    val allowDomains: Set<String> = emptySet(),
+    val denyDomains: Set<String> = emptySet(),
+    val beaconEnabled: Boolean = true,
+    /** "low", "normal" or "high" sensitivity. */
+    val beaconSensitivity: String = "normal",
+    val noveltyAlerts: Boolean = false,
+    val notifyAlerts: Boolean = true,
+    val retentionDays: Int = 7,
+    val export: ExportSettings = ExportSettings(),
+    val deviceId: String = "",
+    val onboarded: Boolean = false,
+)
+
+/**
+ * Settings persisted as one JSON document, so updates are atomic and the
+ * whole state is observable as a single [StateFlow].
+ */
+class SettingsStore(context: Context) {
+    private val prefs = context.getSharedPreferences("vigil", Context.MODE_PRIVATE)
+    private val state = MutableStateFlow(load())
+    val flow: StateFlow<Settings> = state.asStateFlow()
+    val value: Settings get() = state.value
+
+    private fun load(): Settings {
+        val raw = prefs.getString(KEY, null)
+        val s = raw?.let { runCatching { EngineJson.json.decodeFromString(Settings.serializer(), it) }.getOrNull() } ?: Settings()
+        return if (s.deviceId.isEmpty()) s.copy(deviceId = UUID.randomUUID().toString()).also { save(it) } else s
+    }
+
+    private fun save(s: Settings) {
+        prefs.edit().putString(KEY, EngineJson.json.encodeToString(Settings.serializer(), s)).apply()
+    }
+
+    fun update(transform: (Settings) -> Settings) {
+        state.update { old -> transform(old).also { if (it != old) save(it) } }
+    }
+
+    private companion object {
+        const val KEY = "settings_v1"
+    }
+}
