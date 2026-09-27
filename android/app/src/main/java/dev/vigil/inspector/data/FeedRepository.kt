@@ -11,18 +11,27 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.engine.EngineJson
 import dev.vigil.inspector.engine.FeedSummary
 import dev.vigil.inspector.engine.VigilNative
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 
 class FeedRepository(private val context: Context, private val dao: FeedDao) {
     private val dir = File(context.filesDir, "feeds").apply { mkdirs() }
@@ -33,9 +42,18 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
 
     suspend fun seedBuiltins() = dao.insertIfAbsent(FeedCatalog.builtin)
 
+    /**
+     * Disabling deletes the downloaded copy (the service unloads the feed from
+     * the engine because it is no longer enabled); enabling downloads it.
+     */
     suspend fun setEnabled(id: String, enabled: Boolean) {
         dao.setEnabled(id, enabled)
-        if (enabled && !fileFor(id).exists()) scheduleRefreshNow()
+        if (enabled) {
+            if (!fileFor(id).exists()) scheduleRefreshNow(force = false)
+        } else {
+            fileFor(id).delete()
+            dao.clearDownload(id)
+        }
     }
 
     suspend fun addCustom(name: String, url: String, category: String, authHeader: String?): String {
@@ -47,7 +65,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                 description = "Custom feed", authHeader = authHeader?.takeIf { it.isNotBlank() },
             ),
         )
-        scheduleRefreshNow()
+        scheduleRefreshNow(force = false)
         return id
     }
 
@@ -57,46 +75,81 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
     }
 
     /** Downloads one feed; the previous copy is kept if anything fails. */
-    suspend fun refresh(feed: FeedEntity): Result<FeedSummary> = withContext(Dispatchers.IO) {
-        val tmp = File(dir, "${feed.id}.tmp")
-        val result = runCatching {
+    suspend fun refresh(feed: FeedEntity): Result<FeedSummary> = refreshLock.withLock { refreshLocked(feed) }
+
+    private suspend fun refreshLocked(feed: FeedEntity): Result<FeedSummary> = withContext(Dispatchers.IO) {
+        // Unique name: a crashed or cancelled run can never collide with this one.
+        val tmp = File.createTempFile("${feed.id}-", ".tmp", dir)
+        val target = fileFor(feed.id)
+        val result = try {
             download(feed, tmp)
             val summary = VigilNative.nativeInspectFeedFile(tmp.absolutePath)
                 ?.let { EngineJson.json.decodeFromString(FeedSummary.serializer(), it) }
                 ?: throw IOException("unreadable feed")
-            if (summary.domains == 0 && summary.ipRanges == 0) throw IOException("feed contained no usable entries")
-            if (!tmp.renameTo(fileFor(feed.id))) throw IOException("could not store feed")
-            summary
+            val previous = if (feed.lastUpdated != null && target.exists()) feed.domains + feed.ipRanges else null
+            FeedValidation.check(summary, previous)?.let { throw IOException(it) }
+            if (!tmp.renameTo(target)) throw IOException("could not store feed")
+            Result.success(summary)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Result.failure(e)
+        } catch (e: RuntimeException) {
+            Result.failure(e)
+        } finally {
+            tmp.delete()
         }
-        tmp.delete()
-        val current = dao.get(feed.id) ?: feed
+        ensureActive() // a cancelled download fails with a socket error; don't record that as the feed's error
         result.onSuccess { s ->
-            dao.upsert(current.copy(lastUpdated = System.currentTimeMillis(), domains = s.domains, ipRanges = s.ipRanges, lastError = null))
+            // Targeted update: a feed deleted or disabled during the download must not come back.
+            val current = dao.get(feed.id)
+            if (current == null || !current.enabled) {
+                target.delete()
+                if (current != null) dao.clearDownload(feed.id)
+                return@withContext Result.failure(IOException("feed was removed or disabled during the download"))
+            }
+            dao.markUpdated(feed.id, System.currentTimeMillis(), s.domains, s.ipRanges)
         }.onFailure { e ->
             Log.w(TAG, "feed ${feed.id}: ${e.message}")
-            dao.upsert(current.copy(lastError = e.message ?: e.javaClass.simpleName))
+            dao.markError(feed.id, e.message ?: e.javaClass.simpleName)
         }
         result
     }
 
-    /** Refreshes enabled feeds older than [maxAgeMs]. */
-    suspend fun refreshStale(maxAgeMs: Long): Int {
+    /**
+     * Refreshes enabled feeds older than [maxAgeMs], or all enabled feeds when
+     * [force] is set. Runs are serialised process-wide, so the daily job and a
+     * "refresh now" can never download the same feed concurrently.
+     */
+    suspend fun refreshStale(maxAgeMs: Long, force: Boolean = false): Int = refreshLock.withLock {
+        // Leftovers of a run killed mid-download (safe: we hold the lock).
+        dir.listFiles { f -> f.name.endsWith(".tmp") }?.forEach { it.delete() }
         val now = System.currentTimeMillis()
         var failures = 0
         for (f in dao.list().filter { it.enabled }) {
-            val fresh = f.lastUpdated != null && now - f.lastUpdated < maxAgeMs && fileFor(f.id).exists()
-            if (!fresh && refresh(f).isFailure) failures++
+            coroutineContext.ensureActive()
+            val fresh = !force && f.lastUpdated != null && now - f.lastUpdated < maxAgeMs && fileFor(f.id).exists()
+            if (!fresh && refreshLocked(f).isFailure) failures++
         }
-        return failures
+        failures
     }
 
-    private fun download(feed: FeedEntity, dest: File) {
+    /** Blocking download that still honours cancellation (WorkManager stop, REPLACE). */
+    private suspend fun download(feed: FeedEntity, dest: File) = coroutineScope {
         val conn = URL(feed.url).openConnection() as HttpURLConnection
         conn.connectTimeout = 20_000
         conn.readTimeout = 60_000
         conn.instanceFollowRedirects = true
         conn.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+feed updater)")
         feed.authHeader?.let { conn.setRequestProperty("Authorization", it) }
+        // Disconnecting from another thread unblocks a read stuck in the socket.
+        val watchdog = launch(Dispatchers.IO) {
+            try {
+                awaitCancellation()
+            } finally {
+                conn.disconnect()
+            }
+        }
         try {
             if (conn.responseCode !in 200..299) throw IOException("HTTP ${conn.responseCode}")
             conn.inputStream.use { input ->
@@ -104,6 +157,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                     val buf = ByteArray(64 * 1024)
                     var total = 0L
                     while (true) {
+                        ensureActive()
                         val n = input.read(buf)
                         if (n < 0) break
                         total += n
@@ -113,15 +167,24 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                 }
             }
         } finally {
-            conn.disconnect()
+            watchdog.cancel()
         }
+        ensureActive()
     }
 
-    fun scheduleRefreshNow() {
+    /**
+     * Downloads feeds now. With [force] (the user's explicit "Refresh"),
+     * every enabled feed is downloaded again; otherwise only missing or stale
+     * ones. Requests queue behind a running one instead of cancelling it.
+     */
+    fun scheduleRefreshNow(force: Boolean = true) {
         WorkManager.getInstance(context).enqueueUniqueWork(
             "feeds-now",
-            ExistingWorkPolicy.REPLACE,
-            OneTimeWorkRequestBuilder<FeedUpdateWorker>().setConstraints(networkConstraint).build(),
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            OneTimeWorkRequestBuilder<FeedUpdateWorker>()
+                .setConstraints(networkConstraint)
+                .setInputData(workDataOf(FeedUpdateWorker.KEY_FORCE to force))
+                .build(),
         )
     }
 
@@ -138,14 +201,24 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         private const val MAX_FEED_BYTES = 150L * 1024 * 1024
         const val MAX_AGE_MS = 20L * 3600 * 1000
         private val networkConstraint = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+
+        /** Process-wide: serialises every feed download and the files it replaces. */
+        private val refreshLock = Mutex()
     }
 }
 
 class FeedUpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val app = applicationContext as VigilApp
-        val failures = app.feeds.refreshStale(FeedRepository.MAX_AGE_MS)
+        // A retry after partial failure only fetches what is still stale.
+        val force = inputData.getBoolean(KEY_FORCE, false) && runAttemptCount == 0
+        val failures = app.feeds.refreshStale(FeedRepository.MAX_AGE_MS, force)
         app.pruneOldData()
+        app.vacuumIfDue()
         return if (failures > 0 && runAttemptCount < 3) Result.retry() else Result.success()
+    }
+
+    companion object {
+        const val KEY_FORCE = "force"
     }
 }
