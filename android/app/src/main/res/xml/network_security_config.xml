@@ -1,12 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Cleartext is permitted because users may point feed URLs or SIEM export
-     at plain-HTTP collectors on their own network. The built-in feeds all use
-     HTTPS. -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+<!-- Deliberate choices for an enterprise-capable tool:
+     * cleartext is permitted because users may point custom feeds or SIEM
+       export at plain-HTTP collectors on their own network (the built-in
+       feeds all use HTTPS);
+     * user-installed CAs are trusted so collectors behind a private/corporate
+       CA work without shipping custom trust stores. -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
+            <certificates src="user" tools:ignore="AcceptsUserCertificates" />
         </trust-anchors>
     </base-config>
 </network-security-config>

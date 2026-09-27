@@ -1,5 +1,6 @@
 package dev.vigil.inspector.vpn
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
@@ -39,12 +40,16 @@ class InspectorTileService : TileService() {
                 if (Build.VERSION.SDK_INT >= 34) {
                     startActivityAndCollapse(PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE))
                 } else {
-                    @Suppress("DEPRECATION")
-                    startActivityAndCollapse(intent)
+                    startLegacy(intent)
                 }
             }
         }
     }
+
+    /** Pre-Android 14 API; the PendingIntent overload does not exist there. */
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    @Suppress("DEPRECATION")
+    private fun startLegacy(intent: Intent) = startActivityAndCollapse(intent)
 
     private fun render(status: VpnStatus) {
         val tile = qsTile ?: return

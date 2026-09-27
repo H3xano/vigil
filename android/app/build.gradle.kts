@@ -73,6 +73,8 @@ android {
     lint {
         abortOnError = true
         warningsAsErrors = false
+        // Dependency versions are pinned to what AGP 8.7 / compileSdk 35 supports.
+        disable += listOf("GradleDependency", "AndroidGradlePluginVersion", "NewerVersionAvailable", "ChromeOsAbiSupport")
     }
 }
 
