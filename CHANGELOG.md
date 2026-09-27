@@ -6,7 +6,7 @@
   uploaded as the `vigil-apk` artifact.
 - Handoff documentation: `docs/STATUS.md`, `docs/DEVELOPMENT.md`, `CLAUDE.md`.
 
-## 0.1.0 (2026-09-27)
+## 0.1.0 (2026-09-27): released as a GitHub pre-release (debug-signed APK)
 
 First release.
 

@@ -22,6 +22,7 @@ emulator**. It has **not yet been run on a physical phone**.
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, this file | |
 | Repository | private: https://github.com/H3xano/vigil (`main`) | |
+| Release | [v0.1.0](https://github.com/H3xano/vigil/releases/tag/v0.1.0) pre-release, **debug-signed** APK (3 ABIs) | checksum verified after upload |
 
 Measured numbers (see the README "Performance" section):
 
