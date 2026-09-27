@@ -23,5 +23,8 @@ Working rules for this repo:
   `CHANGELOG.md` at the end of each work session.
 - Never commit `android/keystore.properties`, keystores, `local.properties`,
   or generated `jniLibs/`.
-- Commits are authored as H3xano; the remote is the private repo
+- Commits are authored as H3xano and must **not** contain `Co-Authored-By` or
+  "Generated with Claude" lines (owner's explicit preference). The same goes for
+  PR bodies and merge commits.
+- The remote is the private repo
   `github.com/H3xano/vigil`.
