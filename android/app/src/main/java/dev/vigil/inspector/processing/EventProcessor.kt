@@ -23,10 +23,16 @@ import dev.vigil.inspector.export.ExportRecords
 import dev.vigil.inspector.export.SiemExporter
 import dev.vigil.inspector.vpn.ServiceState
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Turns engine event batches into database rows, live state, notifications
  * and SIEM records. One instance per engine session.
+ *
+ * The engine's event queue is bounded and may drop events, so a `flow` can
+ * arrive without its `flow_end` or the reverse; both orphans are tolerated.
+ * Flows that never end are exported (with the last known byte counts) when
+ * they are evicted from [open] or when the session finishes.
  */
 class EventProcessor(
     private val db: VigilDatabase,
@@ -36,11 +42,21 @@ class EventProcessor(
     private val exporter: SiemExporter,
     private val notifier: AlertNotifier,
     private val session: Long,
+    /** Called (on the processing coroutine) when the engine reports a fatal error. */
+    private val onEngineError: (String) -> Unit = {},
 ) {
+    private class OpenFlow(val flow: FlowEvent, val app: AppInfo, var tx: Long = 0, var rx: Long = 0)
+
     /** Open flows kept so exported flow records carry final byte counts. */
-    private val open = object : LinkedHashMap<Long, Pair<FlowEvent, AppInfo>>(256, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Pair<FlowEvent, AppInfo>>?) = size > 20_000
+    private val open = object : LinkedHashMap<Long, OpenFlow>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, OpenFlow>?): Boolean {
+            if (size <= MAX_OPEN) return false
+            eldest?.value?.let { exportUnfinished(it, System.currentTimeMillis(), "not tracked to completion") }
+            return true
+        }
     }
+
+    /** (pkg|destination) keys known to be stored in `destinations`. */
     private val knownDestinations = object : LinkedHashMap<String, Boolean>(1024, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 20_000
     }
@@ -55,19 +71,24 @@ class EventProcessor(
         val alerts = ArrayList<AlertEntity>()
         val ends = ArrayList<FlowEndEvent>()
         val updates = LinkedHashMap<Long, FlowUpdateEvent>()
+        var engineError: String? = null
         for (e in batch) {
             when (e) {
                 is FlowEvent -> {
                     val app = apps.resolve(e.uid)
                     flows += e.toEntity(app)
-                    open[e.id] = e to app
+                    open[e.id] = OpenFlow(e, app)
                 }
                 is FlowEndEvent -> {
                     ends += e
                     updates.remove(e.id)
-                    open.remove(e.id)?.let { (f, app) -> exporter.offer("flow", ExportRecords.flow(f, e, app)) }
+                    // No entry: the flow event was dropped (or evicted); the DB update is a no-op then.
+                    open.remove(e.id)?.let { o -> exporter.offer("flow", ExportRecords.flow(o.flow, e, o.app)) }
                 }
-                is FlowUpdateEvent -> updates[e.id] = e
+                is FlowUpdateEvent -> {
+                    updates[e.id] = e
+                    open[e.id]?.let { it.tx = e.tx; it.rx = e.rx }
+                }
                 is DnsEvent -> {
                     val app = apps.resolve(e.uid)
                     dns += DnsEntity(
@@ -88,12 +109,12 @@ class EventProcessor(
                 is StatsEvent -> ServiceState.stats.value = e
                 is EngineStateEvent -> {
                     Log.i(TAG, "engine ${e.state} ${e.message}")
-                    if (e.state == "error") ServiceState.reportEngineError(e.message)
+                    if (e.state == "error") engineError = e.message
                 }
             }
         }
-        alerts += noveltyAlerts(flows)
         db.withTransaction {
+            alerts += noveltyAlerts(flows)
             if (flows.isNotEmpty()) db.flows().insert(flows)
             if (dns.isNotEmpty()) db.dns().insert(dns)
             if (alerts.isNotEmpty()) db.alerts().insert(alerts)
@@ -101,6 +122,23 @@ class EventProcessor(
             for (e in ends) db.flows().finish(session, e.id, e.ts, e.tx, e.rx, e.durationMs, e.error)
         }
         if (settings.value.notifyAlerts) alerts.filter { it.severity == "high" || it.severity == "medium" }.forEach(notifier::notify)
+        engineError?.let(onEngineError)
+    }
+
+    /**
+     * Called once after the engine was shut down and its queue drained:
+     * exports and closes the flows whose `flow_end` never arrived.
+     */
+    suspend fun finishSession() {
+        val now = System.currentTimeMillis()
+        open.values.toList().forEach { exportUnfinished(it, now, "session ended") }
+        open.clear()
+        db.flows().closeSession(session, now)
+    }
+
+    private fun exportUnfinished(o: OpenFlow, now: Long, reason: String) {
+        val end = FlowEndEvent(id = o.flow.id, ts = now, tx = o.tx, rx = o.rx, durationMs = (now - o.flow.ts).coerceAtLeast(0), error = reason)
+        exporter.offer("flow", ExportRecords.flow(o.flow, end, o.app))
     }
 
     private fun FlowEvent.toEntity(app: AppInfo) = FlowEntity(
@@ -110,44 +148,60 @@ class EventProcessor(
         reason = reason, tags = tags.joinToString(","), background = foreground.isBackground(app.key),
     )
 
+    private class Seen(val first: FlowEntity, var count: Long = 0, var minTs: Long = Long.MAX_VALUE, var maxTs: Long = Long.MIN_VALUE)
+
     /**
-     * Records (app, destination) pairs and, if enabled, raises an alert the
-     * first time an app that has been observed for over a day contacts a
-     * new domain.
+     * Records (app, destination) pairs (connection count and last seen) and,
+     * if enabled, raises an alert the first time an app that has been
+     * observed for over a day contacts a new domain. Runs inside the batch
+     * transaction.
      */
     private suspend fun noveltyAlerts(flows: List<FlowEntity>): List<AlertEntity> {
-        val out = ArrayList<AlertEntity>()
-        val upserts = LinkedHashMap<String, DestinationEntity>()
-        val alertsOn = settings.value.noveltyAlerts
+        val seen = LinkedHashMap<String, Seen>()
         for (f in flows) {
             val dest = f.domain ?: continue
             if (f.pkg == AppResolver.UNKNOWN.key) continue
-            val key = "${f.pkg}|$dest"
-            if (knownDestinations[key] == true) continue
-            val existing = db.destinations().get(f.pkg, dest)
-            if (existing == null && alertsOn) {
-                val appFirstSeen = db.destinations().firstSeenApp(f.pkg)
-                if (appFirstSeen != null && f.ts - appFirstSeen > LEARNING_PERIOD_MS) {
-                    val app = apps.byKey(f.pkg)
-                    val detail = JsonObject(mapOf("destination" to kotlinx.serialization.json.JsonPrimitive(dest)))
+            val s = seen.getOrPut("${f.pkg}|$dest") { Seen(f) }
+            s.count++
+            s.minTs = minOf(s.minTs, f.ts)
+            s.maxTs = maxOf(s.maxTs, f.ts)
+        }
+        if (seen.isEmpty()) return emptyList()
+        val out = ArrayList<AlertEntity>()
+        val inserts = ArrayList<DestinationEntity>()
+        val alertsOn = settings.value.noveltyAlerts
+        val dao = db.destinations()
+        for ((key, s) in seen) {
+            val pkg = s.first.pkg
+            val dest = s.first.domain ?: continue
+            // A cached key can be stale after pruning or "clear history": touch() then changes no row.
+            if (knownDestinations[key] == true && dao.touch(pkg, dest, s.maxTs, s.count) > 0) continue
+            if (dao.get(pkg, dest) != null) {
+                dao.touch(pkg, dest, s.maxTs, s.count)
+                knownDestinations[key] = true
+                continue
+            }
+            if (alertsOn) {
+                val appFirstSeen = dao.firstSeenApp(pkg)
+                if (appFirstSeen != null && s.first.ts - appFirstSeen > LEARNING_PERIOD_MS) {
+                    val app = apps.byKey(pkg)
+                    val detail = JsonObject(mapOf("destination" to JsonPrimitive(dest)))
                     out += AlertEntity(
-                        ts = f.ts, kind = "new_destination", severity = "info", uid = f.uid, pkg = f.pkg, target = dest,
+                        ts = s.first.ts, kind = "new_destination", severity = "info", uid = s.first.uid, pkg = pkg, target = dest,
                         message = "${app.label} contacted a destination it has never used before: $dest", detail = detail.toString(),
                     )
                 }
             }
-            upserts[key] = DestinationEntity(
-                pkg = f.pkg, destination = dest, firstSeen = existing?.firstSeen ?: f.ts, lastSeen = f.ts,
-                flows = (existing?.flows ?: 0) + 1,
-            )
+            inserts += DestinationEntity(pkg = pkg, destination = dest, firstSeen = s.minTs, lastSeen = s.maxTs, flows = s.count)
             knownDestinations[key] = true
         }
-        if (upserts.isNotEmpty()) db.destinations().upsert(upserts.values.toList())
+        if (inserts.isNotEmpty()) dao.insertIfAbsent(inserts)
         return out
     }
 
     private companion object {
         const val TAG = "vigil.events"
         const val LEARNING_PERIOD_MS = 24L * 3600 * 1000
+        const val MAX_OPEN = 20_000
     }
 }
