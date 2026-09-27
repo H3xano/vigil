@@ -1,0 +1,1 @@
+On-device network inspector: see, attribute and block every app connection

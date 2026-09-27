@@ -1,0 +1,5 @@
+* Engine hardening: resource caps, alert-storm protection, real TCP resets, NAT64 coverage, DNS-over-TCP inspection and IP feeds enforced on DNS traffic
+* The VPN restarts itself after engine errors instead of leaving the device offline
+* Reliable, de-duplicated SIEM export with retries
+* Safer feed downloads, faster history database
+* Onboarding, better contrast and TalkBack labels

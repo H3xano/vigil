@@ -1,0 +1,42 @@
+vigil is an open-source network sensor for your phone. It shows every IP connection and DNS lookup each app makes, names the destination, checks it against threat intelligence and flags suspicious behaviour. It is built for security-minded users, researchers and blue teams who want to know what their device is talking to.
+
+<b>How it works</b>
+
+vigil uses Android's VPN interface as a local loop: packets go to a Rust engine running inside the app, which inspects each flow and relays it to the internet over ordinary sockets. Nothing is tunnelled to a remote server. It needs <b>no root</b>, installs <b>no certificates</b> and <b>never decrypts TLS or QUIC</b>. Destination names come from DNS answers, the TLS ClientHello (SNI), QUIC Initial packets and plain-HTTP Host headers.
+
+<b>Features</b>
+
+<ul>
+<li>Per-app attribution of every connection and DNS lookup, including background system components</li>
+<li>Destination names without decryption, plus a JA4 fingerprint for every TLS and QUIC client</li>
+<li>Threat intelligence: built-in feeds (HaGeZi TIF, abuse.ch URLhaus, ThreatFox and Feodo Tracker, Phishing Army, Spamhaus DROP, tracker and telemetry lists) and custom feed URLs, including authenticated MISP text exports</li>
+<li>Blocking: DNS sinkholing (including CNAME-cloaked trackers), refusing connections by IP, SNI, QUIC SNI or HTTP Host, cutting an app off entirely, and custom allow/deny rules</li>
+<li>Behavioural detection: beaconing, apps bypassing the system resolver with hard-coded DNS servers, encrypted DNS (DoH/DoT/DoQ), optional new-destination alerts, foreground/background tagging</li>
+<li>Optional SIEM export: ECS-shaped JSON over syslog (UDP, TCP or TLS with optional mutual TLS), HTTP NDJSON, Splunk HEC or Elasticsearch bulk</li>
+<li>Always-on VPN support and a Quick Settings tile</li>
+</ul>
+
+<b>Privacy: what leaves the device</b>
+
+Connection and DNS history stays in the app's private storage, is excluded from backups and is deleted after the retention period (7 days by default). Only the method and Host of plain-HTTP requests are recorded; never paths, headers or bodies.
+
+vigil itself contacts only:
+<ul>
+<li>the publishers of the threat feeds you enable, once a day, with a plain HTTPS download. Four feeds are on by default (HaGeZi TIF from raw.githubusercontent.com, and abuse.ch URLhaus, ThreatFox and Feodo Tracker). The publisher sees your IP address and that you use vigil, nothing about your traffic. You can turn every feed off.</li>
+<li>the SIEM collector you configure, only if you turn on export.</li>
+</ul>
+There are no analytics, no ads and no accounts.
+
+<b>Limitations</b>
+
+<ul>
+<li>Requires Android 10 or later.</li>
+<li>Android allows one VPN at a time, so vigil cannot run alongside another VPN app.</li>
+<li>With Private DNS in strict mode, DNS lookups are encrypted before vigil sees them; names then come from TLS/QUIC/HTTP only.</li>
+<li>Encrypted Client Hello hides the real destination name; vigil sees only the provider's public name.</li>
+<li>ICMP (ping) is not relayed.</li>
+</ul>
+
+<b>Permissions</b>
+
+VPN service (to inspect traffic locally), internet, notifications, a foreground service, visibility of installed apps (to name the app behind each connection) and optional usage access (to tell foreground from background traffic).
