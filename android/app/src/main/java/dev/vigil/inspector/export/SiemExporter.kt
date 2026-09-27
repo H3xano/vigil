@@ -1,6 +1,8 @@
 package dev.vigil.inspector.export
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.security.KeyChain
 import android.util.Log
@@ -9,15 +11,17 @@ import dev.vigil.inspector.data.ExportSettings
 import dev.vigil.inspector.data.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.Closeable
 import java.io.IOException
 import java.io.OutputStream
@@ -35,20 +39,25 @@ import java.time.Instant
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509ExtendedKeyManager
 
-data class ExportStatus(val sent: Long = 0, val dropped: Long = 0, val lastError: String? = null, val lastSuccess: Long? = null)
-
 /**
- * Streams records to a SIEM. Records are queued in a bounded buffer (oldest
- * dropped under back-pressure), sent in batches, and retried with backoff.
- * vigil's own sockets bypass the tunnel (the app is excluded from its VPN).
+ * Streams records to a SIEM. Queueing and retries live in [ExportPipeline];
+ * this class owns the Android side: settings, connectivity and the syslog
+ * and HTTP transports. vigil's own sockets bypass the tunnel (the app is
+ * excluded from its VPN).
  */
 class SiemExporter(private val context: Context, private val settings: SettingsStore, private val scope: CoroutineScope) {
-    private val queue = Channel<JsonObject>(10_000, BufferOverflow.DROP_OLDEST)
-    private val _status = MutableStateFlow(ExportStatus())
-    val status: StateFlow<ExportStatus> = _status
+    private val config: StateFlow<ExportSettings> = settings.flow.map { it.export }
+        .stateIn(scope, SharingStarted.Eagerly, settings.value.export)
+    private val online = MutableStateFlow(true)
+    private val pipeline = ExportPipeline(config, online, ::send, onFailure = ::closeSinkQuietly)
+    val status: StateFlow<ExportStatus> = pipeline.status
+
+    /** Guards [sink]: the export loop and [sendTest] must not interleave writes. */
+    private val sinkLock = Mutex()
     private var sink: Sink? = null
     private var sinkConfig: ExportSettings? = null
 
@@ -60,77 +69,93 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
             "alerts_dns" -> kind == "alert" || kind == "dns"
             else -> kind == "alert"
         }
-        if (wanted && !queue.trySend(record).isSuccess) {
-            _status.value = _status.value.copy(dropped = _status.value.dropped + 1)
-        }
+        if (wanted) pipeline.offer(record)
     }
 
     fun start() {
-        scope.launch(Dispatchers.IO) {
-            var backoff = 1_000L
-            while (isActive) {
-                val first = queue.receive()
-                val batch = mutableListOf(first)
-                while (batch.size < 200) batch += queue.tryReceive().getOrNull() ?: break
-                var attempts = 0
-                while (isActive) {
-                    val cfg = settings.value.export
-                    if (!cfg.enabled) break
-                    val result = runCatching { send(cfg, batch) }
-                    if (result.isSuccess) {
-                        _status.value = _status.value.copy(sent = _status.value.sent + batch.size, lastError = null, lastSuccess = System.currentTimeMillis())
-                        backoff = 1_000L
-                        break
-                    }
-                    closeSink()
-                    val msg = result.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName }
-                    Log.w(TAG, "export failed: $msg")
-                    _status.value = _status.value.copy(lastError = msg)
-                    if (++attempts >= 5) {
-                        _status.value = _status.value.copy(dropped = _status.value.dropped + batch.size)
-                        break
-                    }
-                    delay(backoff)
-                    backoff = (backoff * 2).coerceAtMost(60_000L)
+        watchConnectivity()
+        scope.launch(Dispatchers.IO) { pipeline.run() }
+    }
+
+    /** Tracks whether this app's default network (never the tunnel) is usable. */
+    private fun watchConnectivity() {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
+        online.value = cm.activeNetwork != null
+        runCatching {
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    online.value = true
                 }
-            }
-        }
+
+                // The default-network callback reports onLost only when no default network is left.
+                override fun onLost(network: Network) {
+                    online.value = false
+                }
+            })
+        }.onFailure { Log.w(TAG, "no connectivity callback: ${it.message}") }
     }
 
     /** Sends one synthetic record with the current settings. */
     suspend fun sendTest(): Result<Unit> = withContext(Dispatchers.IO) {
         val record = JsonObject(
             mapOf(
-                "@timestamp" to kotlinx.serialization.json.JsonPrimitive(Instant.now().toString()),
-                "message" to kotlinx.serialization.json.JsonPrimitive("vigil export test"),
-                "vigil" to JsonObject(mapOf("type" to kotlinx.serialization.json.JsonPrimitive("test"), "severity" to kotlinx.serialization.json.JsonPrimitive("info"))),
+                "@timestamp" to JsonPrimitive(Instant.now().toString()),
+                "message" to JsonPrimitive("vigil export test"),
+                "event" to JsonObject(mapOf("kind" to JsonPrimitive("event"), "dataset" to JsonPrimitive("vigil.test"))),
+                "vigil" to JsonObject(mapOf("type" to JsonPrimitive("test"), "severity" to JsonPrimitive("info"))),
             ),
         )
-        runCatching { send(settings.value.export, listOf(record)) }.onFailure { closeSink() }
+        runCatching {
+            val out = send(settings.value.export, listOf(record))
+            if (out.delivered == 0) throw IOException(out.detail ?: "the collector did not accept the test event")
+        }.onFailure { closeSinkQuietly() }.map { }
     }
 
-    private fun decorate(r: JsonObject) =
-        ExportRecords.withDevice(r, settings.value.deviceId, "${Build.MANUFACTURER} ${Build.MODEL}", Build.VERSION.SDK_INT, BuildConfig.VERSION_NAME)
+    private fun decorate(r: JsonObject): JsonObject {
+        val deviceId = settings.value.deviceId
+        val withId = ExportRecords.withEventId(r, ExportRecords.recordId(deviceId, r))
+        return ExportRecords.withDevice(withId, deviceId, "${Build.MANUFACTURER} ${Build.MODEL}", Build.VERSION.SDK_INT, BuildConfig.VERSION_NAME)
+    }
 
-    private fun send(cfg: ExportSettings, batch: List<JsonObject>) {
+    private suspend fun send(cfg: ExportSettings, batch: List<JsonObject>): SendOutcome {
         val records = batch.map(::decorate)
-        if (cfg.mode == "http") {
-            sendHttp(cfg, records)
-            return
+        if (cfg.mode == "http") return sendHttp(cfg, batch, records)
+        return sinkLock.withLock {
+            val current = sink?.takeIf { sinkConfig == cfg } ?: run {
+                closeSink()
+                openSyslog(cfg).also {
+                    sink = it
+                    sinkConfig = cfg
+                }
+            }
+            val host = Build.MODEL.replace(' ', '_')
+            val maxBytes = if (cfg.transport == "udp") WireFormats.UDP_MAX_BYTES else Int.MAX_VALUE
+            val messages = records.map { WireFormats.syslogFitted(it, host, WireFormats.syslogTimestamp(Instant.now()), maxBytes) }
+            current.write(messages.filterNotNull())
+            val tooLarge = messages.count { it == null }
+            SendOutcome(
+                delivered = messages.size - tooLarge,
+                rejected = tooLarge,
+                detail = if (tooLarge > 0) "$tooLarge record(s) too large for a UDP datagram, skipped" else null,
+            )
         }
-        if (sink == null || sinkConfig != cfg) {
-            closeSink()
-            sink = openSyslog(cfg)
-            sinkConfig = cfg
-        }
-        val host = Build.MODEL.replace(' ', '_')
-        sink!!.write(records.map { WireFormats.syslog(it, host, Instant.now().toString()) })
     }
 
     private fun closeSink() {
         runCatching { sink?.close() }
         sink = null
         sinkConfig = null
+    }
+
+    /** Closes the syslog connection unless a send is in progress (it will be reopened as needed). */
+    private fun closeSinkQuietly() {
+        if (sinkLock.tryLock()) {
+            try {
+                closeSink()
+            } finally {
+                sinkLock.unlock()
+            }
+        }
     }
 
     private fun sslContext(alias: String?): SSLContext = SSLContext.getInstance("TLS").apply {
@@ -140,22 +165,35 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
 
     private fun openSyslog(cfg: ExportSettings): Sink {
         require(cfg.host.isNotBlank()) { "no syslog host configured" }
+        require(cfg.port in 1..65535) { "invalid syslog port" }
         return when (cfg.transport) {
             "udp" -> UdpSink(InetAddress.getByName(cfg.host), cfg.port)
             "tcp" -> StreamSink(Socket().apply { connect(InetSocketAddress(cfg.host, cfg.port), 10_000); soTimeout = 15_000 })
             else -> {
-                val socket = sslContext(cfg.clientCertAlias).socketFactory.createSocket() as SSLSocket
-                socket.connect(InetSocketAddress(cfg.host, cfg.port), 10_000)
-                socket.soTimeout = 15_000
-                // SSLSocket does not verify the hostname unless asked to.
-                socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-                socket.startHandshake()
-                StreamSink(socket)
+                // Connect first (with a timeout), then layer TLS over the
+                // connected socket; passing the host name enables SNI.
+                val plain = Socket()
+                try {
+                    plain.connect(InetSocketAddress(cfg.host, cfg.port), 10_000)
+                    plain.soTimeout = 15_000
+                    val socket = sslContext(cfg.clientCertAlias).socketFactory.createSocket(plain, cfg.host, cfg.port, true) as SSLSocket
+                    socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                    socket.startHandshake()
+                    // SSLSocket does not always verify the host name: check it explicitly.
+                    if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(cfg.host, socket.session)) {
+                        socket.close()
+                        throw SSLPeerUnverifiedException("certificate does not match ${cfg.host}")
+                    }
+                    StreamSink(socket)
+                } catch (e: Exception) {
+                    runCatching { plain.close() }
+                    throw e
+                }
             }
         }
     }
 
-    private fun sendHttp(cfg: ExportSettings, records: List<JsonObject>) {
+    private fun sendHttp(cfg: ExportSettings, originals: List<JsonObject>, records: List<JsonObject>): SendOutcome {
         require(cfg.url.startsWith("https://") || cfg.url.startsWith("http://")) { "no HTTP endpoint configured" }
         val conn = URL(cfg.url).openConnection() as HttpURLConnection
         if (conn is HttpsURLConnection) conn.sslSocketFactory = sslContext(cfg.clientCertAlias).socketFactory
@@ -169,11 +207,21 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
             if (cfg.authHeader.isNotBlank()) conn.setRequestProperty("Authorization", cfg.authHeader)
             conn.outputStream.use { it.write(WireFormats.httpBody(records, cfg.httpFormat).toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
-            if (code !in 200..299) throw IOException("HTTP $code")
-            if (cfg.httpFormat == "elastic_bulk") {
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                if (body.contains("\"errors\":true")) throw IOException("Elasticsearch rejected some documents")
+            if (code !in 200..299) {
+                val detail = runCatching { conn.errorStream?.bufferedReader()?.use { it.readText() } }.getOrNull()
+                throw HttpStatusException(code, detail)
             }
+            if (cfg.httpFormat != "elastic_bulk") return SendOutcome(delivered = records.size)
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            // Unreadable response: retry everything; document ids make that idempotent.
+            val result = ElasticBulk.parse(body, records.size)
+                ?: return SendOutcome(delivered = 0, retry = originals, detail = "unreadable Elasticsearch response")
+            return SendOutcome(
+                delivered = result.delivered,
+                rejected = result.rejected,
+                retry = result.retry.map { originals[it] },
+                detail = result.firstError?.let { "Elasticsearch: $it" },
+            )
         } finally {
             conn.disconnect()
         }
@@ -188,7 +236,7 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
         override fun write(messages: List<String>) {
             for (m in messages) {
                 val bytes = m.toByteArray(Charsets.UTF_8)
-                socket.send(DatagramPacket(bytes, minOf(bytes.size, 65_000), addr, port))
+                socket.send(DatagramPacket(bytes, bytes.size, addr, port))
             }
         }
         override fun close() = socket.close()

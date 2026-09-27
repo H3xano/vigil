@@ -45,7 +45,8 @@ without custom pipelines. A completed flow looks like this:
 {
   "@timestamp": "2026-09-27T18:06:02.114Z",
   "event": {"kind": "event", "category": ["network"], "type": ["connection"], "action": "allow",
-            "duration": 514000000, "end": "2026-09-27T18:06:02.628Z", "dataset": "vigil.flow"},
+            "duration": 514000000, "end": "2026-09-27T18:06:02.628Z", "dataset": "vigil.flow",
+            "id": "5f0c3a9e1b7d4c2a8e6f1a2b3c4d5e6f"},
   "vigil": {"type": "flow", "flow_id": 17, "domain_source": "sni", "tags": []},
   "app": {"package": "com.android.chrome", "name": "Chrome", "uid": 10131, "system": true},
   "network": {"transport": "tcp", "protocol": "tls", "bytes": 5724},
@@ -61,16 +62,32 @@ DNS records use `dns.question.name/type`, `dns.response_code` and
 `dns.answers[].data`. Alerts use `event.kind: "alert"`, `event.severity`
 (0–100) and `message`.
 
+`event.id` is a deterministic hash of the install id and the record's content,
+so a record re-sent after a lost response carries the same id and can be
+deduplicated downstream (Elastic uses it as the document `_id`).
+
 Transports:
 
 - **Syslog:** RFC 5424, facility local0, severity mapped from the alert
   severity, APP-NAME `vigil`, MSGID `flow`/`dns`/`alert`, and the JSON record
-  as the message. TCP and TLS use RFC 6587 octet counting. TLS verifies the
-  server hostname and can present a KeyChain client certificate.
+  as the message. Timestamps carry at most six fractional digits. TCP and TLS
+  use RFC 6587 octet counting. TLS sends SNI, verifies the server hostname
+  and can present a KeyChain client certificate. Over UDP a message is capped
+  at 8 KB: long string values of larger records are shortened (and
+  `vigil.truncated` is set) so the JSON stays valid.
 - **HTTP:** `ndjson` (one record per line, e.g. for Logstash/Vector/Fluent Bit
   HTTP inputs), `splunk_hec` (`{"time","sourcetype":"vigil:json","event":…}`),
-  or `elastic_bulk` (`{"create":{}}` action lines; point the URL at
-  `…/<index>/_bulk`). An optional `Authorization` header is sent.
+  or `elastic_bulk` (`{"create":{"_id":<event.id>}}` action lines; point the
+  URL at `…/<index>/_bulk`). An optional `Authorization` header is sent. For
+  `_bulk`, only items that failed with 429/5xx are retried; 409 (already
+  indexed) counts as delivered and other item errors as rejected.
+
+Delivery: records wait in a bounded queue (10,000; the oldest are dropped and
+counted when it overflows). The head batch is retried with backoff up to one
+minute until it is delivered or export is turned off (queued records are then
+counted as dropped). While the device is offline the exporter waits for a
+network. Authentication errors (401/403) are retried once a minute until the
+settings change; a batch refused with 400 is counted as rejected.
 
 The export level selects what is sent: alerts only (the default), alerts and
 DNS, or everything.
