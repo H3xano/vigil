@@ -7,23 +7,20 @@
 //! RST, so refused/unreachable destinations look to the app exactly as they
 //! would without vigil in the path.
 
-use super::{dns, FlowCounters, FlowKey, GaugeGuard, Shared};
+use super::{dns, sock, FlowCounters, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, Event, FlowEndEvent, FlowEvent, Severity, Verdict};
 use crate::packet::{self, TcpInfo, PROTO_TCP};
 use crate::policy::{Decision, Policy, DOT_PORT};
 use crate::proto::http::{self, HttpRequest};
 use crate::proto::tls::{self, ClientHello, Sniff};
 use futures::StreamExt;
-use parking_lot::Mutex;
-use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 
 const SNIFF_WINDOW: Duration = Duration::from_secs(3);
 const SNIFF_MAX: usize = 32 * 1024;
@@ -35,56 +32,99 @@ pub(crate) enum MetaKind {
         upstream: tokio::net::TcpStream,
         event: Box<FlowEvent>,
     },
-    LocalDns,
+    /// DNS over TCP, answered by vigil's resolver: `upstream` is `None` for
+    /// the virtual resolver, or the server the app addressed directly.
+    LocalDns { upstream: Option<SocketAddr> },
+}
+
+/// A TCP connection's place in the engine: its key in `Shared::tcp_keys`
+/// (so retransmitted SYNs are ignored) and its `max_tcp_flows` permit. Both
+/// are released when the slot is dropped, i.e. when the connection ends.
+pub(crate) struct FlowSlot {
+    shared: Weak<Shared>,
+    key: FlowKey,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl Drop for FlowSlot {
+    fn drop(&mut self) {
+        if let Some(s) = self.shared.upgrade() {
+            s.tcp_keys.lock().remove(&self.key);
+        }
+    }
 }
 
 pub(crate) struct FlowMeta {
     pub uid: Option<u32>,
     pub admitted: Instant,
     pub kind: MetaKind,
+    slot: FlowSlot,
 }
 
 pub(crate) struct Gate {
     shared: Arc<Shared>,
     stack_in: mpsc::Sender<Vec<u8>>,
-    pending: Arc<Mutex<HashSet<FlowKey>>>,
 }
 
 enum GateResult {
-    Admit(Box<FlowMeta>),
+    Admit(Option<u32>, MetaKind),
     Reject,
 }
 
 impl Gate {
     pub fn new(shared: Arc<Shared>, stack_in: mpsc::Sender<Vec<u8>>) -> Self {
-        Self {
-            shared,
-            stack_in,
-            pending: Arc::new(Mutex::new(HashSet::new())),
-        }
+        Self { shared, stack_in }
     }
 
     pub fn on_syn(&self, pkt: Vec<u8>, syn: TcpInfo) {
         let key = (syn.src, syn.dst);
-        if !self.pending.lock().insert(key) {
-            return; // retransmitted SYN while we are still deciding
+        if !self.shared.tcp_keys.lock().insert(key) {
+            // A retransmitted SYN for a connection being decided, parked or
+            // relayed. smoltcp retransmits its own SYN-ACK; passing this on
+            // would create a duplicate socket (and, after the metadata was
+            // taken, a second upstream connection).
+            return;
         }
+        let refuse = |why: &str| {
+            log::debug!("refusing {} -> {}: {why}", syn.src, syn.dst);
+            self.shared.tcp_keys.lock().remove(&key);
+            if let Some(rst) = packet::build_rst_for(&syn) {
+                self.shared.send_to_tun(rst);
+            }
+        };
+        let Ok(pending) = self.shared.limits.gate.clone().try_acquire_owned() else {
+            return refuse("too many connections pending");
+        };
+        let Ok(permit) = self.shared.limits.tcp.clone().try_acquire_owned() else {
+            return refuse("too many TCP connections");
+        };
+        let slot = FlowSlot {
+            shared: Arc::downgrade(&self.shared),
+            key,
+            _permit: permit,
+        };
         let shared = self.shared.clone();
         let stack_in = self.stack_in.clone();
-        let pending = self.pending.clone();
         tokio::spawn(async move {
+            let _pending = pending;
             match gate(&shared, &syn).await {
-                GateResult::Admit(meta) => {
-                    shared.tcp_meta.lock().insert(key, *meta);
+                GateResult::Admit(uid, kind) => {
+                    let meta = FlowMeta {
+                        uid,
+                        admitted: Instant::now(),
+                        kind,
+                        slot,
+                    };
+                    shared.tcp_meta.lock().insert(key, meta);
                     let _ = stack_in.send(pkt).await;
                 }
                 GateResult::Reject => {
+                    drop(slot);
                     if let Some(rst) = packet::build_rst_for(&syn) {
                         shared.send_to_tun(rst);
                     }
                 }
             }
-            pending.lock().remove(&key);
         });
     }
 }
@@ -164,14 +204,20 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
         // DNS over TCP is answered locally; anything else (notably the
         // Private DNS probe on 853) is refused so the OS falls back to UDP.
         return if dst.port() == 53 {
-            GateResult::Admit(Box::new(FlowMeta {
-                uid,
-                admitted: Instant::now(),
-                kind: MetaKind::LocalDns,
-            }))
+            GateResult::Admit(uid, MetaKind::LocalDns { upstream: None })
         } else {
             GateResult::Reject
         };
+    }
+    if dst.port() == 53 {
+        // DNS over TCP to a hard-coded resolver: inspected like UDP queries
+        // to it (policy, sinkholing, alert) and forwarded to that server.
+        return GateResult::Admit(
+            uid,
+            MetaKind::LocalDns {
+                upstream: Some(dst),
+            },
+        );
     }
     shared.stats.flows_total.fetch_add(1, Relaxed);
     let mut ev = base_event(shared, shared.next_flow_id(), uid, src, dst, "tcp");
@@ -188,16 +234,15 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
         emit_closed_flow(shared, ev, None);
         return GateResult::Reject;
     }
-    let connect = connect_protected(shared, dst);
+    let connect = sock::connect_tcp(shared.platform.clone(), dst);
     match tokio::time::timeout(Duration::from_millis(cfg.tcp_connect_timeout_ms), connect).await {
-        Ok(Ok(upstream)) => GateResult::Admit(Box::new(FlowMeta {
+        Ok(Ok(upstream)) => GateResult::Admit(
             uid,
-            admitted: Instant::now(),
-            kind: MetaKind::Relay {
+            MetaKind::Relay {
                 upstream,
                 event: Box::new(ev),
             },
-        })),
+        ),
         Ok(Err(e)) => {
             ev.verdict = Some(Verdict::Allow);
             emit_closed_flow(shared, ev, Some(format!("connect: {e}")));
@@ -211,36 +256,23 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
     }
 }
 
-pub(crate) async fn connect_protected(
-    shared: &Shared,
-    dst: SocketAddr,
-) -> io::Result<tokio::net::TcpStream> {
-    let sock = if dst.is_ipv4() {
-        tokio::net::TcpSocket::new_v4()?
-    } else {
-        tokio::net::TcpSocket::new_v6()?
-    };
-    if !shared.platform.protect(sock.as_raw_fd()) {
-        return Err(io::Error::other("could not protect socket"));
-    }
-    let stream = sock.connect(dst).await?;
-    let _ = stream.set_nodelay(true);
-    Ok(stream)
-}
-
 pub(crate) async fn accept_loop(shared: Arc<Shared>, mut listener: netstack_smoltcp::TcpListener) {
     while let Some((stream, src, dst)) = listener.next().await {
         let meta = shared.tcp_meta.lock().remove(&(src, dst));
         let Some(meta) = meta else {
-            // Duplicate stream for a retransmitted SYN, or an unknown flow.
+            // Unknown flow (e.g. its metadata expired).
             continue;
         };
         let s = shared.clone();
         tokio::spawn(async move {
-            match meta.kind {
-                MetaKind::LocalDns => dns::serve_tcp(&s, stream, meta.uid).await,
+            let FlowMeta {
+                uid, kind, slot, ..
+            } = meta;
+            match kind {
+                MetaKind::LocalDns { upstream } => dns::serve_tcp(&s, stream, uid, upstream).await,
                 MetaKind::Relay { upstream, event } => relay(&s, stream, upstream, *event).await,
             }
+            drop(slot);
         });
     }
 }
@@ -251,53 +283,85 @@ enum Sniffed {
     Other,
 }
 
+/// How the client stream stood when sniffing stopped.
+enum SniffEnd {
+    /// More data may follow.
+    Open,
+    /// The client finished sending (EOF).
+    Eof,
+    /// Reading failed (e.g. the client reset the connection).
+    Failed(io::Error),
+}
+
 /// Reads the start of the client stream until the protocol is identified.
 /// Everything read is left in `buf` to be forwarded afterwards.
-async fn sniff<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> (Sniffed, bool) {
+async fn sniff<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> (Sniffed, SniffEnd) {
     let deadline = tokio::time::Instant::now() + SNIFF_WINDOW;
     let mut chunk = vec![0u8; 4096];
     loop {
         let t = tls::parse_records(buf);
         let h = http::parse_request(buf);
         match (t, h) {
-            (Sniff::Found(ch), _) => return (Sniffed::Tls(ch), false),
-            (_, Sniff::Found(req)) => return (Sniffed::Http(req), false),
-            (Sniff::NotMatched, Sniff::NotMatched) => return (Sniffed::Other, false),
-            _ if buf.len() >= SNIFF_MAX => return (Sniffed::Other, false),
+            (Sniff::Found(ch), _) => return (Sniffed::Tls(ch), SniffEnd::Open),
+            (_, Sniff::Found(req)) => return (Sniffed::Http(req), SniffEnd::Open),
+            (Sniff::NotMatched, Sniff::NotMatched) => return (Sniffed::Other, SniffEnd::Open),
+            _ if buf.len() >= SNIFF_MAX => return (Sniffed::Other, SniffEnd::Open),
             _ => {}
         }
         match tokio::time::timeout_at(deadline, r.read(&mut chunk)).await {
-            Ok(Ok(0)) | Ok(Err(_)) => return (Sniffed::Other, true),
+            Ok(Ok(0)) => return (Sniffed::Other, SniffEnd::Eof),
+            Ok(Err(e)) => return (Sniffed::Other, SniffEnd::Failed(e)),
             Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
-            Err(_) => return (Sniffed::Other, false),
+            Err(_) => return (Sniffed::Other, SniffEnd::Open),
         }
     }
 }
 
+/// Which end of a relayed connection failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Client,
+    Upstream,
+}
+
+struct RelayError {
+    side: Side,
+    err: io::Error,
+}
+
+impl RelayError {
+    fn on(side: Side) -> impl FnOnce(io::Error) -> Self {
+        move |err| Self { side, err }
+    }
+}
+
+/// Copies `r` to `w` until EOF. Errors are attributed to the side whose
+/// socket failed: `rs` for reads, `ws` for writes.
 async fn copy_counting<R, W>(
     r: &mut R,
     w: &mut W,
+    (rs, ws): (Side, Side),
     counter: &AtomicU64,
     last: &AtomicU64,
     epoch: Instant,
-) -> io::Result<()>
+) -> Result<(), RelayError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut buf = vec![0u8; COPY_BUF];
     loop {
-        let n = r.read(&mut buf).await?;
+        let n = r.read(&mut buf).await.map_err(RelayError::on(rs))?;
         if n == 0 {
             return Ok(());
         }
-        w.write_all(&buf[..n]).await?;
+        w.write_all(&buf[..n]).await.map_err(RelayError::on(ws))?;
         counter.fetch_add(n as u64, Relaxed);
         last.store(epoch.elapsed().as_secs(), Relaxed);
     }
 }
 
-fn apply_sniffed(shared: &Shared, ev: &mut FlowEvent, sniffed: &Sniffed) {
+fn apply_sniffed(ev: &mut FlowEvent, sniffed: &Sniffed) {
     match sniffed {
         Sniffed::Tls(ch) => {
             ev.app_proto = Some("tls");
@@ -324,7 +388,6 @@ fn apply_sniffed(shared: &Shared, ev: &mut FlowEvent, sniffed: &Sniffed) {
         }
         Sniffed::Other => {}
     }
-    let _ = shared;
 }
 
 /// Policy decision once the destination name is known. Returns the block
@@ -382,6 +445,18 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
     }
 }
 
+/// Why a relay ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayEnd {
+    /// Both directions finished normally.
+    Closed,
+    /// The name was blocked after sniffing.
+    Blocked,
+    /// One side failed (typically: reset); the other side is reset too.
+    Failed(Side),
+    IdleTimeout,
+}
+
 async fn relay(
     shared: &Arc<Shared>,
     client: netstack_smoltcp::TcpStream,
@@ -393,74 +468,206 @@ async fn relay(
     let id = ev.id;
     let counters = FlowCounters::new();
     let last = AtomicU64::new(0);
+    let opened = AtomicBool::new(false);
+    let client_abort = client.abort_handle();
     let (mut cr, mut cw) = tokio::io::split(client);
     let (mut ur, mut uw) = upstream.into_split();
-
-    let s2c = async {
-        let r = copy_counting(&mut ur, &mut cw, &counters.rx, &last, started).await;
-        let _ = cw.shutdown().await;
-        r
-    };
-    let c2s = async {
-        let mut buf = Vec::with_capacity(4096);
-        let (sniffed, eof) = sniff(&mut cr, &mut buf).await;
-        apply_sniffed(shared, &mut ev, &sniffed);
-        if let Some(reason) = decide_named(shared, &mut ev) {
-            mark_blocked(shared, &mut ev, &reason);
-            shared.open_flow(ev.clone(), &counters);
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"));
-        }
-        ev.verdict = Some(Verdict::Allow);
-        shared.open_flow(ev.clone(), &counters);
-        observe_allowed(shared, &ev);
-        if !buf.is_empty() {
-            uw.write_all(&buf).await?;
-            counters.tx.fetch_add(buf.len() as u64, Relaxed);
-        }
-        let r = if eof {
-            Ok(())
-        } else {
-            copy_counting(&mut cr, &mut uw, &counters.tx, &last, started).await
-        };
-        let _ = uw.shutdown().await;
-        r
-    };
-    tokio::pin!(s2c, c2s);
-    let (mut c2s_done, mut s2c_done) = (false, false);
     let mut error: Option<String> = None;
-    let mut idle_check = tokio::time::interval(Duration::from_secs(60));
-    while !(c2s_done && s2c_done) {
-        tokio::select! {
-            r = &mut c2s, if !c2s_done => {
-                c2s_done = true;
-                if let Err(e) = r {
-                    if e.kind() == io::ErrorKind::PermissionDenied {
-                        break;
-                    }
-                    error.get_or_insert_with(|| e.to_string());
-                    // A reset in one direction tears down the connection.
-                    if e.kind() == io::ErrorKind::ConnectionReset {
-                        break;
+
+    let end = {
+        let s2c = async {
+            let dirs = (Side::Upstream, Side::Client);
+            copy_counting(&mut ur, &mut cw, dirs, &counters.rx, &last, started).await?;
+            let _ = cw.shutdown().await;
+            Ok::<_, RelayError>(())
+        };
+        let c2s = async {
+            let mut buf = Vec::with_capacity(4096);
+            let (sniffed, sniff_end) = sniff(&mut cr, &mut buf).await;
+            apply_sniffed(&mut ev, &sniffed);
+            if let Some(reason) = decide_named(shared, &mut ev) {
+                mark_blocked(shared, &mut ev, &reason);
+                shared.open_flow(ev.clone(), &counters);
+                opened.store(true, Relaxed);
+                return Ok(false);
+            }
+            ev.verdict = Some(Verdict::Allow);
+            shared.open_flow(ev.clone(), &counters);
+            opened.store(true, Relaxed);
+            observe_allowed(shared, &ev);
+            if let SniffEnd::Failed(err) = sniff_end {
+                return Err(RelayError {
+                    side: Side::Client,
+                    err,
+                });
+            }
+            if !buf.is_empty() {
+                uw.write_all(&buf)
+                    .await
+                    .map_err(RelayError::on(Side::Upstream))?;
+                counters.tx.fetch_add(buf.len() as u64, Relaxed);
+            }
+            if matches!(sniff_end, SniffEnd::Open) {
+                let dirs = (Side::Client, Side::Upstream);
+                copy_counting(&mut cr, &mut uw, dirs, &counters.tx, &last, started).await?;
+            }
+            let _ = uw.shutdown().await;
+            Ok(true)
+        };
+        tokio::pin!(s2c, c2s);
+        let (mut c2s_done, mut s2c_done) = (false, false);
+        let mut idle_check = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            if c2s_done && s2c_done {
+                break RelayEnd::Closed;
+            }
+            tokio::select! {
+                r = &mut c2s, if !c2s_done => {
+                    c2s_done = true;
+                    match r {
+                        Ok(true) => {}
+                        Ok(false) => break RelayEnd::Blocked,
+                        Err(e) => {
+                            error.get_or_insert_with(|| e.err.to_string());
+                            break RelayEnd::Failed(e.side);
+                        }
                     }
                 }
-            }
-            r = &mut s2c, if !s2c_done => {
-                s2c_done = true;
-                if let Err(e) = r {
-                    error.get_or_insert_with(|| e.to_string());
-                    if e.kind() == io::ErrorKind::ConnectionReset {
-                        break;
+                r = &mut s2c, if !s2c_done => {
+                    s2c_done = true;
+                    if let Err(e) = r {
+                        error.get_or_insert_with(|| e.err.to_string());
+                        break RelayEnd::Failed(e.side);
                     }
                 }
-            }
-            _ = idle_check.tick() => {
-                let idle = started.elapsed().as_secs().saturating_sub(last.load(Relaxed));
-                if idle >= IDLE_TIMEOUT.as_secs() {
-                    error = Some("idle timeout".into());
-                    break;
+                _ = idle_check.tick() => {
+                    let idle = started.elapsed().as_secs().saturating_sub(last.load(Relaxed));
+                    if idle >= IDLE_TIMEOUT.as_secs() {
+                        error = Some("idle timeout".into());
+                        break RelayEnd::IdleTimeout;
+                    }
                 }
             }
         }
+    };
+
+    // Propagate aborts: whichever side failed, the other side is reset too,
+    // as it would be end to end without vigil in the path.
+    let reset_client = matches!(
+        end,
+        RelayEnd::Failed(Side::Upstream) | RelayEnd::Blocked | RelayEnd::IdleTimeout
+    );
+    let reset_upstream = matches!(
+        end,
+        RelayEnd::Failed(Side::Client) | RelayEnd::Blocked | RelayEnd::IdleTimeout
+    );
+    if reset_client {
+        client_abort.abort();
+    }
+    if let Ok(upstream) = ur.reunite(uw) {
+        if reset_upstream {
+            sock::set_reset_on_close(&upstream);
+        }
+        drop(upstream);
+    }
+    if !opened.load(Relaxed) {
+        // Ended before the flow was reported (e.g. the server reset the
+        // connection during the sniff window): report it now.
+        ev.verdict = Some(Verdict::Allow);
+        shared.open_flow(ev, &counters);
     }
     shared.finish_flow(id, error);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::test_shared_with_tun;
+    use super::*;
+    use crate::config::Config;
+    use crate::packet::{TCP_RST, TCP_SYN};
+
+    fn syn(src_port: u16, dst: &str) -> (Vec<u8>, TcpInfo) {
+        let info = TcpInfo {
+            src: format!("10.111.222.1:{src_port}").parse().unwrap(),
+            dst: dst.parse().unwrap(),
+            seq: 1,
+            ack: 0,
+            flags: TCP_SYN,
+            payload_len: 0,
+        };
+        // The gate only forwards the packet bytes; their content is opaque.
+        (vec![0x45; 40], info)
+    }
+
+    fn is_rst(pkt: &[u8]) -> bool {
+        let ip = packet::parse_ip(pkt).unwrap();
+        packet::parse_tcp(pkt, &ip).unwrap().flags & TCP_RST != 0
+    }
+
+    #[tokio::test]
+    async fn retransmitted_syns_are_gated_once() {
+        let (shared, mut tun) = test_shared_with_tun(Config::default());
+        let (stack_tx, mut stack_rx) = mpsc::channel(16);
+        let gate = Gate::new(shared.clone(), stack_tx);
+        // DNS over TCP to the virtual resolver: admitted without upstream.
+        let (pkt, info) = syn(40000, "10.111.222.2:53");
+        gate.on_syn(pkt.clone(), info);
+        gate.on_syn(pkt.clone(), info); // retransmit while deciding
+        assert!(stack_rx.recv().await.is_some());
+        assert_eq!(shared.tcp_meta.lock().len(), 1);
+        gate.on_syn(pkt.clone(), info); // retransmit after admission
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            stack_rx.try_recv().is_err(),
+            "SYN passed to the stack twice"
+        );
+        assert!(tun.try_recv().is_err());
+        // Once the connection is gone the same 4-tuple may be reused.
+        drop(shared.tcp_meta.lock().remove(&(info.src, info.dst)));
+        assert!(shared.tcp_keys.lock().is_empty());
+        gate.on_syn(pkt, info);
+        assert!(stack_rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn pending_connect_cap_resets_excess_syns() {
+        let (shared, mut tun) = test_shared_with_tun(Config {
+            max_pending_connects: 1,
+            ..Default::default()
+        });
+        let (stack_tx, _stack_rx) = mpsc::channel(16);
+        let gate = Gate::new(shared.clone(), stack_tx);
+        let (p1, s1) = syn(40001, "10.111.222.2:853");
+        let (p2, s2) = syn(40002, "10.111.222.2:853");
+        gate.on_syn(p1, s1);
+        gate.on_syn(p2, s2); // first still pending: over the cap
+        let first = tun.recv().await.unwrap();
+        assert!(is_rst(&first));
+        let ip = packet::parse_ip(&first).unwrap();
+        assert_eq!(packet::parse_tcp(&first, &ip).unwrap().dst, s2.src);
+        // The first SYN is still decided (and refused: port 853 there).
+        let second = tun.recv().await.unwrap();
+        let ip = packet::parse_ip(&second).unwrap();
+        assert_eq!(packet::parse_tcp(&second, &ip).unwrap().dst, s1.src);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(shared.tcp_keys.lock().is_empty());
+        assert_eq!(shared.limits.gate.available_permits(), 1);
+        assert_eq!(shared.limits.tcp.available_permits(), 4096);
+    }
+
+    #[tokio::test]
+    async fn tcp_flow_cap_resets_excess_syns() {
+        let (shared, mut tun) = test_shared_with_tun(Config {
+            max_tcp_flows: 1,
+            ..Default::default()
+        });
+        let (stack_tx, mut stack_rx) = mpsc::channel(16);
+        let gate = Gate::new(shared.clone(), stack_tx);
+        let (p1, s1) = syn(40003, "10.111.222.2:53");
+        let (p2, s2) = syn(40004, "10.111.222.2:53");
+        gate.on_syn(p1, s1);
+        assert!(stack_rx.recv().await.is_some()); // admitted, holds the slot
+        gate.on_syn(p2, s2);
+        assert!(is_rst(&tun.recv().await.unwrap()));
+    }
 }
