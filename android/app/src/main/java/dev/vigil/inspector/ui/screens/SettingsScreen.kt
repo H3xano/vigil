@@ -149,8 +149,8 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
 
             SectionTitle("About")
             SettingRow("vigil ${BuildConfig.VERSION_NAME}", "Engine ${runCatching { VigilNative.nativeVersion() }.getOrDefault("?")} · Apache-2.0")
-            SettingRow("Source code & documentation", "github.com/vigil-inspector/vigil", onClick = {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/vigil-inspector/vigil")))
+            SettingRow("Source code & documentation", "github.com/H3xano/vigil", onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/H3xano/vigil")))
             })
             Row(Modifier.padding(24.dp)) {}
         }

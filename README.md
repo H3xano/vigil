@@ -55,6 +55,10 @@ Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the event
 schema is in [docs/EVENTS.md](docs/EVENTS.md). What vigil can and cannot see is
 covered in [docs/PRIVACY.md](docs/PRIVACY.md).
 
+**Picking the project up again?** Start with [docs/STATUS.md](docs/STATUS.md)
+(state, backlog, decisions), then [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+(setup, tests, gotchas).
+
 ## Repository layout
 
 ```
