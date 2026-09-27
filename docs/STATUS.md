@@ -10,7 +10,9 @@ to rebuild the toolchain and run the tests.
 ## Where things stand
 
 vigil is **feature-complete for a 0.1 release and verified on an Android 15
-emulator**. It has **not yet been run on a physical phone**.
+emulator**. The owner installed the v0.1.0 APK on their own phone
+(2026-09-27) and reports that it works. That was an informal check; the
+systematic device testing in backlog item 1 is still to do.
 
 | Area | State | Verified by |
 |---|---|---|
@@ -59,7 +61,9 @@ history.
 
 ## Backlog (priority order)
 
-1. **Test on physical phones.** At least one Pixel and one Samsung
+1. **Test on physical phones systematically.** The owner's phone works
+   informally (record its model and Android version here). Still needed: at
+   least one Pixel and one Samsung
    (One UI is known to be aggressive with background services). Check
    always-on VPN at boot, Doze and battery drain over a day, Private DNS
    "automatic" behaviour, IPv6-only carriers (464XLAT), and network
