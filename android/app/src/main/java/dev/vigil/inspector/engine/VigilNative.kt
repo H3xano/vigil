@@ -14,7 +14,15 @@ object VigilNative {
     /** Starts the engine on a duplicate of [tunFd]; returns a handle or 0. */
     @JvmStatic external fun nativeStart(tunFd: Int, configJson: String, bridge: PlatformBridge): Long
 
+    /** Stops and frees the engine. The handle is invalid afterwards. */
     @JvmStatic external fun nativeStop(handle: Long)
+
+    /**
+     * Stops the engine and queues `flow_end` for every open flow, without
+     * freeing the handle: [nativePollEvents] (timeout 0) then returns the
+     * remaining events, and [nativeStop] frees it.
+     */
+    @JvmStatic external fun nativeShutdown(handle: Long): Boolean
 
     /** Blocks up to [timeoutMs]; returns a JSON array of events or null. */
     @JvmStatic external fun nativePollEvents(handle: Long, max: Int, timeoutMs: Int): String?

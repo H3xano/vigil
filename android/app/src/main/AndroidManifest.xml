@@ -42,6 +42,12 @@
             </intent-filter>
         </activity>
 
+        <!-- exported="false" is deliberate: the system (always-on VPN, boot)
+             binds and starts VpnServices from system_server, which is exempt
+             from the exported check, and nothing else should start it.
+             specialUse is kept rather than systemExempted, whose "active VPN
+             app" eligibility is not guaranteed at the time startForeground()
+             runs (before establish()). -->
         <service
             android:name=".vpn.VigilVpnService"
             android:exported="false"

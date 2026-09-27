@@ -5,7 +5,12 @@ import dev.vigil.inspector.engine.BeaconConfig
 import dev.vigil.inspector.engine.EngineConfig
 
 object ConfigFactory {
-    fun build(s: Settings, networkDns: List<String>, blockedUids: List<Int>): EngineConfig {
+    /**
+     * [nat64Prefixes] are the underlying network's NAT64 prefixes (CIDR).
+     * Anything that is not a valid IPv6 /96 is dropped, because the engine
+     * rejects the whole config otherwise.
+     */
+    fun build(s: Settings, networkDns: List<String>, blockedUids: List<Int>, nat64Prefixes: List<String> = emptyList()): EngineConfig {
         val upstreams = when (s.upstreamMode) {
             "custom" -> s.customUpstreams.mapNotNull(::normalizeResolver)
             else -> networkDns
@@ -23,6 +28,7 @@ object ConfigFactory {
             allowDomains = s.allowDomains.sorted(),
             denyDomains = s.denyDomains.sorted(),
             beacon = beacon,
+            nat64Prefixes = nat64Prefixes.mapNotNull(::normalizeNat64Prefix).distinct(),
         )
     }
 
@@ -37,21 +43,39 @@ object ConfigFactory {
             val end = s.indexOf(']')
             if (end < 0) return null
             val host = s.substring(1, end)
-            val port = s.substring(end + 1).removePrefix(":").ifEmpty { "53" }.toIntOrNull() ?: return null
-            return if (isIpv6(host) && port in 1..65535) "[$host]:$port" else null
+            val rest = s.substring(end + 1)
+            val port = when {
+                rest.isEmpty() -> 53
+                rest.startsWith(":") -> parsePort(rest.substring(1)) ?: return null
+                else -> return null
+            }
+            return if (IpLiteral.isV6(host)) "[$host]:$port" else null
         }
-        if (s.count { it == ':' } > 1) return if (isIpv6(s)) "[$s]:53" else null
+        if (s.count { it == ':' } > 1) return if (IpLiteral.isV6(s)) "[$s]:53" else null
         val parts = s.split(':')
         val host = parts[0]
-        val port = parts.getOrNull(1)?.toIntOrNull() ?: if (parts.size == 1) 53 else return null
-        return if (isIpv4(host) && port in 1..65535) "$host:$port" else null
+        val port = if (parts.size == 1) 53 else parsePort(parts[1]) ?: return null
+        return if (IpLiteral.isV4(host)) "$host:$port" else null
     }
 
-    fun formatResolver(ip: java.net.InetAddress): String =
-        if (ip is java.net.Inet6Address) "[${ip.hostAddress?.substringBefore('%')}]:53" else "${ip.hostAddress}:53"
+    /** `64:ff9b::/96`-style prefix, or null unless it is an IPv6 /96. */
+    fun normalizeNat64Prefix(raw: String): String? {
+        val parts = raw.trim().split('/')
+        if (parts.size != 2 || parts[1] != "96" || !IpLiteral.isV6(parts[0])) return null
+        return "${parts[0]}/96"
+    }
 
-    private fun isIpv4(s: String) = s.split('.').let { p -> p.size == 4 && p.all { it.toIntOrNull() in 0..255 && it.isNotEmpty() } }
+    /**
+     * Resolver of the underlying network in `ip:port` form. Link-local
+     * resolvers give null: the engine cannot use a scope id, and a scope-less
+     * `fe80::` address is unroutable.
+     */
+    fun formatResolver(ip: java.net.InetAddress): String? = when {
+        ip.isLinkLocalAddress -> null
+        ip is java.net.Inet6Address -> ip.hostAddress?.substringBefore('%')?.let { "[$it]:53" }
+        else -> ip.hostAddress?.let { "$it:53" }
+    }
 
-    private fun isIpv6(s: String) = s.contains(':') && s.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' } &&
-        s.split("::").size <= 2
+    private fun parsePort(s: String): Int? =
+        if (s.isEmpty() || s.length > 5 || !s.all { it in '0'..'9' }) null else s.toInt().takeIf { it in 1..65535 }
 }

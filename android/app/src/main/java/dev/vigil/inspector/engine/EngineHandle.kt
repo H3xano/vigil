@@ -18,6 +18,20 @@ class EngineHandle(private var handle: Long) {
         if (handle == 0L) null else block(handle)
     }
 
+    /**
+     * Stops the engine but keeps the handle, so the final `flow_end` events
+     * can still be polled before [close]. False if already closed, or if the
+     * native library predates `nativeShutdown`.
+     */
+    fun shutdown(): Boolean = lock.read {
+        if (handle == 0L) return@read false
+        try {
+            VigilNative.nativeShutdown(handle)
+        } catch (e: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
     fun close() = lock.write {
         if (handle != 0L) {
             VigilNative.nativeStop(handle)

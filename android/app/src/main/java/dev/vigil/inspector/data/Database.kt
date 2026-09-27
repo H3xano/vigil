@@ -12,11 +12,14 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(
     tableName = "flows",
-    indices = [Index(value = ["session", "engineId"], unique = true), Index("ts"), Index("pkg"), Index("domain")],
+    // No index on domain: searches use leading-wildcard LIKE, which cannot use one.
+    indices = [Index(value = ["session", "engineId"], unique = true), Index("ts"), Index(value = ["pkg", "ts"]), Index("endTs")],
 )
 data class FlowEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -56,7 +59,7 @@ data class FlowEntity(
     val tagList: List<String> get() = if (tags.isEmpty()) emptyList() else tags.split(',')
 }
 
-@Entity(tableName = "dns_queries", indices = [Index("ts"), Index("pkg"), Index("qname")])
+@Entity(tableName = "dns_queries", indices = [Index("ts"), Index(value = ["pkg", "ts"])])
 data class DnsEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val ts: Long,
@@ -89,7 +92,10 @@ data class AlertEntity(
     val seen: Boolean = false,
 )
 
-/** Every (app, destination) pair ever observed; survives retention pruning. */
+/**
+ * (app, destination) pairs observed, for novelty alerts. Kept longer than the
+ * history tables (see VigilApp.pruneOldData) so learning survives retention.
+ */
 @Entity(tableName = "destinations", primaryKeys = ["pkg", "destination"])
 data class DestinationEntity(
     val pkg: String,
@@ -161,7 +167,8 @@ interface FlowDao {
     suspend fun closeStale(current: Long)
 
     @Query(
-        """SELECT * FROM flows WHERE (:query = '' OR domain LIKE '%' || :query || '%' OR dstIp LIKE :query || '%' OR pkg LIKE '%' || :query || '%')
+        """SELECT * FROM flows WHERE (:query = '' OR domain LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR dstIp LIKE $LIKE_ARG || '%' ESCAPE '\'
+             OR pkg LIKE '%' || $LIKE_ARG || '%' ESCAPE '\')
            AND (:blockedOnly = 0 OR verdict = 'block') ORDER BY ts DESC LIMIT :limit""",
     )
     fun recent(query: String, blockedOnly: Boolean, limit: Int = 500): Flow<List<FlowEntity>>
@@ -192,8 +199,13 @@ interface FlowDao {
     @Query("SELECT COUNT(*) FROM flows WHERE endTs IS NULL")
     fun activeCount(): Flow<Int>
 
-    @Query("DELETE FROM flows WHERE ts < :before")
-    suspend fun deleteBefore(before: Long): Int
+    /** Closes rows of [session] still open (their `flow_end` was lost or never came). */
+    @Query("UPDATE flows SET endTs = MAX(ts, :now), durationMs = MAX(0, :now - ts), error = COALESCE(error, 'session ended') WHERE session = :session AND endTs IS NULL")
+    suspend fun closeSession(session: Long, now: Long)
+
+    /** Deletes at most [limit] rows older than [before]; call until it returns less than [limit]. */
+    @Query("DELETE FROM flows WHERE id IN (SELECT id FROM flows WHERE ts < :before LIMIT :limit)")
+    suspend fun deleteBefore(before: Long, limit: Int): Int
 
     @Query("DELETE FROM flows")
     suspend fun clear()
@@ -205,7 +217,7 @@ interface DnsDao {
     suspend fun insert(rows: List<DnsEntity>)
 
     @Query(
-        """SELECT * FROM dns_queries WHERE (:query = '' OR qname LIKE '%' || :query || '%' OR pkg LIKE '%' || :query || '%')
+        """SELECT * FROM dns_queries WHERE (:query = '' OR qname LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR pkg LIKE '%' || $LIKE_ARG || '%' ESCAPE '\')
            AND (:blockedOnly = 0 OR verdict = 'block') ORDER BY ts DESC LIMIT :limit""",
     )
     fun recent(query: String, blockedOnly: Boolean, limit: Int = 500): Flow<List<DnsEntity>>
@@ -222,8 +234,8 @@ interface DnsDao {
     @Query("SELECT COUNT(*) FROM dns_queries WHERE ts >= :since AND verdict = 'block'")
     fun blockedSince(since: Long): Flow<Long>
 
-    @Query("DELETE FROM dns_queries WHERE ts < :before")
-    suspend fun deleteBefore(before: Long): Int
+    @Query("DELETE FROM dns_queries WHERE id IN (SELECT id FROM dns_queries WHERE ts < :before LIMIT :limit)")
+    suspend fun deleteBefore(before: Long, limit: Int): Int
 
     @Query("DELETE FROM dns_queries")
     suspend fun clear()
@@ -246,8 +258,8 @@ interface AlertDao {
     @Query("UPDATE alerts SET seen = 1 WHERE seen = 0")
     suspend fun markAllSeen()
 
-    @Query("DELETE FROM alerts WHERE ts < :before")
-    suspend fun deleteBefore(before: Long): Int
+    @Query("DELETE FROM alerts WHERE id IN (SELECT id FROM alerts WHERE ts < :before LIMIT :limit)")
+    suspend fun deleteBefore(before: Long, limit: Int): Int
 
     @Query("DELETE FROM alerts")
     suspend fun clear()
@@ -258,8 +270,15 @@ interface DestinationDao {
     @Query("SELECT * FROM destinations WHERE pkg = :pkg AND destination = :destination")
     suspend fun get(pkg: String, destination: String): DestinationEntity?
 
-    @Upsert
-    suspend fun upsert(rows: List<DestinationEntity>)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(rows: List<DestinationEntity>)
+
+    /** Counts [flows] more connections; returns 0 if the pair is not (or no longer) stored. */
+    @Query("UPDATE destinations SET flows = flows + :flows, lastSeen = MAX(lastSeen, :lastSeen) WHERE pkg = :pkg AND destination = :destination")
+    suspend fun touch(pkg: String, destination: String, lastSeen: Long, flows: Long): Int
+
+    @Query("DELETE FROM destinations WHERE lastSeen < :before")
+    suspend fun deleteBefore(before: Long): Int
 
     @Query("SELECT MIN(firstSeen) FROM destinations WHERE pkg = :pkg")
     suspend fun firstSeenApp(pkg: String): Long?
@@ -288,13 +307,24 @@ interface FeedDao {
     @Query("UPDATE feeds SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean)
 
+    /** Targeted updates: unlike an upsert they cannot resurrect a feed deleted meanwhile. Return the rows changed. */
+    @Query("UPDATE feeds SET lastUpdated = :ts, domains = :domains, ipRanges = :ipRanges, lastError = NULL WHERE id = :id")
+    suspend fun markUpdated(id: String, ts: Long, domains: Int, ipRanges: Int): Int
+
+    @Query("UPDATE feeds SET lastError = :error WHERE id = :id")
+    suspend fun markError(id: String, error: String): Int
+
+    /** The downloaded copy was deleted (feed disabled). */
+    @Query("UPDATE feeds SET lastUpdated = NULL, domains = 0, ipRanges = 0, lastError = NULL WHERE id = :id")
+    suspend fun clearDownload(id: String)
+
     @Query("DELETE FROM feeds WHERE id = :id AND builtin = 0")
     suspend fun deleteCustom(id: String)
 }
 
 @Database(
     entities = [FlowEntity::class, DnsEntity::class, AlertEntity::class, DestinationEntity::class, FeedEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class VigilDatabase : RoomDatabase() {
@@ -308,9 +338,36 @@ abstract class VigilDatabase : RoomDatabase() {
         fun create(context: Context): VigilDatabase =
             Room.databaseBuilder(context, VigilDatabase::class.java, "vigil.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
+                .addMigrations(MIGRATION_1_2)
                 .build()
+
+        /**
+         * Index changes only. Written by hand because Room's AutoMigration
+         * would copy both tables to drop an index.
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (sql in MIGRATION_1_2_SQL) db.execSQL(sql)
+            }
+        }
+
+        val MIGRATION_1_2_SQL = listOf(
+            "DROP INDEX IF EXISTS `index_flows_domain`",
+            "DROP INDEX IF EXISTS `index_flows_pkg`",
+            "CREATE INDEX IF NOT EXISTS `index_flows_pkg_ts` ON `flows` (`pkg`, `ts`)",
+            "CREATE INDEX IF NOT EXISTS `index_flows_endTs` ON `flows` (`endTs`)",
+            "DROP INDEX IF EXISTS `index_dns_queries_qname`",
+            "DROP INDEX IF EXISTS `index_dns_queries_pkg`",
+            "CREATE INDEX IF NOT EXISTS `index_dns_queries_pkg_ts` ON `dns_queries` (`pkg`, `ts`)",
+        )
     }
 }
+
+/**
+ * SQL for the `:query` search term with LIKE wildcards escaped (used with
+ * `ESCAPE '\'`), so typing `%` or `_` searches for those characters literally.
+ */
+private const val LIKE_ARG = """replace(replace(replace(:query, '\', '\\'), '%', '\%'), '_', '\_')"""
 
 /** Column helper so string constants stay in one place. */
 object Verdicts {

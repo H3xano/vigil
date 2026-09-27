@@ -15,6 +15,8 @@ data class EngineConfig(
     @SerialName("allow_domains") val allowDomains: List<String> = emptyList(),
     @SerialName("deny_domains") val denyDomains: List<String> = emptyList(),
     val beacon: BeaconConfig = BeaconConfig(),
+    /** NAT64 prefixes (IPv6 /96) of the underlying network; the engine always implies 64:ff9b::/96. */
+    @SerialName("nat64_prefixes") val nat64Prefixes: List<String> = emptyList(),
     val mtu: Int = MTU,
     @SerialName("tcp_connect_timeout_ms") val tcpConnectTimeoutMs: Long = 15_000,
     @SerialName("udp_idle_timeout_s") val udpIdleTimeoutS: Long = 60,

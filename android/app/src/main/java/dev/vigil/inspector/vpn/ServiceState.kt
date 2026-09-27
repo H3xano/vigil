@@ -15,6 +15,8 @@ data class NetworkInfo(
     /** Private DNS hostname when Private DNS is in strict mode. */
     val privateDnsStrictHost: String? = null,
     val privateDnsActive: Boolean = false,
+    /** NAT64 prefixes of the underlying network (CIDR), API 30+. */
+    val nat64Prefixes: List<String> = emptyList(),
 )
 
 /** Process-wide observable state of the inspector service. */
@@ -24,7 +26,10 @@ object ServiceState {
     val network = MutableStateFlow(NetworkInfo())
     val loadedFeeds = MutableStateFlow<Map<String, Long>>(emptyMap())
 
-    fun reportEngineError(message: String) {
-        status.value = VpnStatus.Failed("Engine error: $message")
-    }
+    /**
+     * Set when the engine rejected a settings change (the previous
+     * configuration stays active); cleared by the next accepted change or a
+     * new session.
+     */
+    val configError = MutableStateFlow<String?>(null)
 }
