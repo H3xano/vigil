@@ -100,7 +100,7 @@ installable. Pass `-Pvigil.abis=arm64-v8a` to build fewer ABIs, or
 | Engine end-to-end | `scripts/e2e-netns.sh` | 43 checks with real `dig`/`curl` through the engine: DNS UDP/TCP, sinkholing, SNI/HTTP/IP/QUIC blocking, 1 MB up/down integrity, beacon alerts, faithful connection refusal |
 | JNI | `scripts/jni-smoke.sh` | the exact entry points the app calls, from a real JVM |
 | Kotlin unit tests | `cd android && ./gradlew testDebugUnitTest` | routes, config, event parsing, SIEM wire formats |
-| On device | `scripts/android-e2e.sh` | 19 checks on an emulator/userdebug device: per-app attribution, Chrome TLS SNI + JA4, sinkholing, feed downloads, screenshots, no crashes |
+| On device | `scripts/android-e2e.sh` | 28 checks on an emulator/userdebug device: per-app attribution, Chrome TLS SNI + JA4, sinkholing, HTTP Host blocking, per-app blocking through the UI, SIEM export to a live syslog collector, real feed downloads, screenshots, no crashes |
 
 The netns and JNI suites need no root. They use unprivileged user
 namespaces.

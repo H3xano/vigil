@@ -123,7 +123,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
             if (canBlock) {
                 item {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
                             Text("Block all network access", style = MaterialTheme.typography.bodyLarge)
                             Text(
                                 "Connections are refused and DNS lookups sinkholed while inspection runs.",
@@ -143,7 +143,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
             }
             item {
                 TabRow(selectedTabIndex = tab) {
-                    listOf("Destinations", "Connections", "DNS", "Alerts").forEachIndexed { i, t ->
+                    listOf("Hosts", "Flows", "DNS", "Alerts").forEachIndexed { i, t ->
                         Tab(tab == i, onClick = { tab = i }, text = { Text(t, maxLines = 1) })
                     }
                 }

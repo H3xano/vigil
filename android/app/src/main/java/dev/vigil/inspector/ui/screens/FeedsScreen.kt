@@ -63,7 +63,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                 item { SectionTitle(category) }
                 items(groups.getValue(category), key = { it.id }) { f ->
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
                             Text(f.name, style = MaterialTheme.typography.bodyLarge)
                             if (f.description.isNotEmpty()) {
                                 Text(f.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

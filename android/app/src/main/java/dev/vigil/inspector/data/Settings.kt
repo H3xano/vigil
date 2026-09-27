@@ -63,7 +63,11 @@ class SettingsStore(context: Context) {
 
     private fun load(): Settings {
         val raw = prefs.getString(KEY, null)
-        val s = raw?.let { runCatching { EngineJson.json.decodeFromString(Settings.serializer(), it) }.getOrNull() } ?: Settings()
+        val s = raw?.let {
+            runCatching { EngineJson.json.decodeFromString(Settings.serializer(), it) }
+                .onFailure { e -> android.util.Log.e("vigil.settings", "unreadable settings, using defaults", e) }
+                .getOrNull()
+        } ?: Settings()
         return if (s.deviceId.isEmpty()) s.copy(deviceId = UUID.randomUUID().toString()).also { save(it) } else s
     }
 

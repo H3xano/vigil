@@ -35,17 +35,25 @@ adb shell am force-stop $pkg
 uid=$(adb shell stat -c %u /data/data/$pkg | tr -d '\r')
 
 # A local test feed plus a pre-accepted onboarding dialog.
-adb shell "mkdir -p /data/data/$pkg/files/feeds && printf 'ads.vigil-e2e.example\nblocked-http.vigil-e2e.example\nblocked-sni.vigil-e2e.example\n' > /data/data/$pkg/files/feeds/e2e.txt"
-adb shell "chown -R $uid:$uid /data/data/$pkg/files"
+printf 'ads.vigil-e2e.example\nblocked-http.vigil-e2e.example\nblocked-sni.vigil-e2e.example\n' > /tmp/vigil-e2e-feed.txt
+adb exec-in run-as $pkg sh -c 'mkdir -p files/feeds && cat > files/feeds/e2e.txt' < /tmp/vigil-e2e-feed.txt
 now=$(($(date +%s)*1000))
 sql "INSERT OR REPLACE INTO feeds(id,name,url,category,enabled,builtin,description,authHeader,lastUpdated,domains,ipRanges,lastError) VALUES('e2e','E2E test feed','https://example.invalid/e2e.txt','malware',1,0,'test',NULL,$now,3,0,NULL)" >/dev/null
-prefs=$(adb shell "cat /data/data/$pkg/shared_prefs/vigil.xml" | tr -d '\r')
-if echo "$prefs" | grep -q '&quot;onboarded&quot;:false'; then
-  adb shell "sed -i 's/&quot;onboarded&quot;:false/\&quot;onboarded\&quot;:true/' /data/data/$pkg/shared_prefs/vigil.xml"
-else
-  adb shell "sed -i 's/}<\/string>/,\&quot;onboarded\&quot;:true}<\/string>/' /data/data/$pkg/shared_prefs/vigil.xml"
-fi
+# Pre-accept onboarding and point SIEM export at a collector on the host
+# (the emulator reaches the host at 10.0.2.2).
+sink_port=5514; sink_out="$(mktemp)"
+python3 "$root/scripts/e2e/syslog_sink.py" $sink_port "$sink_out" & sink_pid=$!
+trap 'kill $sink_pid 2>/dev/null' EXIT
+adb pull /data/data/$pkg/shared_prefs/vigil.xml /tmp/vigil-prefs.xml >/dev/null
+python3 "$root/scripts/e2e/edit_settings.py" /tmp/vigil-prefs.xml \
+  '{"onboarded": true, "export": {"enabled": true, "mode": "syslog", "transport": "tcp", "host": "10.0.2.2", "port": '$sink_port', "level": "all"}}'
+# Write as the app itself (debug build) so the file gets the app's SELinux
+# MLS categories; files pushed by root are unreadable/unwritable for the app.
+adb exec-in run-as $pkg sh -c 'cat > shared_prefs/vigil.xml' < /tmp/vigil-prefs.xml
 
+# WorkManager may have restarted the process (feed download job) before the
+# edit landed; restart it so the edited settings are loaded.
+adb shell am force-stop $pkg
 # Start the inspector exactly as the UI does (consent already granted).
 adb shell am start-foreground-service -n $pkg/dev.vigil.inspector.vpn.VigilVpnService -a dev.vigil.inspector.START >/dev/null
 for i in $(seq 30); do adb shell ip addr show tun0 2>/dev/null | grep -q 10.111.222.1 && break; sleep 1; done
@@ -94,13 +102,48 @@ sql "SELECT pkg, qname, qtype, rcode, verdict FROM dns_queries ORDER BY id DESC 
 echo "--- feeds:"
 sql "SELECT id, enabled, domains, ipRanges, lastError FROM feeds WHERE enabled=1"
 
+# --- Per-app blocking through the UI -------------------------------------
+adb shell am start -n $pkg/dev.vigil.inspector.ui.MainActivity --es destination app/com.android.shell -f 0x14000000 >/dev/null
+sleep 3
+adb shell uiautomator dump /data/local/tmp/ui.xml >/dev/null
+bounds=$(adb shell cat /data/local/tmp/ui.xml | tr -d '\r' | grep -o 'checkable="true"[^>]*bounds="[^"]*"' | head -n1 | sed 's/.*bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]"/\1 \2 \3 \4/')
+if [ -n "$bounds" ]; then
+  read x1 y1 x2 y2 <<< "$bounds"
+  adb shell input tap $(((x1+x2)/2)) $(((y1+y2)/2))
+  sleep 3
+  # By IP: DNS answers are sinkholed too, and cached by Android for their TTL.
+  r=$(sh_ "(cat /data/local/tmp/req-ok.txt; sleep 2) | nc -w 5 $ip 80 | head -n 1")
+  echo "$r" | grep -q "HTTP/" && bad "blocked app gets no connectivity" "$r" || ok "blocked app gets no connectivity (${r:-no response})"
+  sh_ "ping -c 1 -W 2 blocked-app-lookup.example.net" >/dev/null
+  sleep 2
+  check_sql "app block recorded"  "SELECT COUNT(*) FROM flows WHERE pkg='com.android.shell' AND verdict='block' AND reason='app'"
+  check_sql "app block sinkholes its DNS" "SELECT COUNT(*) FROM dns_queries WHERE pkg='com.android.shell' AND verdict='block' AND reason='app'"
+  adb exec-out screencap -p > "$out/app-detail.png"
+  adb shell input tap $(((x1+x2)/2)) $(((y1+y2)/2))
+  sleep 3
+  r=$(sh_ "(cat /data/local/tmp/req-ok.txt; sleep 3) | nc -w 8 $ip 80 | head -n 1")
+  echo "$r" | grep -q "HTTP/1.1" && ok "unblocking restores connectivity" || bad "unblocking restores connectivity" "$r"
+else
+  bad "block switch found in UI"
+fi
+
+# --- SIEM export -----------------------------------------------------------
+sleep 3
+if grep -q BAD-FRAMING "$sink_out"; then bad "syslog octet framing"; else ok "syslog octet framing"; fi
+grep -q '^<1[0-9][0-9]>1 .* vigil - flow - {' "$sink_out" && ok "RFC 5424 flow records received ($(wc -l < "$sink_out") messages)" || bad "RFC 5424 flow records received" "$(head -c 300 "$sink_out")"
+grep -q '"dataset":"vigil.dns"' "$sink_out" && ok "DNS records exported" || bad "DNS records exported"
+grep -q '"kind":"alert"' "$sink_out" && ok "alerts exported" || bad "alerts exported"
+grep -q '"package":"com.android.chrome"' "$sink_out" && grep -q '"ja4":"t13d' "$sink_out" && ok "ECS app + tls.client.ja4 fields" || bad "ECS app + tls.client.ja4 fields"
+cp "$sink_out" "$root/scripts/e2e/last-syslog.txt"
+
 # --- Screenshots -----------------------------------------------------------
-shot() { adb shell am start -n $pkg/dev.vigil.inspector.ui.MainActivity ${2:+--es destination $2} -f 0x14000000 >/dev/null; sleep 3; adb exec-out screencap -p > "$out/$1.png"; }
-shot dashboard
+shot() { adb shell am start -n $pkg/dev.vigil.inspector.ui.MainActivity --es destination "$2" -f 0x14000000 >/dev/null 2>&1; sleep 3; adb exec-out screencap -p > "$out/$1.png"; }
+shot dashboard dashboard
 shot activity activity
 shot alerts alerts
 shot apps apps
 shot feeds feeds
+shot settings settings
 [ -s "$out/dashboard.png" ] && ok "screenshots saved to $out" || bad "screenshots"
 
 # --- Stability -------------------------------------------------------------

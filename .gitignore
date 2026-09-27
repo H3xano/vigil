@@ -13,3 +13,5 @@ android/app/release/
 .idea/
 *.iml
 .DS_Store
+scripts/e2e/last-syslog.txt
+/dist/
