@@ -81,11 +81,13 @@ async fn answer(
         .map(|s| s.to_string())
         .unwrap_or_else(|| "virtual".into());
     if let Some(server) = upstream {
+        let ip = server.ip().to_string();
         shared.alert(
             "hardcoded_dns",
             Severity::Info,
             uid,
-            &server.ip().to_string(),
+            &ip,
+            &ip,
             format!("App bypasses the system resolver and queries {server} directly"),
             serde_json::json!({ "qname": q.name }),
         );
@@ -190,10 +192,13 @@ fn sinkhole(
     };
     ev.latency_ms = started.elapsed().as_millis() as u64;
     if reason.is_threat() {
+        // Keyed by the listed entry, not the name: DGA and DNS tunnelling
+        // produce endless distinct names under one listed domain.
         shared.alert(
             "threat_domain",
             Severity::High,
             ev.uid,
+            &reason.alert_key(),
             qname,
             format!("Lookup of {qname} sinkholed: listed by {}", reason.describe()),
             serde_json::json!({ "category": reason.category.map(|c| c.as_str()), "qtype": ev.qtype }),

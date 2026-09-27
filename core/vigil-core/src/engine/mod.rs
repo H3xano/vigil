@@ -178,16 +178,22 @@ impl Shared {
         }
     }
 
+    /// Raises an alert unless one with the same kind, app and `dedup` key
+    /// was raised within the last hour (or the global budget is spent).
+    /// `dedup` identifies the finding, e.g. the matched list entry, so
+    /// thousands of generated names under one listed domain are one alert.
+    #[allow(clippy::too_many_arguments)]
     pub fn alert(
         &self,
         kind: &'static str,
         severity: Severity,
         uid: Option<u32>,
+        dedup: &str,
         target: &str,
         message: String,
         detail: serde_json::Value,
     ) {
-        let key = format!("{kind}|{uid:?}|{target}");
+        let key = format!("{kind}|{uid:?}|{dedup}");
         if !self.limiter.allow(&key, Instant::now()) {
             return;
         }

@@ -136,16 +136,19 @@ pub(crate) fn mark_blocked(
     ev.reason = Some(reason.describe());
     shared.stats.blocked.fetch_add(1, Relaxed);
     if reason.is_threat() {
-        let target = ev.domain.clone().unwrap_or_else(|| ev.dst_ip.clone());
-        let kind = if reason.rule.as_deref() == Some(ev.dst_ip.as_str()) {
-            "threat_ip"
+        let (kind, target) = if reason.ip_match {
+            // For NAT64 addresses the rule is the embedded IPv4 address.
+            let ip = reason.rule.clone().unwrap_or_else(|| ev.dst_ip.clone());
+            ("threat_ip", ip)
         } else {
-            "threat_domain"
+            let name = ev.domain.clone().unwrap_or_else(|| ev.dst_ip.clone());
+            ("threat_domain", name)
         };
         shared.alert(
             kind,
             Severity::High,
             ev.uid,
+            &reason.alert_key(),
             &target,
             format!("Connection to {target} blocked: listed by {}", reason.describe()),
             serde_json::json!({ "dst": format!("{}:{}", ev.dst_ip, ev.dst_port), "category": reason.category.map(|c| c.as_str()) }),
@@ -357,6 +360,7 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
             Severity::Low,
             ev.uid,
             &target,
+            &target,
             format!("App uses encrypted DNS ({target}); its lookups are invisible to vigil"),
             serde_json::json!({ "dst": format!("{}:{}", ev.dst_ip, ev.dst_port) }),
         );
@@ -370,6 +374,7 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
             "beacon",
             Severity::Medium,
             ev.uid,
+            &target,
             &target,
             format!("Periodic connections to {target} every {:.0}s (jitter {:.0}%)", hit.mean_interval_s, hit.jitter * 100.0),
             serde_json::json!({ "interval_s": hit.mean_interval_s, "jitter": hit.jitter, "samples": hit.samples, "proto": ev.proto }),
