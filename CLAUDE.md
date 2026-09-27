@@ -26,5 +26,6 @@ Working rules for this repo:
 - Commits are authored as H3xano and must **not** contain `Co-Authored-By` or
   "Generated with Claude" lines (owner's explicit preference). The same goes for
   PR bodies and merge commits.
-- The remote is the private repo
-  `github.com/H3xano/vigil`.
+- The remote is the **public** repo `github.com/H3xano/vigil`: never commit
+  secrets, local paths or anything private. The release keystore lives in
+  `~/.vigil-release/` on the owner's machine.

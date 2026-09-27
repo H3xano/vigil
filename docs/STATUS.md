@@ -24,8 +24,8 @@ systematic device testing in backlog item 1 is still to do.
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, this file | |
-| Repository | private: https://github.com/H3xano/vigil (`main`) | |
-| Release | [v0.1.0](https://github.com/H3xano/vigil/releases/tag/v0.1.0) pre-release, **debug-signed** APK (3 ABIs) | checksum verified after upload |
+| Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
+| Release | [v0.2.0](https://github.com/H3xano/vigil/releases/tag/v0.2.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
 
 Measured numbers (see the README "Performance" section):
 
@@ -112,8 +112,9 @@ history.
    `dc7a34da…8db3bc`, full value in the recipe), fastlane metadata, the recipe
    `packaging/fdroid/dev.vigil.inspector.yml`, pinned Rust
    (`core/rust-toolchain.toml`), and a two-build reproducibility check on one
-   machine. **Blocker:** the repository is private; F-Droid needs public
-   source. Then submit the recipe to fdroiddata. Play remains an option later
+   machine. The repository is public (2026-09-28), so the remaining step is
+   to open a merge request adding the recipe to fdroiddata
+   (gitlab.com/fdroid/fdroiddata, as `metadata/dev.vigil.inspector.yml`). Play remains an option later
    (needs VpnService and `QUERY_ALL_PACKAGES` declarations).
 3. **ICMP relay.** `ping` through vigil currently fails. Android apps can
    open unprivileged ICMP datagram sockets (`SOCK_DGRAM`/`IPPROTO_ICMP`), so
