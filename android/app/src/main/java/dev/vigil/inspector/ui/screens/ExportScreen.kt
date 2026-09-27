@@ -4,6 +4,7 @@ import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -21,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -28,82 +30,139 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.ExportSettings
+import dev.vigil.inspector.export.WireFormats
+import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatRelative
 import dev.vigil.inspector.ui.theme.VigilColors
 import kotlinx.coroutines.launch
 
+/** Default syslog port of a transport. */
+private fun defaultPort(transport: String) = if (transport == "tls") 6514 else 514
+
+/** Connection settings are problems-free enough to save. */
+private fun validationError(d: ExportSettings, portText: String): String? = when {
+    d.mode == "syslog" && d.host.isBlank() -> "Enter the collector's host name or address."
+    d.mode == "syslog" && portText.toIntOrNull()?.takeIf { it in 1..65535 } == null -> "The port must be between 1 and 65535."
+    d.mode == "http" && !(d.url.startsWith("https://") || d.url.startsWith("http://")) -> "The URL must start with https:// or http://."
+    else -> null
+}
+
 @Composable
 fun ExportScreen(vm: MainViewModel, nav: NavController) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val status by vm.exportStatus.collectAsStateWithLifecycle()
-    val e = settings.export
+    val saved = settings.export
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var testResult by remember { mutableStateOf<String?>(null) }
-    fun update(t: (ExportSettings) -> ExportSettings) = vm.updateSettings { it.copy(export = t(it.export)) }
+
+    // Connection fields are edited locally and applied with Save, so the
+    // exporter does not reconnect to every half-typed host name.
+    var draft by remember { mutableStateOf(saved) }
+    var portText by remember { mutableStateOf(saved.port.toString()) }
+    val candidate = draft.copy(enabled = saved.enabled, level = saved.level, port = portText.toIntOrNull() ?: draft.port)
+    val dirty = candidate != saved
+    val error = validationError(candidate, portText)
+    fun edit(t: (ExportSettings) -> ExportSettings) {
+        draft = t(draft)
+        testResult = null
+    }
+    fun updateSaved(t: (ExportSettings) -> ExportSettings) = vm.updateSettings { it.copy(export = t(it.export)) }
 
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("SIEM export", nav)
         Column(Modifier.verticalScroll(rememberScrollState())) {
             SettingRow(
                 "Stream events",
-                "Send structured events (ECS-style JSON) to your collector. Nothing leaves the device while this is off.",
-                e.enabled, onChecked = { v -> update { it.copy(enabled = v) } },
+                "Send structured events (ECS-style JSON) to your collector. No traffic data leaves the device while this is off.",
+                saved.enabled, onChecked = { v -> updateSaved { it.copy(enabled = v) } },
             )
+            Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Fields follow the Elastic Common Schema (ECS).", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HelpIcon("ECS", Glossary.ECS)
+            }
             SectionTitle("What to send")
-            Segmented(listOf("alerts" to "Alerts", "alerts_dns" to "+ DNS", "all" to "Everything"), e.level, { v -> update { it.copy(level = v) } })
+            Segmented(listOf("alerts" to "Alerts", "alerts_dns" to "+ DNS", "all" to "Everything"), saved.level, { v -> updateSaved { it.copy(level = v) } })
 
             SectionTitle("Destination")
-            Segmented(listOf("syslog" to "Syslog", "http" to "HTTP"), e.mode, { v -> update { it.copy(mode = v) } })
+            Segmented(listOf("syslog" to "Syslog", "http" to "HTTP"), draft.mode, { v -> edit { it.copy(mode = v) } })
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (e.mode == "syslog") {
-                    OutlinedTextField(e.host, { v -> update { it.copy(host = v.trim()) } }, Modifier.fillMaxWidth(), label = { Text("Host") }, singleLine = true)
+                if (draft.mode == "syslog") {
+                    OutlinedTextField(draft.host, { v -> edit { it.copy(host = v.trim()) } }, Modifier.fillMaxWidth(), label = { Text("Host") }, singleLine = true)
                     OutlinedTextField(
-                        e.port.toString(), { v -> v.toIntOrNull()?.let { p -> update { it.copy(port = p.coerceIn(1, 65535)) } } },
+                        portText, { v -> portText = v.filter(Char::isDigit).take(5); testResult = null },
                         Modifier.fillMaxWidth(), label = { Text("Port") }, singleLine = true,
+                        isError = portText.toIntOrNull()?.takeIf { it in 1..65535 } == null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     )
-                    Text("RFC 5424 messages; TCP and TLS use octet-counting framing (RFC 6587).", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "RFC 5424 messages; TCP and TLS use octet-counting framing (RFC 6587). UDP and TCP are unencrypted. " +
+                            "Over UDP each message is capped at ${WireFormats.UDP_MAX_BYTES / 1024} KB: long values in larger records are shortened.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 } else {
-                    OutlinedTextField(e.url, { v -> update { it.copy(url = v.trim()) } }, Modifier.fillMaxWidth(), label = { Text("Endpoint URL") }, singleLine = true)
-                    OutlinedTextField(e.authHeader, { v -> update { it.copy(authHeader = v) } }, Modifier.fillMaxWidth(),
-                        label = { Text("Authorization header") }, placeholder = { Text("Bearer … / Splunk … / ApiKey …") }, singleLine = true)
+                    OutlinedTextField(draft.url, { v -> edit { it.copy(url = v.trim()) } }, Modifier.fillMaxWidth(), label = { Text("Endpoint URL") }, singleLine = true)
+                    SecretField(draft.authHeader, { v -> edit { it.copy(authHeader = v) } }, "Authorization header", Modifier.fillMaxWidth(),
+                        placeholder = "Bearer … / Splunk … / ApiKey …")
+                    CleartextWarning(draft.url, hasSecret = draft.authHeader.isNotBlank(), isFeed = false)
                 }
             }
-            if (e.mode == "syslog") {
-                Segmented(listOf("udp" to "UDP", "tcp" to "TCP", "tls" to "TLS"), e.transport, { v -> update { it.copy(transport = v, port = if (v == "tls") 6514 else 514) } })
+            if (draft.mode == "syslog") {
+                Segmented(listOf("udp" to "UDP", "tcp" to "TCP", "tls" to "TLS"), draft.transport, { v ->
+                    // Only replace the port if it is still the previous transport's default.
+                    if (portText.toIntOrNull() == defaultPort(draft.transport)) portText = defaultPort(v).toString()
+                    edit { it.copy(transport = v) }
+                })
             } else {
-                Segmented(listOf("ndjson" to "NDJSON", "splunk_hec" to "Splunk HEC", "elastic_bulk" to "Elastic _bulk"), e.httpFormat, { v -> update { it.copy(httpFormat = v) } })
+                Segmented(listOf("ndjson" to "NDJSON", "splunk_hec" to "Splunk HEC", "elastic_bulk" to "Elastic _bulk"), draft.httpFormat, { v -> edit { it.copy(httpFormat = v) } })
             }
-            if (e.mode == "http" || e.transport == "tls") {
+            if (draft.mode == "http" || draft.transport == "tls") {
                 SectionTitle("Mutual TLS")
                 SettingRow(
                     "Client certificate",
-                    e.clientCertAlias ?: "None: tap to choose a certificate installed on this device",
+                    draft.clientCertAlias ?: "None: tap to choose a certificate installed on this device",
                     onClick = {
                         val activity = context as? Activity ?: return@SettingRow
-                        KeyChain.choosePrivateKeyAlias(activity, { alias -> update { it.copy(clientCertAlias = alias) } }, null, null, null, null)
+                        KeyChain.choosePrivateKeyAlias(activity, { alias -> if (alias != null) draft = draft.copy(clientCertAlias = alias) }, null, null, null, null)
                     },
                 )
-                if (e.clientCertAlias != null) {
-                    OutlinedButton(onClick = { update { it.copy(clientCertAlias = null) } }, Modifier.padding(horizontal = 16.dp)) { Text("Remove client certificate") }
+                if (draft.clientCertAlias != null) {
+                    OutlinedButton(onClick = { edit { it.copy(clientCertAlias = null) } }, Modifier.padding(horizontal = 16.dp)) { Text("Remove client certificate") }
+                }
+            }
+
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (error != null) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                else if (dirty) Text("Unsaved changes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(enabled = dirty && error == null, onClick = { vm.saveExport(candidate.copy(enabled = saved.enabled, level = saved.level)) }) { Text("Save") }
+                    OutlinedButton(enabled = dirty, onClick = {
+                        draft = saved
+                        portText = saved.port.toString()
+                        testResult = null
+                    }) { Text("Discard") }
                 }
             }
 
             SectionTitle("Status")
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Sent ${status.sent} · dropped ${status.dropped}" + (status.lastSuccess?.let { " · last success ${formatRelative(it)}" } ?: ""))
+                Text(
+                    "Sent ${status.sent} · dropped ${status.dropped}" + (if (status.rejected > 0) " · rejected ${status.rejected}" else "") +
+                        (status.lastSuccess?.let { " · last success ${formatRelative(it)}" } ?: ""),
+                )
+                if (status.retrying) Text("Undelivered events are queued and retried.", style = MaterialTheme.typography.bodySmall)
                 status.lastError?.let { Text("Last error: $it", color = VigilColors.Block) }
-                Button(onClick = {
+                Button(enabled = error == null, onClick = {
                     testResult = "Sending…"
                     scope.launch {
-                        val r = vm.sendExportTest()
+                        val r = vm.sendExportTest(candidate)
                         testResult = r.fold({ "Test event delivered" }, { "Failed: ${it.message ?: it.javaClass.simpleName}" })
                     }
-                }, Modifier.padding(top = 8.dp)) { Text("Send test event") }
+                }, modifier = Modifier.padding(top = 8.dp)) { Text(if (dirty) "Send test event (unsaved settings)" else "Send test event") }
                 testResult?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             }
             Column(Modifier.padding(24.dp)) {}

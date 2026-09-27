@@ -71,6 +71,6 @@ fun RulesScreen(vm: MainViewModel, nav: NavController) {
 private fun RuleRow(domain: String, blocked: Boolean, onDelete: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(domain, Modifier.weight(1f), color = if (blocked) VigilColors.Block else VigilColors.Allow)
-        IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Remove") }
+        IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Remove rule for $domain") }
     }
 }

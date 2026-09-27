@@ -26,12 +26,11 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.background
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,12 +50,12 @@ import dev.vigil.inspector.ui.theme.VigilColors
 
 @Composable
 fun ActivityScreen(vm: MainViewModel, nav: NavController) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val tab by vm.activityTab.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Activity")
         TabRow(selectedTabIndex = tab) {
-            Tab(tab == 0, onClick = { tab = 0 }, text = { Text("Connections") })
-            Tab(tab == 1, onClick = { tab = 1 }, text = { Text("DNS") })
+            Tab(tab == 0, onClick = { vm.activityTab.value = 0 }, text = { Text("Connections") })
+            Tab(tab == 1, onClick = { vm.activityTab.value = 1 }, text = { Text("DNS") })
         }
         if (tab == 0) FlowList(vm, nav) else DnsList(vm)
     }
@@ -88,11 +87,13 @@ private fun FlowList(vm: MainViewModel, nav: NavController) {
         EmptyState("No connections", if (query.isNotEmpty() || blockedOnly) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
         return
     }
+    val label = rememberAppLabels(vm, flows.map { it.pkg }.distinct())
     LazyColumn {
         items(flows, key = { it.id }) { f ->
-            FlowRow(f, vm.appLabel(f.pkg)) { nav.navigate("flow/${f.id}") }
+            FlowRow(f, label(f.pkg)) { nav.navigate("flow/${f.id}") }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
+        if (flows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote("connections") }
     }
 }
 
@@ -104,7 +105,8 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (f.isActive) {
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(VigilColors.Allow))
+                    // Not colour alone: the dot is announced, and its presence is the signal.
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(VigilColors.Allow).semantics { contentDescription = "Active connection" })
                     Spacer(Modifier.width(6.dp))
                 }
                 Text(
@@ -155,12 +157,24 @@ private fun DnsList(vm: MainViewModel) {
         EmptyState("No lookups", if (query.isNotEmpty() || blockedOnly) "Nothing matches the current filter." else "DNS lookups appear here while inspection is running.")
         return
     }
+    val label = rememberAppLabels(vm, rows.map { it.pkg }.distinct())
     LazyColumn {
         items(rows, key = { it.id }) { d ->
-            DnsRow(d, vm.appLabel(d.pkg))
+            DnsRow(d, label(d.pkg))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
+        if (rows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote("lookups") }
     }
+}
+
+@Composable
+private fun LimitNote(what: String) {
+    Text(
+        "Showing the newest ${MainViewModel.ACTIVITY_LIMIT} $what. Search to find older ones.",
+        Modifier.fillMaxWidth().padding(16.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

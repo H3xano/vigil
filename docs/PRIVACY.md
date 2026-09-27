@@ -11,9 +11,25 @@
 
 Everything stays in the app's private storage. It is excluded from cloud
 backups and device transfer, and pruned after the retention period (7 days by
-default). Nothing leaves the device unless you enable SIEM export or add a
-custom feed URL. Feed downloads and export use vigil's own sockets, which
-bypass its tunnel.
+default). No traffic data leaves the device unless you enable SIEM export.
+Feed downloads and export use vigil's own sockets, which bypass its tunnel.
+
+## What vigil downloads
+
+vigil downloads its enabled threat feeds once a day, directly from their
+publishers. Four built-in feeds are on by default: HaGeZi Threat Intelligence
+(from `raw.githubusercontent.com`) and abuse.ch URLhaus, ThreatFox and Feodo
+Tracker. Each download is a plain HTTPS GET with the User-Agent
+`vigil/<version> (+feed updater)`, so the publisher (and GitHub) sees your
+IP address, the time and that you use vigil, but nothing about your traffic.
+Turn feeds off in Settings → Threat intelligence feeds to stop these
+downloads; custom feeds go to the URL you enter, with the Authorization
+header you configure.
+
+SIEM export sends the records you select to the collector you configure.
+Use `https://` or syslog over TLS: over plain `http://`, UDP or TCP the
+records (and any Authorization header or token) cross the network
+unencrypted, and the app warns about this.
 
 ## What vigil cannot see
 

@@ -14,7 +14,9 @@ and no remote server, and it never decrypts traffic.
 vigil uses Android's `VpnService` as a *local loop*. The TUN interface feeds
 raw IP packets to a Rust engine that terminates every flow in user space,
 inspects it, and relays it to the internet over ordinary sockets. Nothing is
-tunnelled anywhere.
+tunnelled anywhere. No traffic data leaves the device unless you enable SIEM
+export; vigil's only own network use is the daily download of enabled threat
+feeds from their publishers (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 
 ## What it does
 

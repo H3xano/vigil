@@ -16,7 +16,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -27,7 +26,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.data.FlowEntity
+import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.components.EmptyState
+import kotlinx.coroutines.flow.map
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.Field
 import dev.vigil.inspector.ui.components.SectionTitle
@@ -38,14 +41,19 @@ import dev.vigil.inspector.ui.theme.VigilColors
 
 @Composable
 fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
-    val flow by remember(id) { vm.flow(id) }.collectAsState(initial = null)
+    // null while loading; Lookup(null) once the query says the row does not exist.
+    val lookup by remember(id) { vm.flow(id).map { Lookup(it) } }.collectAsStateWithLifecycle(initialValue = null)
     val settings by vm.settings.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
-    val f = flow
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Connection", nav)
-        if (f == null) return@Column
-        val label = vm.appLabel(f.pkg)
+        val loaded = lookup ?: return@Column
+        val f = loaded.flow
+        if (f == null) {
+            EmptyState("Connection not found", "It may have been pruned by the history retention setting or cleared.")
+            return@Column
+        }
+        val label = rememberAppLabels(vm, listOf(f.pkg))(f.pkg)
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 AppIcon(f.pkg, label, 44.dp)
@@ -68,15 +76,15 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 "http" -> "HTTP Host header"
                 "dns" -> "Earlier DNS answer (hint)"
                 else -> null
-            })
+            }, help = Glossary.NAME_SOURCE + "\n\n" + Glossary.SNI)
             Field("Address", "${f.dstIp}:${f.dstPort}", mono = true)
             Field("Transport", f.proto.uppercase())
             Field("Protocol", f.appProto?.uppercase())
             SectionTitle("Handshake")
             Field("TLS version", f.tlsVersion)
-            Field("ALPN", f.alpn)
-            Field("JA4", f.ja4, mono = true)
-            Field("ECH", if (f.ech) "Offered — the real destination name is encrypted" else null)
+            Field("ALPN", f.alpn, help = Glossary.ALPN)
+            Field("JA4", f.ja4, mono = true, help = Glossary.JA4)
+            Field("ECH", if (f.ech) "Offered — the real destination name is encrypted" else null, help = Glossary.ECH)
             Field("HTTP method", f.httpMethod)
             SectionTitle("Traffic")
             Field("Started", formatDateTime(f.ts))
@@ -96,6 +104,13 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                         OutlinedButton(onClick = { vm.removeRule(domain) }, Modifier.fillMaxWidth()) { Text("Remove block rule for $domain") }
                     } else {
                         Button(onClick = { vm.denyDomain(domain) }, Modifier.fillMaxWidth()) { Text("Block $domain") }
+                        if (f.domainSource == "dns") {
+                            Text(
+                                "This name is a hint from an earlier DNS answer; other sites may share ${f.dstIp}. " +
+                                    "Blocking it blocks lookups of $domain (and connections that name it), not this IP address.",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     if (f.isBlocked && domain !in settings.allowDomains) {
                         OutlinedButton(onClick = { vm.allowDomain(domain) }, Modifier.fillMaxWidth()) { Text("Always allow $domain") }
@@ -110,3 +125,5 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
         }
     }
 }
+
+private class Lookup(val flow: FlowEntity?)

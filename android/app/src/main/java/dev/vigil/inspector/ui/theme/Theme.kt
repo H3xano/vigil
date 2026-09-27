@@ -5,18 +5,61 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-/** Semantic colours used for verdicts and severities in both themes. */
-object VigilColors {
-    val Block = Color(0xFFE5484D)
-    val Allow = Color(0xFF30A46C)
-    val High = Color(0xFFE5484D)
-    val Medium = Color(0xFFF76B15)
-    val Low = Color(0xFFFFB224)
-    val Info = Color(0xFF3E9BF4)
-    val Accent = Color(0xFF12A594)
+/** Semantic colours for one theme. */
+@Immutable
+data class SemanticColors(
+    val block: Color,
+    val allow: Color,
+    val medium: Color,
+    val low: Color,
+    val info: Color,
+    /** Background alpha of filled tags. */
+    val tintAlpha: Float,
+)
 
+/** The original palette; bright enough on the dark background. */
+private val DarkSemantic = SemanticColors(
+    block = Color(0xFFE5484D),
+    allow = Color(0xFF30A46C),
+    medium = Color(0xFFF76B15),
+    low = Color(0xFFFFB224),
+    info = Color(0xFF3E9BF4),
+    tintAlpha = 0.18f,
+)
+
+/**
+ * Darker shades for the light theme: each reaches at least 4.5:1 (WCAG AA)
+ * against the light surfaces and against its own filled-tag tint.
+ */
+private val LightSemantic = SemanticColors(
+    block = Color(0xFFA8201A),
+    allow = Color(0xFF146336),
+    medium = Color(0xFF9A3C06),
+    low = Color(0xFF7A4D00),
+    info = Color(0xFF17559F),
+    tintAlpha = 0.12f,
+)
+
+private val LocalSemanticColors = staticCompositionLocalOf { DarkSemantic }
+
+/** Semantic colours used for verdicts and severities, resolved for the current theme. */
+object VigilColors {
+    val Block: Color @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.block
+    val Allow: Color @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.allow
+    val High: Color @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.block
+    val Medium: Color @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.medium
+    val Low: Color @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.low
+    val Info: Color @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.info
+    val TintAlpha: Float @Composable @ReadOnlyComposable get() = LocalSemanticColors.current.tintAlpha
+
+    @Composable
+    @ReadOnlyComposable
     fun severity(s: String) = when (s) {
         "high" -> High
         "medium" -> Medium
@@ -62,5 +105,7 @@ private val Light = lightColorScheme(
 
 @Composable
 fun VigilTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = if (dark) Dark else Light, content = content)
+    CompositionLocalProvider(LocalSemanticColors provides if (dark) DarkSemantic else LightSemantic) {
+        MaterialTheme(colorScheme = if (dark) Dark else Light, content = content)
+    }
 }

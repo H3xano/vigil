@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -23,20 +23,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.EmptyState
+import dev.vigil.inspector.ui.components.ErrorCard
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.StatTile
 import dev.vigil.inspector.ui.formatBytes
@@ -60,24 +62,12 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
     val settings by vm.settings.collectAsStateWithLifecycle()
     val feeds by vm.feeds.collectAsStateWithLifecycle()
     val throughput by vm.throughput.collectAsStateWithLifecycle()
+    val feedWork by vm.feedWork.collectAsStateWithLifecycle()
+    val configError by vm.configError.collectAsStateWithLifecycle()
+    val usageAccess = usageAccessGranted(vm)
+    val shownApps = topApps.take(6)
+    val label = rememberAppLabels(vm, shownApps.map { it.pkg })
     val context = LocalContext.current
-
-    if (!settings.onboarded) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("Welcome to vigil") },
-            text = {
-                Text(
-                    "vigil inspects the network traffic of every app on this device, entirely on-device.\n\n" +
-                        "It uses Android's VPN interface as a local loop: nothing is sent to a VPN server, and no data " +
-                        "leaves the device unless you configure SIEM export.\n\n" +
-                        "Encrypted traffic is never decrypted. vigil reads destination names from DNS lookups and the " +
-                        "unencrypted parts of TLS and QUIC handshakes.",
-                )
-            },
-            confirmButton = { TextButton(onClick = { vm.updateSettings { it.copy(onboarded = true) } }) { Text("Get started") } },
-        )
-    }
 
     val running = status is VpnStatus.Running
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -96,7 +86,14 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                     containerColor = if (running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
                 ),
             ) {
-                Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                val on = running || status == VpnStatus.Starting
+                // One focus target: the whole row toggles inspection.
+                Row(
+                    Modifier
+                        .toggleable(value = on, role = Role.Switch, onValueChange = { if (it) onStart() else onStop() })
+                        .padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text(
                             when (status) {
@@ -121,12 +118,15 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                             color = if (status is VpnStatus.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = running || status == VpnStatus.Starting, onCheckedChange = { if (it) onStart() else onStop() })
+                    Switch(checked = on, onCheckedChange = null)
                 }
             }
         }
 
         // Actionable warnings.
+        configError?.let { msg ->
+            item { ConfigErrorCard(msg) { vm.dismissConfigError() } }
+        }
         network.privateDnsStrictHost?.let { host ->
             item {
                 Warning(
@@ -138,7 +138,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                 ) { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
             }
         }
-        if (!vm.app.foreground.hasPermission()) {
+        if (!usageAccess) {
             item {
                 Warning(
                     "Background detection is off",
@@ -152,10 +152,18 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
             item {
                 Warning(
                     "${missing.size} threat feed${if (missing.size > 1) "s" else ""} not downloaded yet",
-                    missing.firstNotNullOfOrNull { it.lastError }?.let { "Last error: $it" }
-                        ?: "Feeds download automatically when the device is online.",
+                    when (feedWork) {
+                        FeedWork.RUNNING -> "Downloading feeds…"
+                        FeedWork.WAITING -> "Feeds will download as soon as the device is online."
+                        FeedWork.IDLE -> missing.firstNotNullOfOrNull { it.lastError }?.let { "Last error: $it" }
+                            ?: "Feeds download automatically when the device is online."
+                    },
                     "Update now",
-                ) { vm.refreshFeeds() }
+                    busy = feedWork != FeedWork.IDLE,
+                ) {
+                    vm.refreshFeeds()
+                    vm.showMessage("Updating threat feeds…")
+                }
             }
         }
 
@@ -163,16 +171,38 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         item {
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatTile("Connections", formatCount(totals.flows), Modifier.weight(1f), caption = "${formatBytes(totals.rx)} ↓  ${formatBytes(totals.tx)} ↑")
-                    StatTile("DNS lookups", formatCount(dnsCount), Modifier.weight(1f), caption = "${formatCount(dnsBlocked)} sinkholed")
+                    StatTile(
+                        "Connections", formatCount(totals.flows), Modifier.weight(1f), caption = "${formatBytes(totals.rx)} ↓  ${formatBytes(totals.tx)} ↑",
+                        onClick = {
+                            vm.clearActivityFilters()
+                            vm.activityTab.value = 0
+                            nav.navigateTab("activity")
+                        },
+                    )
+                    StatTile(
+                        "DNS lookups", formatCount(dnsCount), Modifier.weight(1f), caption = "${formatCount(dnsBlocked)} sinkholed",
+                        onClick = {
+                            vm.clearActivityFilters()
+                            vm.activityTab.value = 1
+                            nav.navigateTab("activity")
+                        },
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatTile("Blocked", formatCount(totals.blocked + dnsBlocked), Modifier.weight(1f).clickable {
-                        vm.flowBlockedOnly.value = true
-                        nav.navigate("activity")
-                    }, accent = VigilColors.Block, caption = "connections + lookups")
-                    StatTile("Unread alerts", unseen.toString(), Modifier.weight(1f).clickable { nav.navigate("alerts") },
-                        accent = if (unseen > 0) VigilColors.Medium else MaterialTheme.colorScheme.primary)
+                    StatTile(
+                        "Blocked", formatCount(totals.blocked + dnsBlocked), Modifier.weight(1f), accent = VigilColors.Block,
+                        caption = "${formatCount(totals.blocked)} connections · ${formatCount(dnsBlocked)} lookups",
+                        onClick = {
+                            // Both Activity tabs show only blocked entries; open the one that has any.
+                            vm.showBlockedActivity(preferDns = totals.blocked == 0L && dnsBlocked > 0)
+                            nav.navigateTab("activity")
+                        },
+                    )
+                    StatTile(
+                        "Unread alerts", unseen.toString(), Modifier.weight(1f),
+                        accent = if (unseen > 0) VigilColors.Medium else MaterialTheme.colorScheme.primary,
+                        onClick = { nav.navigateTab("alerts") },
+                    )
                 }
             }
         }
@@ -182,17 +212,17 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
             item { EmptyState("No traffic yet", if (running) "Connections will appear here as apps use the network." else "Start inspection to see which apps talk to whom.") }
         }
         val maxBytes = (topApps.maxOfOrNull { it.tx + it.rx } ?: 1L).coerceAtLeast(1L)
-        items(topApps.take(6), key = { it.pkg }) { a ->
-            val label = vm.appLabel(a.pkg)
+        items(shownApps, key = { it.pkg }) { a ->
+            val name = label(a.pkg)
             Row(
                 Modifier.fillMaxWidth().clickable { nav.navigate("app/${a.pkg}") }.padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AppIcon(a.pkg, label)
+                AppIcon(a.pkg, name)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Row {
-                        Text(label, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+                        Text(name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
                         Text(formatBytes(a.tx + a.rx), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     LinearProgressIndicator(
@@ -223,7 +253,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
 }
 
 @Composable
-private fun Warning(title: String, body: String, action: String, onAction: () -> Unit) {
+private fun Warning(title: String, body: String, action: String, busy: Boolean = false, onAction: () -> Unit) {
     Card(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         colors = CardDefaults.cardColors(containerColor = VigilColors.Low.copy(alpha = 0.12f)),
@@ -231,7 +261,21 @@ private fun Warning(title: String, body: String, action: String, onAction: () ->
         Column(Modifier.padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(body, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-            OutlinedButton(onClick = onAction, modifier = Modifier.padding(top = 8.dp)) { Text(action) }
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+            OutlinedButton(onClick = onAction, enabled = !busy, modifier = Modifier.padding(top = 8.dp)) { Text(action) }
         }
     }
+}
+
+@Composable
+fun ConfigErrorCard(message: String, onDismiss: () -> Unit) = ErrorCard(
+    "Settings change not applied",
+    "The inspector rejected the new settings and keeps running with the previous ones: $message",
+    onDismiss,
+)
+
+/** Navigates to a bottom-bar destination the same way the navigation bar does. */
+fun NavController.navigateTab(route: String) = navigate(route) {
+    popUpTo("dashboard") { saveState = true }
+    launchSingleTop = true
 }
