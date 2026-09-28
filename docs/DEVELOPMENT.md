@@ -53,6 +53,37 @@ LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
 scripts/bench-throughput.sh                            # vs. real internet link
 ```
 
+`bench-throughput.sh` reports the engine's CPU time (utime + stime from
+`/proc`, during the transfer only) per GB or per operation, context switches
+and RSS. `MODE=` selects the workload; the small-packet ones use local
+servers (`scripts/e2e/benchload.py`):
+
+```sh
+MODE=tcp N=5000 CONC=16 scripts/bench-throughput.sh   # short HTTP requests, one connection each
+MODE=udp N=50000 CONC=16 scripts/bench-throughput.sh  # 100-byte request/reply datagrams
+MODE=dns N=50000 CONC=16 scripts/bench-throughput.sh  # queries to the virtual resolver
+MODE=idle SECS=10 scripts/bench-throughput.sh         # CPU while connections sit idle
+VIGIL_CLI=/path/to/other/vigil-cli ...                 # compare builds; STATS=1 keeps stats events
+```
+
+Numbers on the development host (x86_64, 2 engine workers, 3 runs each):
+
+| Workload | 0.3.0 | now |
+|---|---|---|
+| bulk 1 GB (`LOCAL=1`) | 12.1 s CPU/GB, 1.30 Gbit/s | 5.6 s CPU/GB, 2.86 Gbit/s |
+| tcp 5000 connections | 452 us/op, 410 req/s, RSS 551 MB | 374 us/op, 5,250 req/s, RSS 246 MB |
+| udp 50 k datagrams | 39.0 us/op | 39.2 us/op |
+| dns 50 k queries | 74.0 us/op | 65.0 us/op |
+| idle 10 s, 4 open connections | 0.02 s | 0.02 s |
+
+That host's clock source is HPET, so every clock read is a slow device
+access (about a third of the engine's CPU time in these runs, mostly tokio's
+scheduler bookkeeping). Phones read the clock cheaply; compare builds on the
+same machine rather than taking the absolute numbers as a phone's. `perf` is
+usually not permitted there (`perf_event_paranoid` 4); an `LD_PRELOAD`
+sampler with frame pointers (`RUSTFLAGS="-C force-frame-pointers=yes"`,
+`CARGO_PROFILE_RELEASE_STRIP=none`) works instead.
+
 How the no-root tests work: `unshare -rnm` creates a user and network
 namespace in which we are "root". A TUN device is created there, and its file
 descriptor is passed over a Unix socket (SCM_RIGHTS) to `vigil-cli` running in
@@ -158,8 +189,12 @@ would make the second build trivially identical.
   and streams without parked metadata are dropped.
 - **netstack-smoltcp is vendored** in `core/vendor/netstack-smoltcp` (via
   `[patch.crates-io]`) to add `TcpStream::abort` and report peer resets as
-  `ConnectionReset`. Changes are marked `vigil patch`; re-apply them when
-  upgrading the crate.
+  `ConnectionReset`, plus performance fixes: `shutdown()` completes when the
+  FIN is queued (it waited out TIME-WAIT, holding every relay 10 s), TIME-WAIT
+  lasts 1 s, a new SYN replaces an old socket with the same 4-tuple,
+  `Stack::tcp_sender` lets the TUN reader feed the stack directly, and the
+  poll loop yields without a tokio driver turn. Changes are marked
+  `vigil patch`; re-apply them when upgrading the crate.
 - **boringtun is vendored too** (`core/vendor/boringtun`, unmodified source)
   because its manifest also builds a `staticlib` and a `cdylib`, which
   cargo-ndk copied into `jniLibs` as a stray `libboringtun-*.so`. Keep
@@ -210,7 +245,7 @@ core/vigil-core/src/
   event.rs          event types + bounded queue
   config.rs         Config (JSON contract with the app); config/upstream.rs the upstream section
 core/vigil-jni/src/lib.rs     JNI surface (mirrors engine/VigilNative.kt)
-core/vendor/netstack-smoltcp  patched netstack (TCP abort / reset reporting)
+core/vendor/netstack-smoltcp  patched netstack (TCP abort / reset reporting, TIME-WAIT and polling fixes)
 core/vendor/boringtun         boringtun 0.7.1 built as an rlib only
 android/app/src/main/java/dev/vigil/inspector/
   vpn/              VigilVpnService, routes, config factory, tile, ServiceState
