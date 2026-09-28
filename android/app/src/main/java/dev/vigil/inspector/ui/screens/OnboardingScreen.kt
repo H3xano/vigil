@@ -3,6 +3,7 @@ package dev.vigil.inspector.ui.screens
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -78,15 +80,30 @@ private val steps = listOf(
         "vigil shows a notification while inspection runs, and can alert you about threat-feed hits and other " +
             "medium and high severity findings.",
     ),
+    Step(
+        Icons.Default.PlayArrow, "Start inspecting",
+        "Android now asks for permission to show notifications (if not granted yet), then for permission to run " +
+            "vigil's local VPN. Once both are answered, connections and DNS lookups start appearing on the Overview.\n\n" +
+            "You can also start and stop inspection later with the switch on the Overview or the quick settings tile.",
+    ),
 )
 
 /**
  * First-run onboarding: a few skippable steps, shown until [onFinish] is
- * called (which persists the `onboarded` setting).
+ * called (which persists the `onboarded` setting). The last step starts
+ * inspection ([onStartInspecting]: notification prompt, then VPN consent).
  */
 @Composable
-fun OnboardingScreen(vm: MainViewModel, notificationsGranted: Boolean, onRequestNotifications: () -> Unit, onFinish: () -> Unit) {
+fun OnboardingScreen(
+    vm: MainViewModel,
+    notificationsGranted: Boolean,
+    onRequestNotifications: () -> Unit,
+    onFinish: () -> Unit,
+    onStartInspecting: () -> Unit,
+) {
     var index by rememberSaveable { mutableIntStateOf(0) }
+    // System back goes to the previous step; on the first one it leaves the app.
+    BackHandler(enabled = index > 0) { index-- }
     val step = steps[index]
     val last = index == steps.lastIndex
     val context = LocalContext.current
@@ -119,7 +136,14 @@ fun OnboardingScreen(vm: MainViewModel, notificationsGranted: Boolean, onRequest
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 if (index > 0) TextButton(onClick = { index-- }) { Text("Back") } else Spacer(Modifier)
-                Button(onClick = { if (last) onFinish() else index++ }) { Text(if (last) "Get started" else "Next") }
+                if (last) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = onFinish) { Text("Not now") }
+                        Button(onClick = onStartInspecting) { Text("Start inspecting") }
+                    }
+                } else {
+                    Button(onClick = { index++ }) { Text("Next") }
+                }
             }
         }
     }

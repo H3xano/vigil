@@ -63,6 +63,8 @@ data class Settings(
     /** Days after vigil first records an app's networks before new-network alerts start. */
     val asnLearningDays: Int = 7,
     val notifyAlerts: Boolean = true,
+    /** Alerts the user muted or marked as expected: hidden by default and not notified (see [AlertMutes]). */
+    val alertMutes: List<AlertMute> = emptyList(),
     val retentionDays: Int = 7,
     val export: ExportSettings = ExportSettings(),
     /** Route relayed traffic through a WireGuard peer or SOCKS5 proxy. */

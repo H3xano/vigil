@@ -154,8 +154,10 @@ object ExportRecords {
      * `domain`, `destination`, `qname`) or its target when that is a
      * domain or an address (not an AS number or a JA4 fingerprint).
      */
-    fun alertDestination(e: AlertEvent): AlertTarget? {
-        val d = e.detail as? JsonObject
+    fun alertDestination(e: AlertEvent): AlertTarget? = alertDestination(e.kind, e.target, e.detail)
+
+    fun alertDestination(kind: String, target: String, detail: JsonElement?): AlertTarget? {
+        val d = detail as? JsonObject
         fun str(k: String) = (d?.get(k) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
         var ip: String? = null
         var port: Int? = null
@@ -164,9 +166,9 @@ object ExportRecords {
         if (ip == null) str("dst_ip")?.takeIf(::isIpLiteral)?.let { ip = it }
         (str("domain") ?: str("qname"))?.takeIf(::isDomainName)?.let { domain = it }
         str("destination")?.let { v -> if (isIpLiteral(v)) { if (ip == null) ip = v } else if (domain == null && isDomainName(v)) domain = v }
-        val t = e.target
+        val t = target
         when {
-            e.kind == "threat_ja4" || e.kind == "new_asn" -> {}
+            kind == "threat_ja4" || kind == "new_asn" -> {}
             isIpLiteral(t) -> if (ip == null) ip = t
             isDomainName(t) -> if (domain == null) domain = t
         }

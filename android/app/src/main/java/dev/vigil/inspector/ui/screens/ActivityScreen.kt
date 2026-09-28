@@ -15,8 +15,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +31,10 @@ import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,13 +63,62 @@ import dev.vigil.inspector.ui.theme.VigilColors
 @Composable
 fun ActivityScreen(vm: MainViewModel, nav: NavController) {
     val tab by vm.activityTab.collectAsStateWithLifecycle()
+    val paused by vm.activityPaused.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Activity")
+        VigilTopBar("Activity") {
+            // Paused: the lists stop following new traffic so rows do not move while reading.
+            FilterChip(
+                selected = paused,
+                onClick = { vm.activityPaused.value = !paused },
+                label = { Text(if (paused) "Paused" else "Live") },
+                leadingIcon = if (paused) {
+                    { Icon(Icons.Default.PlayArrow, "Resume live updates", Modifier.size(FilterChipDefaults.IconSize)) }
+                } else {
+                    null
+                },
+                modifier = Modifier.padding(end = 8.dp),
+            )
+        }
         SecondaryTabRow(selectedTabIndex = tab) {
             Tab(tab == 0, onClick = { vm.activityTab.value = 0 }, text = { Text("Connections") })
             Tab(tab == 1, onClick = { vm.activityTab.value = 1 }, text = { Text("DNS") })
         }
-        if (tab == 0) FlowList(vm, nav) else DnsList(vm)
+        if (tab == 0) FlowList(vm, nav) else DnsList(vm, nav)
+    }
+}
+
+/** Restricts both Activity lists to one app; the menu lists the apps seen recently. */
+@Composable
+private fun AppFilterChip(vm: MainViewModel) {
+    val selected by vm.activityApp.collectAsStateWithLifecycle()
+    val apps by vm.appsWeek.collectAsStateWithLifecycle()
+    var open by remember { mutableStateOf(false) }
+    val label = rememberAppLabels(vm, apps.map { it.pkg } + listOfNotNull(selected))
+    Box {
+        val current = selected
+        FilterChip(
+            selected = current != null,
+            onClick = { if (current != null) vm.activityApp.value = null else open = true },
+            label = { Text(if (current != null) label(current) else "App", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            trailingIcon = if (current != null) {
+                { Icon(Icons.Default.Close, "Show all apps", Modifier.size(FilterChipDefaults.IconSize)) }
+            } else {
+                null
+            },
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (apps.isEmpty()) DropdownMenuItem(text = { Text("No apps seen yet") }, onClick = { open = false }, enabled = false)
+            apps.sortedBy { label(it.pkg).lowercase() }.forEach { a ->
+                DropdownMenuItem(
+                    text = { Text(label(a.pkg), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingIcon = { AppIcon(a.pkg, label(a.pkg), 24.dp) },
+                    onClick = {
+                        vm.activityApp.value = a.pkg
+                        open = false
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -87,7 +145,9 @@ private fun FlowList(vm: MainViewModel, nav: NavController) {
     val blockedOnly by vm.flowBlockedOnly.collectAsStateWithLifecycle()
     val path by vm.flowPath.collectAsStateWithLifecycle()
     SearchBar(query, { vm.flowQuery.value = it }, blockedOnly, { vm.flowBlockedOnly.value = it }, "Domain, IP, network or app")
+    val app by vm.activityApp.collectAsStateWithLifecycle()
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AppFilterChip(vm)
         for ((value, text) in listOf(PathFilter.TUNNEL to "Via tunnel/proxy", PathFilter.DIRECT to "Direct")) {
             FilterChip(
                 selected = path == value,
@@ -97,7 +157,7 @@ private fun FlowList(vm: MainViewModel, nav: NavController) {
         }
     }
     if (flows.isEmpty()) {
-        EmptyState("No connections", if (query.isNotEmpty() || blockedOnly || path != PathFilter.ALL) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
+        EmptyState("No connections", if (query.isNotEmpty() || blockedOnly || path != PathFilter.ALL || app != null) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
         return
     }
     val label = rememberAppLabels(vm, flows.map { it.pkg }.distinct())
@@ -162,22 +222,32 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun DnsList(vm: MainViewModel) {
+private fun DnsList(vm: MainViewModel, nav: NavController) {
     val rows by vm.dns.collectAsStateWithLifecycle()
     val query by vm.dnsQuery.collectAsStateWithLifecycle()
     val blockedOnly by vm.dnsBlockedOnly.collectAsStateWithLifecycle()
+    val app by vm.activityApp.collectAsStateWithLifecycle()
+    // The row whose sheet is open (its id survives rotation; the row itself is looked up).
+    var sheetFor by rememberSaveable { mutableStateOf<Long?>(null) }
     SearchBar(query, { vm.dnsQuery.value = it }, blockedOnly, { vm.dnsBlockedOnly.value = it }, "Domain or app")
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp)) { AppFilterChip(vm) }
     if (rows.isEmpty()) {
-        EmptyState("No lookups", if (query.isNotEmpty() || blockedOnly) "Nothing matches the current filter." else "DNS lookups appear here while inspection is running.")
+        EmptyState("No lookups", if (query.isNotEmpty() || blockedOnly || app != null) "Nothing matches the current filter." else "DNS lookups appear here while inspection is running.")
         return
     }
     val label = rememberAppLabels(vm, rows.map { it.pkg }.distinct())
     LazyColumn {
         items(rows, key = { it.id }) { d ->
-            DnsRow(d, label(d.pkg))
+            DnsRow(d, label(d.pkg)) { sheetFor = d.id }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
         if (rows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote("lookups") }
+    }
+    sheetFor?.let { id -> rows.firstOrNull { it.id == id } }?.let { d ->
+        DomainSheet(
+            d.qname, vm, nav, onDismiss = { sheetFor = null }, pkg = d.pkg,
+            knownReason = d.reason.takeIf { d.isBlocked }, loadReason = false, showLookups = query != d.qname,
+        )
     }
 }
 
@@ -192,8 +262,9 @@ private fun LimitNote(what: String) {
 }
 
 @Composable
-fun DnsRow(d: DnsEntity, appLabel: String) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+fun DnsRow(d: DnsEntity, appLabel: String, onClick: (() -> Unit)? = null) {
+    val clickable = if (onClick != null) Modifier.clickable(onClickLabel = "Block or allow", onClick = onClick) else Modifier
+    Row(Modifier.fillMaxWidth().then(clickable).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         AppIcon(d.pkg, appLabel, 32.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {

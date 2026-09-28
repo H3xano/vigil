@@ -2,7 +2,9 @@ package dev.vigil.inspector.ui.screens
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,6 +14,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -20,6 +26,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -31,6 +39,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.data.AlertEntity
+import dev.vigil.inspector.data.AlertMute
+import dev.vigil.inspector.data.AlertMutes
+import dev.vigil.inspector.data.Settings
+import dev.vigil.inspector.export.ExportRecords
 import dev.vigil.inspector.processing.AlertNotifier
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
@@ -44,16 +57,45 @@ import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.formatDateTime
 import dev.vigil.inspector.ui.formatRelative
 import dev.vigil.inspector.ui.theme.VigilColors
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import java.util.Locale
 
+private val SEVERITIES = listOf("high" to "High", "medium" to "Medium", "low" to "Low", "info" to "Info")
+
+/**
+ * The alerts shown for the chosen filters: muted ones only when [showMuted]
+ * (then only them), otherwise the unmuted ones; [severity] and [kind] null
+ * mean any.
+ */
+internal fun filterAlerts(
+    alerts: List<AlertEntity>,
+    mutes: List<AlertMute>,
+    severity: String?,
+    kind: String?,
+    showMuted: Boolean,
+): List<AlertEntity> = alerts.filter { a ->
+    AlertMutes.isMuted(mutes, a) == showMuted &&
+        (severity == null || a.severity == severity) &&
+        (kind == null || a.kind == kind)
+}
+
+private fun alertTitle(kind: String) = AlertNotifier.titleFor(kind).replaceFirstChar { it.uppercase() }
+
 @Composable
 fun AlertsScreen(vm: MainViewModel, nav: NavController) {
     val alerts by vm.alerts.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    var severity by rememberSaveable { mutableStateOf<String?>(null) }
+    var kind by rememberSaveable { mutableStateOf<String?>(null) }
+    var showMuted by rememberSaveable { mutableStateOf(false) }
+    val mutes = settings.alertMutes
+    val shown = remember(alerts, mutes, severity, kind, showMuted) { filterAlerts(alerts, mutes, severity, kind, showMuted) }
+    val mutedCount = remember(alerts, mutes) { alerts.count { AlertMutes.isMuted(mutes, it) } }
+    val kinds = remember(alerts) { alerts.map { it.kind }.distinct().sorted() }
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Alerts") {
             TextButton(onClick = { vm.markAlertsSeen() }) { Text("Mark all read") }
@@ -65,61 +107,148 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
             )
             return@Column
         }
-        val appLabel = rememberAppLabels(vm, alerts.map { it.pkg }.distinct())
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for ((value, text) in SEVERITIES) {
+                FilterChip(selected = severity == value, onClick = { severity = if (severity == value) null else value }, label = { Text(text) })
+            }
+            KindFilterChip(kinds, kind) { kind = it }
+            if (mutedCount > 0 || showMuted) {
+                FilterChip(selected = showMuted, onClick = { showMuted = !showMuted }, label = { Text("Muted ($mutedCount)") })
+            }
+        }
+        if (shown.isEmpty()) {
+            EmptyState(
+                if (showMuted) "No muted alerts" else "No matching alerts",
+                if (showMuted) "Alerts you mute or mark as expected are listed here." else "Nothing matches the current filters." +
+                    if (mutedCount > 0) " $mutedCount muted alert${if (mutedCount > 1) "s are" else " is"} hidden." else "",
+            )
+            return@Column
+        }
+        val appLabel = rememberAppLabels(vm, shown.map { it.pkg }.distinct())
         LazyColumn {
-            items(alerts, key = { it.id }) { a ->
-                var expanded by rememberSaveable(a.id) { mutableStateOf(false) }
-                val label = appLabel(a.pkg)
-                Column(
-                    Modifier.fillMaxWidth()
-                        .clickable(onClickLabel = if (expanded) "Collapse" else "Show details") {
-                            expanded = !expanded
-                            // Opening an alert counts as reading it.
-                            if (expanded && !a.seen) vm.markAlertSeen(a.id)
-                        }
-                        .animateContentSize()
-                        .padding(16.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        SeverityDot(a.severity)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            AlertNotifier.titleFor(a.kind).replaceFirstChar { it.uppercase() },
-                            Modifier.weight(1f).semantics { if (!a.seen) stateDescription = "Unread" },
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = if (a.seen) FontWeight.Normal else FontWeight.Bold,
-                        )
-                        Tag(a.severity.uppercase(), VigilColors.severity(a.severity), filled = true)
-                    }
-                    Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        AppIcon(a.pkg, label, 24.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("$label · ${formatRelative(a.ts)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text(a.message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
-                    if (expanded) {
-                        Text(formatDateTime(a.ts), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                        alertNumbers(a.kind, a.detail)?.let {
-                            Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
-                        }
-                        alertHelp(a.kind, a.detail)?.let { (term, text) ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("What does this mean?", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                HelpIcon(term, text)
-                            }
-                        }
-                        Text(a.detail, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-                        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val target = a.target
-                            if (target.contains('.') && !target.first().isDigit() && target !in settings.denyDomains) {
-                                OutlinedButton(onClick = { vm.denyDomain(target) }) { Text("Block $target") }
-                            }
-                            if (a.pkg != "unknown") OutlinedButton(onClick = { nav.navigate("app/${a.pkg}") }) { Text("Open app") }
-                        }
+            items(shown, key = { it.id }) { a ->
+                AlertItem(a, appLabel(a.pkg), settings, muted = showMuted, vm, nav)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun KindFilterChip(kinds: List<String>, selected: String?, onSelect: (String?) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        FilterChip(
+            selected = selected != null,
+            onClick = { if (selected != null) onSelect(null) else open = true },
+            label = { Text(selected?.let(::alertTitle) ?: "Kind") },
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            kinds.forEach { k ->
+                DropdownMenuItem(text = { Text(alertTitle(k)) }, onClick = {
+                    onSelect(k)
+                    open = false
+                })
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: Boolean, vm: MainViewModel, nav: NavController) {
+    var expanded by rememberSaveable(a.id) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    Column(
+        Modifier.fillMaxWidth()
+            .clickable(onClickLabel = if (expanded) "Collapse" else "Show details") {
+                expanded = !expanded
+                // Opening an alert counts as reading it.
+                if (expanded && !a.seen) vm.markAlertSeen(a.id)
+            }
+            .animateContentSize()
+            .padding(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SeverityDot(a.severity)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                alertTitle(a.kind),
+                Modifier.weight(1f).semantics { if (!a.seen) stateDescription = "Unread" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (a.seen) FontWeight.Normal else FontWeight.Bold,
+            )
+            if (muted) Tag("MUTED")
+            Spacer(Modifier.width(4.dp))
+            Tag(a.severity.uppercase(), VigilColors.severity(a.severity), filled = true)
+        }
+        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            AppIcon(a.pkg, label, 24.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("$label · ${formatRelative(a.ts)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(a.message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+        if (!expanded) return@Column
+        Text(formatDateTime(a.ts), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+        alertNumbers(a.kind, a.detail)?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+        }
+        alertHelp(a.kind, a.detail)?.let { (term, text) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("What does this mean?", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HelpIcon(term, text)
+            }
+        }
+        Text(a.detail, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+
+        val detail = detailObject(a.detail)
+        val dest = ExportRecords.alertDestination(a.kind, a.target, detail)
+        val flowId = detail?.long("flow_id")
+        Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val domain = dest?.domain
+            when {
+                domain != null -> BlockDomainButtons(domain, settings, vm)
+                dest?.ip != null -> {
+                    val alreadyBlocked = a.kind == "threat_ip"
+                    Text(
+                        if (alreadyBlocked) {
+                            "${dest.ip} is on a threat feed, so vigil already blocks connections to it."
+                        } else {
+                            "vigil's rules match names, so a single IP address like ${dest.ip} cannot be blocked. You can cut off the app instead."
+                        },
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!alreadyBlocked && a.pkg != "unknown" && a.pkg !in settings.blockedPackages) {
+                        OutlinedButton(onClick = { vm.blockApp(a.pkg, label) }, Modifier.fillMaxWidth()) { Text("Block all network access of $label") }
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            if (flowId != null) {
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        val id = vm.flowIdForAlert(flowId, a.ts)
+                        if (id != null) nav.navigate("flow/$id") else vm.showMessage("That connection is no longer in the history.")
+                    }
+                }, Modifier.fillMaxWidth()) { Text("View connection") }
+            }
+            if (a.pkg != "unknown") OutlinedButton(onClick = { nav.openApp(a.pkg) }, Modifier.fillMaxWidth()) { Text("Open app") }
+            if (muted) {
+                TextButton(onClick = { vm.unmuteAlerts(a.kind, a.pkg, a.target) }) { Text("Unmute") }
+            } else {
+                val title = AlertNotifier.titleFor(a.kind)
+                TextButton(onClick = {
+                    vm.muteAlerts(a.kind, a.pkg, a.target, "Marked as expected: $title alerts about ${a.target} from $label are hidden")
+                }) { Text("Mark as expected") }
+                TextButton(onClick = {
+                    vm.muteAlerts(a.kind, a.pkg, null, "Muted all “$title” alerts from $label")
+                }) { Text("Mute this kind for this app") }
+                Text(
+                    "Muted alerts are still recorded and exported, but hidden here and not notified.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
