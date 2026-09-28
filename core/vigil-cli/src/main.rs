@@ -19,19 +19,35 @@ use vigil_core::{Config, Engine, Event, FeedCategory, NullPlatform};
 const USAGE: &str = "\
 usage:
   vigil-cli run (--tun NAME | --fd-socket PATH) [options]
-      --config FILE          engine configuration (JSON; missing fields use defaults)
+      --config FILE          engine configuration (JSON; missing fields use defaults);
+                             re-read on SIGHUP and applied like nativeUpdateConfig
       --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom)
       --upstream IP:PORT     upstream resolver (repeatable; overrides config)
       --no-stats             suppress periodic stats events
   vigil-cli parse-feed FILE   parse a blocklist and print a summary
   vigil-cli quic-probe IP:PORT SNI   send one QUIC Initial carrying SNI
   vigil-cli default-config    print the default configuration
+  vigil-cli wg-keypair        print a new WireGuard key pair (base64 private, public)
 ";
 
 static STOP: AtomicBool = AtomicBool::new(false);
+static RELOAD: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn on_hup(_: libc::c_int) {
+    RELOAD.store(true, Ordering::SeqCst);
+}
+
+fn wg_keypair() -> io::Result<()> {
+    use std::io::Read;
+    let mut random = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let (private, public) = vigil_core::config::upstream::keypair_from(random);
+    println!("{private} {public}");
+    Ok(())
 }
 
 fn main() {
@@ -40,6 +56,7 @@ fn main() {
         Some("run") => run(&args[1..]),
         Some("parse-feed") => parse_feed(&args[1..]),
         Some("quic-probe") => quic_probe(&args[1..]),
+        Some("wg-keypair") => wg_keypair(),
         Some("default-config") => {
             println!(
                 "{}",
@@ -70,6 +87,7 @@ fn run(args: &[String]) -> io::Result<()> {
     let mut feeds = Vec::new();
     let mut upstreams = Vec::new();
     let mut stats = true;
+    let mut config_path = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || {
@@ -81,9 +99,9 @@ fn run(args: &[String]) -> io::Result<()> {
             "--tun" => tun_name = Some(val()?),
             "--fd-socket" => fd_socket = Some(val()?),
             "--config" => {
-                let text = std::fs::read_to_string(val()?)?;
-                config = Config::from_json(&text)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let path = val()?;
+                config = read_config(&path)?;
+                config_path = Some(path);
             }
             "--feed" => feeds.push(val()?),
             "--upstream" => upstreams.push(
@@ -101,7 +119,7 @@ fn run(args: &[String]) -> io::Result<()> {
         }
     }
     if !upstreams.is_empty() {
-        config.upstream_dns = upstreams;
+        config.upstream_dns = upstreams.clone();
     }
     let tun: OwnedFd = match (tun_name, fd_socket) {
         (Some(name), None) => open_tun(&name)?,
@@ -116,6 +134,7 @@ fn run(args: &[String]) -> io::Result<()> {
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, on_hup as *const () as libc::sighandler_t);
     }
 
     let engine = Engine::start(tun.as_raw_fd(), config, Arc::new(NullPlatform))?;
@@ -139,6 +158,22 @@ fn run(args: &[String]) -> io::Result<()> {
     let events = engine.events();
     let stdout = io::stdout();
     while !STOP.load(Ordering::SeqCst) {
+        if RELOAD.swap(false, Ordering::SeqCst) {
+            if let Some(path) = &config_path {
+                let result = read_config(path).and_then(|mut c| {
+                    if !upstreams.is_empty() {
+                        c.upstream_dns = upstreams.clone();
+                    }
+                    engine
+                        .update_config(c)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+                });
+                match result {
+                    Ok(()) => eprintln!("vigil-cli: config reloaded"),
+                    Err(e) => eprintln!("vigil-cli: config not reloaded: {e}"),
+                }
+            }
+        }
         let batch = events.poll(256, Duration::from_millis(200));
         let mut out = stdout.lock();
         for e in batch {
@@ -155,6 +190,11 @@ fn run(args: &[String]) -> io::Result<()> {
         println!("{}", serde_json::to_string(&e).unwrap());
     }
     Ok(())
+}
+
+fn read_config(path: &str) -> io::Result<Config> {
+    let text = std::fs::read_to_string(path)?;
+    Config::from_json(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 fn open_tun(name: &str) -> io::Result<OwnedFd> {

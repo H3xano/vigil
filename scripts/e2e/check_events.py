@@ -44,3 +44,6 @@ rst = [f for f in flows.values() if f["dst_port"] == 18765]
 check("upstream-reset-flow-reported", any("reset" in (ends.get(f["id"], {}).get("error") or "").lower() for f in rst), [(f["id"], ends.get(f["id"])) for f in rst])
 check("engine-stopped", any(e["type"] == "engine" and e["state"] == "stopped" for e in events))
 check("connect-error-reported",any(ends.get(i, {}).get("error", "") and "connect" in ends[i]["error"] for i in flows))
+relayed = [f for f in flows.values() if f["verdict"] == "allow"]
+check("flows-via-direct", relayed and all(f.get("via") == "direct" for f in relayed), [(f["dst_ip"], f.get("via")) for f in relayed if f.get("via") != "direct"][:10])
+check("stats-upstream-direct", all(s.get("upstream", {}).get("mode") == "direct" for s in stats), stats[-1].get("upstream") if stats else None)
