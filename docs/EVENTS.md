@@ -12,8 +12,13 @@ prints them as JSON lines; the app polls them in batches (JSON arrays).
 | `flow_end` | `id`, `ts`, `tx` (bytes sent by the app), `rx`, `duration_ms`, `error` |
 | `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` (app → vigil: `udp`/`tcp`), `upstream` (vigil → resolver: `udp`, `tcp`, `dot`, `doh`; null when no resolver was asked) |
 | `alert` | `ts`, `kind`, `severity` (`info`, `low`, `medium`, `high`), `uid`, `target`, `message`, `detail` |
-| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size, encrypted upstream DNS counters (below), `upstream` (see below), `capture` (see below) |
-| `engine` | `state` (`started`, `stopped`, `error`), `message` |
+| `stats` | `ts`, `packets_in`, `packets_out`, `bytes_in`, `bytes_out`, `tcp_active`, `udp_active`, `flows_total`, `dns_queries`, `blocked`, `dropped_packets`, `dropped_events`, `dns_cache_size`, the encrypted upstream DNS counters (below), `upstream` (see below), `capture` (see below) |
+| `engine` | `ts`, `state` (`started`, `stopped`, `error`), `message` |
+
+`state: error` means the engine's packet loop ended on its own: a TUN read
+error, a panic, or one of the engine's long-running tasks ending or
+panicking. `message` says which (e.g. `engine panicked: …`). Traffic is no
+longer processed; the app restarts the session when it sees this event.
 
 The engine emits exactly one `flow_end` for every `flow`, with the same
 `id`, including flows still open at shutdown (`error: "engine stopped"`).
@@ -26,8 +31,13 @@ oldest event of any type. **Consumers must therefore tolerate orphans**: a
 
 `flow_end.error` is null for an orderly close. Otherwise it describes the
 end, for example `Connection reset by peer (os error 104)` (either side
-reset; vigil resets the other side too), `idle timeout`, `connect: …`,
-`socket: …`, `evicted: UDP flow limit reached`, or `engine stopped`.
+reset; vigil resets the other side too), `client closed` or `app reused the
+port for a new connection` (the app went away, or sent a new SYN on the same
+4-tuple, after it had sent its FIN while the server side was still open),
+`idle timeout` (a TCP relay idle for 2 h), `connect: …` (including
+`connect: timed out`), `socket: …`, `evicted: UDP flow limit reached`, or
+`engine stopped`. A UDP flow that ends because the server stopped answering
+(see `udp_idle_timeout_s`) has a null error.
 Upstream paths add, for example, `connect: Connection refused (through
 WireGuard)`, `connect: socks5 proxy 127.0.0.1:9050: Connection refused (os
 error 111)` (proxy unreachable, fail closed), `connect: socks5: host
@@ -54,6 +64,7 @@ connection is reset on both sides.
 | `feed:<id> (<rule>)` | A feed entry: a name, or an address for IP entries (NAT64 addresses name the embedded IPv4 address). |
 | `ja4:<feed> (<rule>)` | A listed JA4 fingerprint with `block_ja4_matches` (see "JA4 matches"). |
 | `encrypted_dns` | DoT/DoQ or a known DoH endpoint with `block_encrypted_dns`. |
+| `not a standard query (…)` | `dns` only: a message to a hard-coded resolver that vigil cannot inspect (see below). |
 
 In a `dns` event blocked through a CNAME, the rule reads `<rule> via CNAME
 <target>`. Precedence (first match wins): the app block (`app`, then the
@@ -185,9 +196,10 @@ at 80 bytes.
 Feeds of category `ja4` accept JA4 lines only; any other non-comment line
 counts as rejected. JA4 lines in feeds of other categories are matched too
 (so one indicator file, e.g. from TAXII, can hold domains, addresses and
-fingerprints). The summary returned by `nativeLoadFeedFile` (and by
-`nativeInspectFeedFile`, which parses without an engine) is
-`{id, domains, ip_ranges, ja4, rejected_lines, memory_bytes}`.
+fingerprints). The summary returned by `nativeLoadFeedFile` is
+`{id, domains, ip_ranges, ja4, rejected_lines, memory_bytes}`;
+`nativeInspectFeedFile`, which parses without an engine (and so without a
+category), returns `{domains, ip_ranges, ja4, rejected_lines}`.
 
 A feed of category `asn` is an IP-to-ASN table, not a blocklist: it never
 blocks or alerts, it only fills the `asn` field of `flow` events. The
@@ -363,28 +375,42 @@ are dropped.
 
 The configuration is one JSON object (`core/vigil-core/src/config.rs`,
 mirrored by `EngineConfig.kt`); missing fields take their defaults. Fields
-added after 0.1.0:
+in the order of `config.rs`:
 
 | field | type | default | meaning |
 |---|---|---|---|
+| `virtual_dns` | list of IP strings | `["10.111.222.2", "fd76:6967:696c::2"]` | Addresses of vigil's own resolver (the app advertises them to the OS). Queries to them are answered by vigil. |
+| `upstream_dns` | list of `ip:port` strings | `["1.1.1.1:53", "9.9.9.9:53"]` | Resolvers the virtual resolver forwards to over plain DNS (see "`encrypted_dns`" for the encrypted alternative). Must not be empty. |
+| `sinkhole` | `null_ip`, `nxdomain` | `null_ip` | How blocked names are answered: `0.0.0.0` / `::` for address queries and an empty NOERROR otherwise, or NXDOMAIN for every type. |
+| `sinkhole_ttl` | integer | 60 | TTL of sinkhole answers (0 for per-app decisions, see "Per-app rules and device state"). |
+| `block_encrypted_dns` | bool | `false` | Block DoT (port 853), DoQ and well-known DoH endpoints, so apps fall back to plain DNS. |
+| `block_ja4_matches` | bool | `false` | Reset connections (drop QUIC flows) whose JA4 fingerprint is on a feed, instead of only alerting. Allowlisted names are exempt. See "JA4 matches". |
+| `blocked_uids` | list of UIDs | `[]` | Apps blocked at all times. |
+| `allow_domains`, `deny_domains` | lists of names | `[]` | The global allowlist (overrides the denylist and every feed) and denylist; entries cover subdomains. |
+| `app_rules` | list of `{"uid", "block_wifi", "block_cellular", "block_background", "block_screen_off"}` | `[]` | Conditional blocking of an app (see "Per-app rules and device state"). Blocking at all times stays in `blocked_uids`. |
+| `app_domain_rules` | list of `{"uid", "domain", "action"}` | `[]` | `action` `allow` or `block`: the domain and its subdomains for that app only. |
+| `device_state` | object or absent | absent | The device state to install with this config (normally only in the start config); absent keeps the current one. Same object as `nativeSetDeviceState`. |
+| `beacon` | object | see "`beacon`" | Thresholds of the beaconing detectors. See "`beacon`" below. |
+| `mtu` | integer, 576..=65535 | 1500 | MTU of the TUN interface. |
+| `tcp_connect_timeout_ms` | integer > 0 | 15000 | Upstream connect timeout at the SYN gate. |
+| `udp_idle_timeout_s` | integer > 0 | 60 | A UDP flow ends this long after the last datagram from the server (details at the end of "Engine configuration"). |
+| `stats_interval_ms` | integer | 2000 | Period of `stats` and `flow_update` events (at least 250). |
+| `worker_threads` | integer | 2 | Threads of the engine's async runtime (1 to 8). The app sends 1, or 2 with Settings → Maximum throughput. |
 | `nat64_prefixes` | list of CIDR strings | `[]` | NAT64 prefixes of the current network, e.g. `"64:ff9b::/96"` or the carrier's own prefix. IPv6 destinations inside one are matched against IP feeds by their embedded IPv4 address (last 32 bits). `64:ff9b::/96` always applies, even if absent. Only /96 prefixes are supported; other lengths and unparseable entries are logged and ignored (they do not reject the config). |
 | `max_udp_flows` | integer > 0 | 2048 | UDP NAT entries. When full, the flows idle for longest (1/32 of the table, at least one) are evicted: an open one ends with `flow_end.error` = `evicted: …`, one still being set up is dropped without events. |
 | `max_tcp_flows` | integer > 0 | 4096 | TCP connections admitted or relaying. Further SYNs are answered with a RST. |
 | `max_pending_connects` | integer > 0 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
 | `max_dns_inflight` | integer > 0 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |
-| `block_ja4_matches` | bool | `false` | Reset connections (drop QUIC flows) whose JA4 fingerprint is on a feed, instead of only alerting. Allowlisted names are exempt. See "JA4 matches". |
 | `encrypted_dns` | object | `{"mode":"off"}` | DoT/DoH for the virtual resolver's lookups. See "`encrypted_dns`" below. |
 | `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
 | `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; unknown names load as `tracking`) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
 | `feeds_preload_timeout_ms` | integer | 10000 | How long packet processing waits for `feeds` at start (at most 60000). Feeds not loaded by then finish loading in the background while traffic flows. |
-| `app_rules` | list of `{"uid", "block_wifi", "block_cellular", "block_background", "block_screen_off"}` | `[]` | Conditional blocking of an app (see "Per-app rules and device state"). Blocking at all times stays in `blocked_uids`. |
-| `app_domain_rules` | list of `{"uid", "domain", "action"}` | `[]` | `action` `allow` or `block`: the domain and its subdomains for that app only. |
-| `device_state` | object or absent | absent | The device state to install with this config (normally only in the start config); absent keeps the current one. Same object as `nativeSetDeviceState`. |
 | `capture` | object | off | Packet capture for PCAPng export and PCAP-over-IP. See "`capture`" below. |
 
-The four caps, `feeds` and `feeds_preload_timeout_ms` are read when the
-engine starts; a later config update does not resize the caps or reload
-the feeds.
+`mtu`, `worker_threads`, the four caps, `feeds` and
+`feeds_preload_timeout_ms` are read when the engine starts; a later config
+update does not change them (the app restarts the session when the thread
+count changes). Everything else applies with `nativeUpdateConfig`.
 
 ### Per-app rules and device state
 
@@ -637,16 +663,24 @@ shorter). The app's next datagram starts a new flow on a fresh socket.
 
 ## Engine lifecycle (JNI)
 
-`VigilNative` (Kotlin) ↔ `core/vigil-jni/src/lib.rs`:
+`VigilNative` (Kotlin) ↔ `core/vigil-jni/src/lib.rs`, every entry point of
+the library (the Java mirror in `scripts/jni-smoke/` declares the same set).
+Calls on a handle that is 0 return 0/false/null.
 
 | call | behaviour |
 |---|---|
+| `nativeVersion(): String` | The engine version (`core/Cargo.toml` workspace version). |
 | `nativeStart(tunFd, configJson, bridge): Long` | 0 on failure (including an invalid config). |
-| `nativeShutdown(handle): Boolean` | Stops the engine (TUN loop, relays, runtime), then queues a `flow_end` for every open flow and a final `engine` event with `state: stopped`. The handle stays valid: `nativePollEvents` keeps returning the remaining events and, once the queue is empty, returns null immediately instead of waiting. `nativeUpdateConfig`, `nativeSetDeviceState` and `nativeRemoveFeed` return false, `nativeStats` and `nativeLoadFeedFile` return null. A second call is a no-op returning true; false only for a null handle. |
+| `nativePollEvents(handle, max, timeoutMs): String?` | Waits up to `timeoutMs` for events and returns a JSON array of at most `max` of them, or null if none arrived. |
+| `nativeUpdateConfig(handle, configJson): Boolean` | Replaces the configuration (see "Engine configuration"); false for an invalid config (the running one is kept) or an engine that is not running. |
 | `nativeSetDeviceState(handle, stateJson): Boolean` | Installs the device state for per-app conditions (see "Per-app rules and device state") and cuts open flows it blocks. False for invalid JSON or an engine that is not running. |
-| `nativeStop(handle)` | Stops the engine if it is still running (same events as above, which are then lost with the handle) and frees the handle. Must be called exactly once, also after `nativeShutdown`. |
-
+| `nativeLoadFeedFile(handle, id, category, path): String?` | Loads or replaces a feed from a file (see "Feed files") and returns its summary, or null on error. Streams the file; call it off the main thread. |
+| `nativeRemoveFeed(handle, id): Boolean` | Unloads a feed; false if no feed has that id. |
+| `nativeStats(handle): String?` | A `stats` event (JSON object) on demand, or null if the engine is not running. |
 | `nativeExportPcap(handle, filterJson, path): String?` | Writes the captured packets matching the filter to `path` (created or truncated) as PCAPng; see "Packet capture export" below. Returns the summary JSON, or null for a null handle, a filter that does not parse, or an I/O error. Works after `nativeShutdown` too (the ring lives until `nativeStop`). Blocks for the write (up to the ring size): call it off the main thread. |
+| `nativeInspectFeedFile(path): String?` | Parses a feed file without an engine (validation of downloads) and returns `{domains, ip_ranges, ja4, rejected_lines}`, or null if it cannot be read. |
+| `nativeShutdown(handle): Boolean` | Stops the engine (TUN loop, relays, runtime), then queues a `flow_end` for every open flow and a final `engine` event with `state: stopped`. The handle stays valid: `nativePollEvents` keeps returning the remaining events and, once the queue is empty, returns null immediately instead of waiting. `nativeUpdateConfig`, `nativeSetDeviceState` and `nativeRemoveFeed` return false, `nativeStats` and `nativeLoadFeedFile` return null. A second call is a no-op returning true; false only for a null handle. |
+| `nativeStop(handle)` | Stops the engine if it is still running (same events as above, which are then lost with the handle) and frees the handle. Must be called exactly once, also after `nativeShutdown`. |
 
 To keep the final `flow_end` events, call `nativeShutdown`, drain
 `nativePollEvents` until it returns null, then call `nativeStop`.
@@ -710,14 +744,18 @@ without custom pipelines. A completed flow looks like this:
 }
 ```
 
-A flow whose JA4 is listed also carries `vigil.ja4_match` (`feed`, `rule`,
-`label`). Flows carry the upstream path as `vigil.via` and, when the
-engine knows the destination's autonomous system, ECS
+A blocked flow has `event.type: ["denied"]`, `event.action: "block"` and the
+block reason in `event.reason`; a flow that ended with an error carries it
+in `vigil.error`. A flow whose JA4 is listed also carries `vigil.ja4_match`
+(`feed`, `rule`, `label`). Flows carry the upstream path as `vigil.via`
+and, when the engine knows the destination's autonomous system, ECS
 `destination.as.number` and `destination.as.organization.name` plus
-`vigil.asn_country` (the AS registration country). DNS records carry the
-upstream transport as `vigil.upstream`. DNS records use `dns.question.name/type`, `dns.response_code` and
-`dns.answers[].data`. `host.os.version` is the Android release (`15`,
-`16`) and `vigil.android.api_level` the API level (`35`, `36`).
+`vigil.asn_country` (the AS registration country). DNS records use
+`dns.question.name/type`, `dns.response_code` and `dns.answers[].data`,
+with `event.type: ["protocol"]`, the verdict in `event.action` and the
+upstream transport in `vigil.upstream`. `host.os.version` is the Android
+release (`15`, `16`) and `vigil.android.api_level` the API level (`35`,
+`36`).
 
 When the destination name of a flow (`destination.domain`) or DNS record
 (`dns.question.name`) is a known tracker or service in the tracker labels
@@ -743,7 +781,10 @@ lookup (`threat_domain`, `threat_ip`, and `threat_ja4` with blocking on) and
 kind, also in `event.action` and `vigil.kind`) and `message`. When the alert
 names a destination, it is in `destination.domain`, `destination.ip` and
 `destination.port` (from the alert `detail`, or the `target` when it is a
-domain or an address; not for AS numbers or JA4 fingerprints):
+domain or an address; not for AS numbers or JA4 fingerprints). The alert
+`detail` is in `vigil.detail`, including `detail.spyware` for spyware pack
+hits (see "Spyware labels"). Muted alerts are exported like any other:
+muting only hides them in the app and stops their notifications. For example:
 
 ```json
 {
@@ -781,7 +822,7 @@ Transports:
   at 8 KB: long string values of larger records are shortened (and
   `vigil.truncated` is set) so the JSON stays valid.
 - **HTTP:** `ndjson` (one record per line, e.g. for Logstash/Vector/Fluent Bit
-  HTTP inputs), `splunk_hec` (`{"time","sourcetype":"vigil:json","event":…}`),
+  HTTP inputs), `splunk_hec` (`{"time","sourcetype":"vigil:json","source":"vigil","event":…}`),
   or `elastic_bulk` (`{"create":{"_id":<event.id>}}` action lines; point the
   URL at `…/<index>/_bulk`). An optional `Authorization` header is sent. For
   `_bulk`, only items that failed with 429/5xx are retried; 409 (already

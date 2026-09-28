@@ -18,7 +18,8 @@
 Everything stays in the app's private storage. It is excluded from cloud
 backups and device transfer, and pruned after the retention period (7 days by
 default). No traffic data leaves the device unless you enable SIEM export,
-PCAP-over-IP streaming, or export a capture file.
+PCAP-over-IP streaming, or export a capture file. Feed downloads and export
+use vigil's own sockets, which bypass its tunnel.
 
 ## Packet capture (off by default)
 
@@ -45,7 +46,6 @@ other encrypted contents stay encrypted.
   options) and accepts an allowlist of client addresses, which you should
   set to your computer's. Use it on a trusted network and turn it off when
   done.
-Feed downloads and export use vigil's own sockets, which bypass its tunnel.
 
 ## What vigil downloads
 
@@ -57,15 +57,15 @@ Tracker. Each download is a plain HTTPS GET with the User-Agent
 `vigil/<version> (+feed updater)`, so the publisher (and GitHub) sees your
 IP address, the time and that you use vigil, but nothing about your traffic.
 Turn feeds off in Settings → Threat intelligence feeds to stop these
-downloads; custom feeds go to the URL you enter, with the Authorization
-header you configure. TAXII 2.1 sources are polled with the same daily
-update: vigil sends GET requests (User-Agent `vigil/<version> (+TAXII
+downloads; custom feeds go to the URL you enter, with the credential header
+(for example `Authorization`) you configure. TAXII 2.1 sources are polled
+with the same daily update: vigil sends GET requests (User-Agent `vigil/<version> (+TAXII
 poller)`, your credentials, and an `added_after` timestamp) to the API root
 you entered. Credentials only ever go to the host you entered: a redirect to
 another host is followed without them, a redirect from HTTPS to plain HTTP is
 refused, and with credentials a TAXII discovery document's API roots on other
-hosts (or over plain HTTP) are not used. JA4 fingerprints of your connections are matched on the device
-and never sent anywhere.
+hosts (or over plain HTTP) are not used. JA4 fingerprints of your
+connections are matched on the device and never sent anywhere.
 
 The spyware and stalkerware packs are on by default too, all from
 `raw.githubusercontent.com` with the same kind of plain GET (User-Agent

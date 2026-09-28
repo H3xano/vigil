@@ -40,7 +40,8 @@ cd android
 ## Test suites
 
 Run all of these before committing anything that touches the engine or the
-app. Every one was green at the 0.1.0 commit.
+app. Every one was green after the post-0.4.0 work; the counts are from
+those runs.
 
 ```sh
 cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 181 unit tests
@@ -217,12 +218,10 @@ Gotchas).
 - **Sub-agents in worktrees start from the *pushed* `main`**, not local
   unpushed commits. Push (or tell them) before spawning, or expect to adapt
   their branch to newer local work when merging.
-- **One emulator at a time**, and never alongside several Gradle/cargo
-  builds; `adb emu kill` when done.
-
-- **The emulator gets OOM-killed** (about 4 GB RSS) if Gradle/cargo builds run
-  alongside it on a 14 GB host. Build first, or stop the emulator
-  (`adb emu kill`) before parallel builds.
+- **One emulator at a time.** It gets OOM-killed (about 4 GB RSS) if
+  Gradle/cargo builds run alongside it on a 14 GB host. Build first, or stop
+  the emulator (`adb emu kill`) before parallel builds, and `adb emu kill`
+  when done.
 - **Grant VPN consent after the first app launch.** An `appops set …
   ACTIVATE_VPN allow` issued right after `adb install` can be reset while the
   package is still being set up; the scripts re-grant and verify it.
@@ -230,7 +229,6 @@ Gotchas).
   before the old one closes). Look for 10.111.222.1 on any interface.
 - **Rust is pinned** in `core/rust-toolchain.toml` (keep it in sync with the
   F-Droid recipe); rustup installs it on first use.
-
 - **toybox `nc` quits on stdin EOF,** even without vigil. Feed it
   `(cat req; sleep 3) | nc …` or the reply is lost.
 - **Files pushed as root into the app's data dir get the wrong SELinux MLS
@@ -257,10 +255,14 @@ Gotchas).
   `[patch.crates-io]`) to add `TcpStream::abort` and report peer resets as
   `ConnectionReset`, plus performance fixes: `shutdown()` completes when the
   FIN is queued (it waited out TIME-WAIT, holding every relay 10 s), TIME-WAIT
-  lasts 1 s, a new SYN replaces an old socket with the same 4-tuple,
-  `Stack::tcp_sender` lets the TUN reader feed the stack directly, and the
-  poll loop yields without a tokio driver turn. Changes are marked
-  `vigil patch`; re-apply them when upgrading the crate.
+  lasts 1 s, a new SYN replaces an old socket with the same 4-tuple (a
+  SYN|RST does not), `Stack::tcp_sender` lets the TUN reader feed the stack
+  directly, and the poll loop yields without a tokio driver turn. Later
+  fixes: sockets that smoltcp resets back to LISTEN (a RST in SYN-RECEIVED)
+  or that never took their SYN (after 10 s) are reaped as resets instead
+  of lingering as listeners, and `TcpAbortHandle::closed()` lets the relay
+  notice that a half-closed app side was reset. Changes are marked `vigil patch`;
+  re-apply them when upgrading the crate.
 - **boringtun is vendored too** (`core/vendor/boringtun`, unmodified source)
   because its manifest also builds a `staticlib` and a `cdylib`, which
   cargo-ndk copied into `jniLibs` as a stray `libboringtun-*.so`. Keep
@@ -272,7 +274,9 @@ Gotchas).
   namespace** (`ip link add … type wireguard`); `scripts/e2e/wgconf.py`
   configures them over generic netlink, so wireguard-tools are not needed.
   Without the module the stage prints SKIP. `E2E_STAGES="wireguard"` (or
-  `socks5`, `edns`, `beacon`, `direct`) runs single stages.
+  `direct`, `beacon`, `apprules`, `capture`, `edns`, `socks5`) runs single
+  stages; `E2E_KEEP=1` keeps the work directory (configs, events, captured
+  files) for inspection.
 - **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
   queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
   then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
@@ -299,9 +303,9 @@ Gotchas).
 
 ```
 core/vigil-core/src/
-  engine/mod.rs     runtime, TUN loop, dispatch, stats, flow tracker, Engine API
+  engine/mod.rs     runtime, TUN loop, dispatch, stats, flow tracker, feed preload, task supervision, Engine API
   engine/tcp.rs     SYN gate, relay, sniffing, policy decisions, alerts
-  engine/udp.rs     UDP NAT, QUIC sniff window
+  engine/udp.rs     UDP NAT, QUIC sniff window, flow cap and eviction
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
   engine/dns_upstream.rs  encrypted upstream DNS (DoT, DoH over HTTP/2 or 1.1), TLS config
   engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
@@ -312,42 +316,70 @@ core/vigil-core/src/
   proto/{dns,tls,quic,http}.rs   parsers (pure); tls.rs also computes JA4
   proto/doh.rs      DoH HTTP/1.1 request encoding and response parsing (pure)
   ../testdata/edns/ test-only CA and server certificate (dns.vigil.test, 127.0.0.1)
+  packet.rs         L3/L4 parsing for dispatch, builders for UDP replies and TCP resets
+  tun.rs            non-blocking TUN descriptor I/O
+  platform.rs       Platform trait (UID lookup, protect) the host implements
+  dnscache.rs       IP → name cache learned from DNS answers
   intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
   asn.rs            IP → ASN table (iptoasn TSV, feed category `asn`); Policy::asn_lookup, one lookup per flow
   policy.rs         Policy (precedence in its header), per-app conditions and domain rules, feed categories,
                     DoH host list, JA4 block reasons
-  config/app_rules.rs  app_rules / app_domain_rules and the DeviceState (nativeSetDeviceState)
   detect.rs         beacon detectors (new connections, bursts inside long-lived flows), alert limiter
   event.rs          event types + bounded queue
-  config.rs         Config (JSON contract with the app); config/upstream.rs the upstream section
+  config.rs         Config (JSON contract with the app), `feeds`; config/upstream.rs the upstream section,
+                    config/app_rules.rs app_rules / app_domain_rules and DeviceState (nativeSetDeviceState),
+                    config/capture.rs the capture section
 core/vigil-jni/src/lib.rs     JNI surface (mirrors engine/VigilNative.kt)
-core/vendor/netstack-smoltcp  patched netstack (TCP abort / reset reporting, TIME-WAIT and polling fixes)
+core/vigil-cli/src/main.rs    Linux host: run (--tun/--fd-socket, --uid, --state, --pcap-on-exit), parse-feed, asn, ja4,
+                              quic-probe, wg-keypair, default-config
+core/vendor/netstack-smoltcp  patched netstack (TCP abort / reset reporting, TIME-WAIT, LISTEN reaping, polling fixes)
 core/vendor/boringtun         boringtun 0.7.1 built as an rlib only
 android/app/src/main/java/dev/vigil/inspector/
-  vpn/              VigilVpnService, routes, config factory, tile, ServiceState
-  engine/           VigilNative, PlatformBridge, EngineHandle, event/config models
+  vpn/              VigilVpnService (session, device-state push, feed preload list), VpnRoutes, ConfigFactory,
+                    InspectorTileService, ServiceState, ServicePolicy (pure service decisions: foreground on
+                    quick restart, lockdown warning), RestartBudget (restarts after engine errors), IpLiteral
+  engine/           VigilNative, PlatformBridge, EngineHandle (incl. exportPcap), EngineConfig, EngineEvent
   processing/       EventProcessor, EntityMapping (events → rows), NewAsnDetector (new_asn alerts),
                     ExfilDetector (upload-volume alerts), ForegroundTracker, AlertNotifier
-  data/             Room DB, settings (UpstreamSettings, WgQuick parser), app resolver,
-                    ASN database download/validation and labels (Asn.kt),
-                    tracker-company labels: companiesdb conversion, suffix index and
-                    lazy loader (Trackers.kt), per-app summaries and their queries (TrackerUsage.kt),
-                    feed catalog/repository, JA4 validation and converters (Ja4.kt),
-                    STIX pattern reader (Stix.kt), TAXII 2.1 client and indicator state (Taxii.kt)
-  export/           ECS records, syslog/HTTP formats, ExportPipeline (retry), ElasticBulk, SiemExporter
-  ui/               MainActivity, ViewModel, theme, components, screens/
+  data/             Database.kt (Room entities, DAOs, migrations); Settings.kt (SettingsStore, SettingsCodec),
+                    UpstreamSettings, WgQuick (parser), EncryptedDnsSettings, CaptureSettings,
+                    AppRules (per-app conditions and domain rules), AlertMutes; AppResolver;
+                    FeedCatalog, FeedRepository (downloads, FeedUpdateWorker), FeedValidation,
+                    FeedHttp (GET with redirects handled so credentials stay on the entered host),
+                    BoundedLineReader (line and size limits for untrusted downloads);
+                    Asn.kt (ASN table download/validation and labels); Ja4.kt (JA4 validation, converters);
+                    Stix.kt (STIX patterns, streamed bundles, relationship labels, app certificates);
+                    Taxii.kt (TAXII 2.1 client and indicator state);
+                    Trackers.kt (companiesdb conversion, suffix index, lazy loader),
+                    TrackerUsage.kt (per-app tracker summaries and their queries);
+                    Spyware.kt (packs, converters, MvtIndex, SpywareLabels for alerts), MiniYaml.kt
+                    (block-YAML reader for the indicator sources), HealthCheck.kt (the pure health check),
+                    InstalledApps.kt (packages and signing certificates)
+  export/           ExportRecords.kt (ECS records incl. vigil.tracker; WireFormats: syslog/HTTP bodies),
+                    ExportPipeline (retry, batch splitting), ElasticBulk, SiemExporter
+  ui/               MainActivity (navigation), MainViewModel, Routes, Format, Glossary, theme/, components/,
+                    Blocking.kt (registrable domains, block reason texts), CaptureExport.kt (PCAPng export
+                    requests), HealthCheckViewModel, Retained.kt (rotation-safe, in-memory form drafts)
+  ui/screens/       Dashboard (Overview), Activity, Dns, FlowDetail, Apps (incl. app detail), Alerts, Rules,
+                    Feeds, Export, Settings, Upstream, Onboarding, CaptureSettings (Settings → Packet capture,
+                    export buttons), HealthCheckScreen, DomainActions (block/allow buttons, per-app rules),
+                    Trackers (tracker tags, app trackers section), Common
+android/app/src/test/resources/  spyware/ and trackers/ excerpts of the real sources (licences in spyware/NOTICE)
 ```
 
 **Contracts to keep in sync when changing them:**
 
-- `core/vigil-core/src/config.rs` (+ `config/upstream.rs`) ↔
-  `engine/EngineConfig.kt` ↔ `vpn/ConfigFactory.kt` (the Rust test
-  `upstream_json_contract` parses the JSON asserted in `ConfigFactoryTest`,
-  `app_rules_json_contract` the per-app rules and the `nativeSetDeviceState`
-  payload; `config/capture.rs` and its test `capture_json_contract` likewise)
+- `core/vigil-core/src/config.rs` (+ `config/upstream.rs`,
+  `config/app_rules.rs`, `config/capture.rs`) ↔ `engine/EngineConfig.kt` ↔
+  `vpn/ConfigFactory.kt`. Rust tests parse the JSON asserted in
+  `ConfigFactoryTest` verbatim: `feeds_json_contract` (start-config
+  `feeds`), `upstream_json_contract`, `app_rules_json_contract` (per-app
+  rules and the `nativeSetDeviceState` payload) and `capture_json_contract`.
+  Change both sides together.
 - `core/vigil-core/src/event.rs` ↔ `engine/EngineEvent.kt` ↔ `docs/EVENTS.md`
+- Block `reason` strings (`policy.rs`) ↔ `ui/Blocking.kt` (`BlockReasons`)
 - JNI signatures in `vigil-jni/src/lib.rs` ↔ `engine/VigilNative.kt` ↔
-  `scripts/jni-smoke/…/VigilNative.java` (+ `EngineHandle` wrappers such as
-  `exportPcap`)
+  `scripts/jni-smoke/…/VigilNative.java` ↔ the JNI table in `docs/EVENTS.md`
+  (+ `EngineHandle` wrappers such as `exportPcap`)
 - The method names `ownerUid` and `protect` (looked up from native code) ↔
   `PlatformBridge.kt` and the ProGuard keep rules.

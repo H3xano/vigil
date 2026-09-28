@@ -14,8 +14,10 @@ Before doing anything, read:
 
 Working rules for this repo:
 
-- Every test suite is green at 0.4.0. Keep it that way: run
-  `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --locked`,
+- Every test suite is green after the post-0.4.0 work (packet capture,
+  per-app rules, spyware packs, tracker labels, review fixes). Keep it that
+  way: run `cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo test --locked`,
   `scripts/e2e-netns.sh`, `scripts/jni-smoke.sh`, and
   `./gradlew lintDebug testDebugUnitTest -Pvigil.skipCargo=true`. For app or
   engine behaviour changes, also run `scripts/android-e2e.sh`,

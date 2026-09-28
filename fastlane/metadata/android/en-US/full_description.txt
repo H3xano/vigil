@@ -1,28 +1,33 @@
-vigil is an open-source network sensor for your phone. It shows every IP connection and DNS lookup each app makes, names the destination, checks it against threat intelligence and flags suspicious behaviour. It is built for security-minded users, researchers and blue teams who want to know what their device is talking to.
+vigil is an open-source network sensor for your phone. It shows every connection and DNS lookup each app makes, names the destination, checks it against threat intelligence and flags suspicious behaviour, for security-minded users, researchers and blue teams.
 
 <b>How it works</b>
 
-vigil uses Android's VPN interface as a local loop: packets go to a Rust engine running inside the app, which inspects each flow and relays it to the internet over ordinary sockets. Nothing is tunnelled to a remote server. It needs <b>no root</b>, installs <b>no certificates</b> and <b>never decrypts TLS or QUIC</b>. Destination names come from DNS answers, the TLS ClientHello (SNI), QUIC Initial packets and plain-HTTP Host headers.
+vigil uses Android's VPN interface as a local loop: a Rust engine inside the app inspects each flow and relays it over ordinary sockets. Nothing is tunnelled to a remote server. It needs <b>no root</b>, installs <b>no certificates</b> and <b>never decrypts TLS or QUIC</b>. Destination names come from DNS answers, the TLS ClientHello (SNI), QUIC Initial packets and plain-HTTP Host headers.
 
 <b>Features</b>
 
 <ul>
 <li>Per-app attribution of every connection and DNS lookup, including background system components</li>
-<li>Destination names without decryption, plus a JA4 fingerprint for every TLS and QUIC client</li>
-<li>Threat intelligence: built-in feeds (HaGeZi TIF, abuse.ch URLhaus, ThreatFox and Feodo Tracker, Phishing Army, Spamhaus DROP, tracker and telemetry lists) and custom feed URLs, including authenticated MISP text exports</li>
-<li>Blocking: DNS sinkholing (including CNAME-cloaked trackers), refusing connections by IP, SNI, QUIC SNI or HTTP Host, cutting an app off entirely, and custom allow/deny rules</li>
-<li>Behavioural detection: beaconing, apps bypassing the system resolver with hard-coded DNS servers, encrypted DNS (DoH/DoT/DoQ), optional new-destination alerts, foreground/background tagging</li>
+<li>Destination names without decryption, JA4 fingerprints for TLS and QUIC clients, network (ASN) labels</li>
+<li>Threat intelligence: built-in feeds (HaGeZi TIF, abuse.ch, Phishing Army, Spamhaus DROP, tracker and telemetry lists), custom URLs including authenticated MISP exports, TAXII 2.1 and JA4 lists</li>
+<li>Spyware and stalkerware: indicator packs (MVT, Amnesty International, Echap) block known spyware servers; an offline health check compares installed apps and history with them</li>
+<li>Tracker labels: the company behind each destination (AdGuard companiesdb) and the tracker companies each app contacts</li>
+<li>Blocking: DNS sinkholing (including CNAME-cloaked trackers), connections refused by IP, SNI or HTTP Host, custom allow/deny rules</li>
+<li>Per-app firewall: block an app always, on Wi-Fi, on mobile data, in the background or with the screen off, and allow or block a domain for one app only</li>
+<li>Behavioural detection: beaconing, hard-coded DNS servers, encrypted DNS (DoH/DoT/DoQ), unusual background uploads, optional new-destination and new-network alerts</li>
+<li>Encrypted DNS (DoT or DoH), and chaining through your WireGuard server or a SOCKS5 proxy such as Orbot</li>
+<li>Optional packet capture in memory, exported as PCAPng for Wireshark or streamed live over PCAP-over-IP</li>
 <li>Optional SIEM export: ECS-shaped JSON over syslog (UDP, TCP or TLS with optional mutual TLS), HTTP NDJSON, Splunk HEC or Elasticsearch bulk</li>
 <li>Always-on VPN support and a Quick Settings tile</li>
 </ul>
 
 <b>Privacy: what leaves the device</b>
 
-Connection and DNS history stays in the app's private storage, is excluded from backups and is deleted after the retention period (7 days by default). Only the method and Host of plain-HTTP requests are recorded; never paths, headers or bodies.
+History stays in the app's private storage, excluded from backups, and is deleted after 7 days by default. Only the method and Host of plain-HTTP requests are recorded; never paths, headers or bodies. Packet capture is off by default and keeps packets in memory only.
 
 vigil itself contacts only:
 <ul>
-<li>the publishers of the threat feeds you enable, once a day, with a plain HTTPS download. Four feeds are on by default (HaGeZi TIF from raw.githubusercontent.com, and abuse.ch URLhaus, ThreatFox and Feodo Tracker). The publisher sees your IP address and that you use vigil, nothing about your traffic. You can turn every feed off.</li>
+<li>the publishers of the feeds and data sources you leave on, with plain HTTPS downloads: threat feeds daily (four on by default: HaGeZi TIF and three abuse.ch lists), spyware packs (GitHub), the IP-to-ASN table (iptoasn.com, weekly) and tracker labels (GitHub, weekly). Publishers see your IP address, nothing about your traffic. Each can be turned off.</li>
 <li>the SIEM collector you configure, only if you turn on export.</li>
 </ul>
 There are no analytics, no ads and no accounts.
@@ -31,7 +36,7 @@ There are no analytics, no ads and no accounts.
 
 <ul>
 <li>Requires Android 10 or later.</li>
-<li>Android allows one VPN at a time, so vigil cannot run alongside another VPN app.</li>
+<li>Android allows one VPN at a time, so vigil cannot run alongside another VPN app (it can route its traffic through a WireGuard server or a SOCKS5 proxy instead).</li>
 <li>With Private DNS in strict mode, DNS lookups are encrypted before vigil sees them; names then come from TLS/QUIC/HTTP only.</li>
 <li>Encrypted Client Hello hides the real destination name; vigil sees only the provider's public name.</li>
 <li>ICMP (ping) is not relayed.</li>
@@ -39,4 +44,4 @@ There are no analytics, no ads and no accounts.
 
 <b>Permissions</b>
 
-VPN service (to inspect traffic locally), internet, notifications, a foreground service, visibility of installed apps (to name the app behind each connection) and optional usage access (to tell foreground from background traffic).
+VPN service (to inspect traffic locally), internet, notifications, a foreground service, visibility of installed apps (to name the app behind each connection, and for the spyware health check) and optional usage access (to tell foreground from background traffic).

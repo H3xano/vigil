@@ -14,9 +14,10 @@ New features:
   one app only. Open connections are cut when a condition starts to apply.
   New JNI call `nativeSetDeviceState`; new config fields `app_rules`,
   `app_domain_rules`, `device_state`. One-tap block on the Apps list.
-- **Spyware and stalkerware indicator packs:** the MVT packs (Pegasus,
-  Predator, NoviSpy and others) and Echap's stalkerware lists, downloaded from
-  their publishers; hits are blocked and alerts name the spyware. A local
+- **Spyware and stalkerware indicator packs:** the packs listed by MVT
+  (Pegasus, Predator, NoviSpy and others, from the MVT project and Amnesty
+  International) and Echap's stalkerware lists, downloaded from their
+  publishers; hits are blocked and alerts name the spyware. A local
   **health check** compares installed apps (packages, signing certificates)
   and the recorded history against them and produces an exportable report.
 - **Tracker labels:** destinations labelled with the tracker company and

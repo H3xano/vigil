@@ -6,7 +6,7 @@
 |---|---|---|
 | Split | Kotlin for the Android framework, UI and persistence; Rust for everything on the packet path | The JVM stays out of per-packet work, and Rust stays out of Android APIs. |
 | TCP stack | `netstack-smoltcp` (smoltcp's TCP state machine), with **vigil owning the TUN loop** | smoltcp is mature. Owning the read/write loop lets vigil see, count, gate and drop every raw packet, which an opaque tun2socks library would not allow. |
-| Vendored `netstack-smoltcp` | `core/vendor/netstack-smoltcp` (0.2.4 plus a small patch, via `[patch.crates-io]`) | Upstream cannot abort a connection, so resets reached apps as orderly FINs, and it reported a peer's RST as EOF. The patch adds `TcpStream::abort` (smoltcp sends a RST) and surfaces resets as `ConnectionReset`. Later patches: `shutdown()` completes once the FIN is queued, TIME-WAIT is 1 s (smoltcp scans every socket per packet), a new SYN replaces a lingering socket with the same 4-tuple, a direct input sender (`Stack::tcp_sender`), a poll loop that yields without a tokio driver turn, sockets that smoltcp resets back to LISTEN (a RST in SYN-RECEIVED) reaped as resets instead of lingering as listeners, and `TcpAbortHandle::closed()`. Changes are marked `vigil patch`. |
+| Vendored `netstack-smoltcp` | `core/vendor/netstack-smoltcp` (0.2.4 plus a small patch, via `[patch.crates-io]`) | Upstream cannot abort a connection, so resets reached apps as orderly FINs, and it reported a peer's RST as EOF. The patch adds `TcpStream::abort` (smoltcp sends a RST) and surfaces resets as `ConnectionReset`. Later patches: `shutdown()` completes once the FIN is queued, TIME-WAIT is 1 s (smoltcp scans every socket per packet), a new SYN (not a SYN|RST) replaces a lingering socket with the same 4-tuple, a direct input sender (`Stack::tcp_sender`), a poll loop that yields without a tokio driver turn, sockets that smoltcp resets back to LISTEN (a RST in SYN-RECEIVED) reaped as resets instead of lingering as listeners, and `TcpAbortHandle::closed()` (resolves when the connection is gone, so a relay notices a reset of a half-closed app side). Changes are marked `vigil patch`. |
 | UDP | vigil's own NAT, not the stack's | DNS and QUIC need per-datagram inspection, and per-flow tasks allow holding back the first QUIC datagrams until the SNI is known. |
 | Loop avoidance | `addDisallowedApplication(self)` **and** `protect()` on every relay socket | Excluding the app also covers feed downloads and SIEM export, and `protect()` is kept as a second guard. |
 | Attribution | `getConnectionOwnerUid` on Android 10+ only | `sock_diag` and `/proc/net` are blocked by SELinux for apps on modern Android, so the pre-API-29 fallback in the sketch does not work there. |
@@ -286,11 +286,17 @@ connections would loop back into the proxy; the app adds it with
 ## Android app (`android/app/src/main/java/dev/vigil/inspector`)
 
 - `vpn/VigilVpnService`: owns one *session* (TUN, engine handle, event pump,
-  feed sync, config sync, device-state push, notification). Route changes
-  re-establish the interface. It supports always-on VPN and a Quick
-  Settings tile. The device state for per-app rules comes from the default
-  network callback (Wi-Fi / mobile data), `ACTION_SCREEN_ON`/`OFF` and
-  `processing/ForegroundTracker` (usage access); only changes are pushed.
+  feed sync, config sync, device-state push, notification). The start
+  config lists the downloaded feed files (`feeds`), so the engine loads
+  them before the first packet. Route changes (LAN exclusion, a NAT64
+  prefix) and a change of the excluded proxy app or the thread count
+  re-establish the interface. An `engine` `error` event restarts the
+  session (at most 3 times in 5 minutes, with backoff: `RestartBudget`).
+  It supports always-on VPN and a Quick Settings tile, and warns when
+  always-on lockdown is combined with an excluded proxy app. The device
+  state for per-app rules comes from the default network callback (Wi-Fi /
+  mobile data), `ACTION_SCREEN_ON`/`OFF` and `processing/ForegroundTracker`
+  (usage access); only changes are pushed.
 - `data/AppRules`: per-app rules are stored by app key (package or
   `uid:<n>`) in the settings and resolved to UIDs by `vpn/ConfigFactory`;
   packages sharing a UID share one engine rule (their conditions merge).
@@ -298,17 +304,31 @@ connections would loop back into the proxy; the app adds it with
   `nativeStop` can never race a poll.
 - `processing/EventProcessor`: batches each poll into one Room transaction,
   resolves UIDs to apps, tags background traffic, records (app, destination)
-  pairs for novelty alerts, and feeds the SIEM exporter with completed flow
-  records.
-- `data/`: Room (flows, dns_queries, alerts, destinations, feeds), a single
-  JSON settings document, feed downloads (atomic: download, validate with the
-  Rust parser, then rename) and a daily WorkManager refresh with retention
-  pruning.
-- `export/`: ECS-shaped records, syslog/HTTP wire formats, and mTLS through
-  KeyChain.
+  pairs for novelty alerts, names the spyware behind threat alerts from
+  spyware packs (`data/SpywareLabels`), skips notifications for muted
+  alerts, and feeds the SIEM exporter with completed flow records.
+- `data/`: Room (flows, dns_queries, alerts, destinations, feeds, app ASNs),
+  a single JSON settings document (an unreadable document is kept, and if
+  it configured a WireGuard or SOCKS5 upstream the service refuses to start
+  until the upstream is set again, rather than silently going direct),
+  feed downloads (atomic: download, validate with the Rust parser, then
+  rename; `FeedHttp` follows redirects itself so credentials only go to the
+  host the user entered) and a daily WorkManager refresh with retention
+  pruning. Converters turn the non-blocklist sources into files the engine
+  or the app can use: the iptoasn table, AdGuard companiesdb (tracker
+  labels, looked up in the app only: they never reach the engine or block)
+  and the spyware packs (a `.txt` of network indicators for the engine plus
+  a `.spy.json` with families, packages and certificates; see
+  [HEALTH_CHECK.md](HEALTH_CHECK.md)). The health check itself
+  (`HealthCheck`) is pure and runs on the device.
+- `export/`: ECS-shaped records (tracker labels added at export time),
+  syslog/HTTP wire formats, mTLS through KeyChain, batch splitting for
+  refused batches.
 - `ui/`: Compose screens for Overview, Activity (connections/DNS), Apps (with
-  per-app detail, blocking and network-access conditions), Alerts, Settings,
-  Feeds, Export and Rules (global and per-app).
+  per-app detail, blocking, network-access conditions and trackers), Alerts
+  (with mutes and filters), Settings, Feeds, Export, Rules (global and
+  per-app), Encrypted DNS, Upstream, Packet capture and the spyware health
+  check.
 
 ## Addresses
 
