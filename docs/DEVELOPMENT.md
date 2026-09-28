@@ -323,6 +323,8 @@ android/app/src/main/java/dev/vigil/inspector/
                     ExfilDetector (upload-volume alerts), ForegroundTracker, AlertNotifier
   data/             Room DB, settings (UpstreamSettings, WgQuick parser), app resolver,
                     ASN database download/validation and labels (Asn.kt),
+                    tracker-company labels: companiesdb conversion, suffix index and
+                    lazy loader (Trackers.kt), per-app summaries and their queries (TrackerUsage.kt),
                     feed catalog/repository, JA4 validation and converters (Ja4.kt),
                     STIX pattern reader (Stix.kt), TAXII 2.1 client and indicator state (Taxii.kt)
   export/           ECS records, syslog/HTTP formats, ExportPipeline (retry), ElasticBulk, SiemExporter

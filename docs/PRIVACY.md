@@ -47,6 +47,18 @@ nothing about your connections is sent. Turn "IP to ASN" off under
 Settings → Threat intelligence feeds to stop the download (connections then
 show no network names, and new-network alerts stop).
 
+Tracker labels are on by default as well: once a week vigil downloads
+AdGuard companiesdb's `trackers.json` and `companies.json` (about 1.5 MB
+together, CC BY-SA 4.0) from `raw.githubusercontent.com/AdguardTeam/companiesdb`
+with the same kind of plain GET, so GitHub sees your IP address and the time.
+The files are converted into a compact table on the device (about 400 KB on
+disk, under 1 MB of memory once a screen or the SIEM export needs it), and
+every name is looked up locally; nothing about your connections is sent.
+vigil does not ship or redistribute the database. It originated from
+WhoTracks.me data and is maintained by AdGuard independently. Turn "Tracker
+labels" off under Settings → Threat intelligence feeds to stop the download
+(the labels then disappear; nothing else changes, as they never block).
+
 ## Where lookups go
 
 vigil answers apps' DNS lookups itself and forwards them to a resolver: by
