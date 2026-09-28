@@ -7,7 +7,7 @@ prints them as JSON lines; the app polls them in batches (JSON arrays).
 
 | type | fields |
 |---|---|
-| `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ja4_match` (see below), `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`), `via` (`direct`, `wireguard`, `socks5`) |
+| `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ja4_match` (see below), `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`), `via` (`direct`, `wireguard`, `socks5`), `asn` (see below) |
 | `flow_update` | `id`, `ts`, `tx`, `rx` (running totals of long-lived flows) |
 | `flow_end` | `id`, `ts`, `tx` (bytes sent by the app), `rx`, `duration_ms`, `error` |
 | `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` (app → vigil: `udp`/`tcp`), `upstream` (vigil → resolver: `udp`, `tcp`, `dot`, `doh`; null when no resolver was asked) |
@@ -82,6 +82,21 @@ connection is made lazily, so a blocked flow never contacts the proxy
 (`via` is still `socks5`). For a failed connect it names the path that was
 tried.
 
+`asn` is the autonomous system announcing `dst_ip`, from a loaded ASN
+table (feed category `asn`, see "Feed files"):
+
+```json
+"asn": {"number": 13335, "name": "CLOUDFLARENET", "country": "US"}
+```
+
+`name` is the table's AS description (may be empty) and `country` the ISO
+code of the AS registration (null when unknown); it is not a geolocation
+of the address. NAT64 addresses (see `nat64_prefixes`) and IPv4-mapped
+IPv6 addresses are looked up by their IPv4 address. `asn` is null when no
+table is loaded or the address is not in a routed range (private,
+reserved, "not routed" rows with AS 0, gaps). It is looked up once, when
+the flow opens, and is present on blocked flows too.
+
 ### JA4 matches
 
 `ja4` is the FoxIO JA4 fingerprint of the client's TLS ClientHello (`t…`
@@ -108,7 +123,7 @@ the same fingerprint, which is why matching alerts only by default.
 
 `nativeLoadFeedFile(handle, id, category, path)` takes one of the categories
 `malware`, `phishing`, `c2` (threat: hits alert), `tracking`, `ads`, `custom`
-(block only) and `ja4`. Unknown categories load as `tracking`. Lines are
+(block only), `ja4` and `asn`. Unknown categories load as `tracking`. Lines are
 recognised individually: hosts-file entries, plain domains (`*.` prefix
 allowed), AdGuard `||domain^` rules, IP addresses and CIDR ranges, and JA4
 fingerprints. A JA4 line is the fingerprint optionally followed by a label,
@@ -137,6 +152,31 @@ fingerprints). The summary returned by `nativeLoadFeedFile` (and by
 `nativeInspectFeedFile`, which parses without an engine) is
 `{id, domains, ip_ranges, ja4, rejected_lines, memory_bytes}`.
 
+A feed of category `asn` is an IP-to-ASN table, not a blocklist: it never
+blocks or alerts, it only fills the `asn` field of `flow` events. The
+format is iptoasn.com's TSV (uncompressed; the app gunzips the download),
+one range per line, IPv4 and IPv6 mixed:
+
+```
+range_start<TAB>range_end<TAB>AS_number<TAB>country_code<TAB>AS_description
+1.0.0.0	1.0.0.255	13335	US	CLOUDFLARENET
+1.0.1.0	1.0.3.255	0	None	Not routed
+```
+
+`AS_number` may carry an `AS` prefix; 0 marks unrouted space. The country
+and description columns are optional (a country that is not two letters,
+e.g. `None`, counts as unknown); descriptions are cut at 120 bytes. Rows
+with fewer than three columns, unparseable addresses, an end before the
+start or mixed address families are rejected. Rows may come in any order;
+where ranges overlap, the one that starts first keeps the overlap. An AS
+number keeps the first name and country seen. For `asn` feeds the summary's
+`ip_ranges` counts the ranges mapped to an AS (adjacent ranges of one AS
+merged) and `domains`/`ja4` are 0. The full iptoasn.com table (≈ 720 k
+rows, 87 k ASes) takes 9.8 MB and parses in 0.17 s on an x86_64 host
+(`vigil-cli asn FILE [IP…]` prints these numbers and looks addresses up).
+Loading a second `asn` feed keeps both; the first (by id) that knows an
+address wins.
+
 ### Upstream status (`stats.upstream`)
 
 | field | meaning |
@@ -164,6 +204,7 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `encrypted_dns` | low | an app uses DoH, DoT or DoQ, so its lookups are invisible |
 | `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver |
 | `new_destination` | info | (opt-in, app-side) after a 24 h learning period, an app contacts a domain it never used before |
+| `new_asn` | low, medium | (opt-in, app-side, needs an ASN table) after a learning period (7 days by default, from the first network recorded for the app), an app contacts an autonomous system it never used before. `target` is `AS<number>`; `detail`: `asn`, `as_name`, `as_country`, `destination`, `dst_ip`, `known_networks`. Medium when the app had used at most 3 networks. At most 5 per app and 30 in total per hour; networks over the limit are learned without an alert |
 
 Repeated alerts with the same kind, app and *finding* are suppressed for an
 hour. For `threat_ja4` the finding is the fingerprint (one alert per
@@ -374,7 +415,11 @@ without custom pipelines. A completed flow looks like this:
 ```
 
 A flow whose JA4 is listed also carries `vigil.ja4_match` (`feed`, `rule`,
-`label`). DNS records use `dns.question.name/type`, `dns.response_code` and
+`label`). Flows carry the upstream path as `vigil.via` and, when the
+engine knows the destination's autonomous system, ECS
+`destination.as.number` and `destination.as.organization.name` plus
+`vigil.asn_country` (the AS registration country). DNS records carry the
+upstream transport as `vigil.upstream`. DNS records use `dns.question.name/type`, `dns.response_code` and
 `dns.answers[].data`. Alerts use `event.kind: "alert"`, `event.severity`
 (0–100) and `message`.
 

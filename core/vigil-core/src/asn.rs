@@ -159,8 +159,9 @@ impl<T: Addr> RangeBuilder<T> {
         if !self.spill.is_empty() {
             // Rare: re-run the whole family sorted by start (stable, so
             // equal starts keep file order).
-            let mut rows = std::mem::take(&mut self.spill);
+            let spill = std::mem::take(&mut self.spill);
             let out = std::mem::take(&mut self.out);
+            let mut rows = Vec::with_capacity(out.starts.len() + spill.len());
             // The last boundary (no trailing NONE yet) ends where coverage ends.
             let last_end = match self.next {
                 Some(n) => n.pred().unwrap_or_default(),
@@ -176,6 +177,8 @@ impl<T: Addr> RangeBuilder<T> {
                 };
                 rows.push((s, e, out.idx[i]));
             }
+            // Rows read in order first, so at equal starts file order wins.
+            rows.extend(spill);
             rows.sort_by_key(|r| r.0);
             let mut b = RangeBuilder::<T>::default();
             for (s, e, i) in rows {

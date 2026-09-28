@@ -4,8 +4,13 @@
 
 - For every connection: the app, destination address and port, destination
   name (see `domain_source`), protocol, TLS version, ALPN, JA4 fingerprint,
-  byte counts, duration and verdict.
-- For every DNS lookup: the app, name, type, response code and answers.
+  byte counts, duration, verdict, the path it took (direct, WireGuard or
+  SOCKS5) and the network (autonomous system) that announces the address.
+- For every DNS lookup: the app, name, type, response code, answers and how
+  vigil forwarded it (UDP, TCP, DoT or DoH).
+- Per app, the networks (AS numbers) it has used, with first and last time
+  seen, for the optional new-network alerts. Like learned destinations they
+  are kept for at least 90 days.
 - For plain HTTP: only the method and the `Host` header. **Paths, query
   strings, headers and bodies are never recorded.**
 
@@ -29,6 +34,15 @@ update: vigil sends GET requests (User-Agent `vigil/<version> (+TAXII
 poller)`, your credentials, and an `added_after` timestamp) to the API root
 you entered. JA4 fingerprints of your connections are matched on the device
 and never sent anywhere.
+
+The IP-to-ASN database is also on by default: once a week vigil downloads
+iptoasn.com's `ip2asn-combined.tsv.gz` (about 9 MB, public domain under the
+PDDL 1.0) with the same kind of plain GET, so iptoasn.com sees your IP
+address and the time. The table stays on the device (about 46 MB on disk,
+10 MB of memory while inspecting) and every address is looked up locally;
+nothing about your connections is sent. Turn "IP to ASN" off under
+Settings → Threat intelligence feeds to stop the download (connections then
+show no network names, and new-network alerts stop).
 
 ## Where lookups go
 

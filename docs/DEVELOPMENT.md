@@ -42,10 +42,10 @@ Run all of these before committing anything that touches the engine or the
 app. Every one was green at the 0.1.0 commit.
 
 ```sh
-cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 113 unit tests
-scripts/e2e-netns.sh          # 156 checks: direct, edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 120 unit tests
+scripts/e2e-netns.sh          # 161 checks: direct, edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
 scripts/jni-smoke.sh          # 28 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest   # 86 JVM tests (1 skipped: TaxiiLiveTest)
+cd android && ./gradlew lintDebug testDebugUnitTest   # 101 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 scripts/android-features.sh   # 12 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed
@@ -175,10 +175,15 @@ would make the second build trivially identical.
 - **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
   queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
   then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
-- **Room schema changes need a migration** (`data/Database.kt`: `MIGRATION_1_2`
-  and `MIGRATION_2_3` are hand-written; AutoMigration would copy whole tables)
-  and the new schema JSON under `app/schemas/` must be committed, with a
-  `MigrationTest` case. The schema is at version 3.
+- **Room schema changes need a migration** (`data/Database.kt`: `MIGRATION_1_2`,
+  `MIGRATION_2_3` and `MIGRATION_3_4` are hand-written; AutoMigration would copy
+  whole tables) and the new schema JSON under `app/schemas/` must be committed,
+  with a `MigrationTest` case. The schema is at version 4.
+- **The ASN table is not parsed by `nativeInspectFeedFile`** (that parses
+  blocklists). `AsnDatabase.convert` gunzips and validates the download in
+  Kotlin; the engine then loads the TSV with category `asn`. To measure the
+  engine side on the full file: `curl -O https://iptoasn.com/data/ip2asn-combined.tsv.gz &&
+  gunzip ip2asn-combined.tsv.gz && core/target/release/vigil-cli asn ip2asn-combined.tsv 1.1.1.1`.
 - **TAXII servers may reuse the `next` token** for every page of one paging
   session (OASIS medallion does). Only a run of empty pages counts as a loop.
   To test the TAXII client against a real server, run medallion and
@@ -205,6 +210,7 @@ core/vigil-core/src/
   proto/doh.rs      DoH HTTP/1.1 request encoding and response parsing (pure)
   ../testdata/edns/ test-only CA and server certificate (dns.vigil.test, 127.0.0.1)
   intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
+  asn.rs            IP → ASN table (iptoasn TSV, feed category `asn`); Policy::asn_lookup, one lookup per flow
   policy.rs         Policy, feed categories, DoH host list, JA4 block reasons
   detect.rs         beacon detector, alert limiter
   event.rs          event types + bounded queue
@@ -215,8 +221,10 @@ core/vendor/boringtun         boringtun 0.7.1 built as an rlib only
 android/app/src/main/java/dev/vigil/inspector/
   vpn/              VigilVpnService, routes, config factory, tile, ServiceState
   engine/           VigilNative, PlatformBridge, EngineHandle, event/config models
-  processing/       EventProcessor, ForegroundTracker, AlertNotifier
+  processing/       EventProcessor, EntityMapping (events → rows), NewAsnDetector (new_asn alerts),
+                    ForegroundTracker, AlertNotifier
   data/             Room DB, settings (UpstreamSettings, WgQuick parser), app resolver,
+                    ASN database download/validation and labels (Asn.kt),
                     feed catalog/repository, JA4 validation and converters (Ja4.kt),
                     STIX pattern reader (Stix.kt), TAXII 2.1 client and indicator state (Taxii.kt)
   export/           ECS records, syslog/HTTP formats, ExportPipeline (retry), ElasticBulk, SiemExporter
