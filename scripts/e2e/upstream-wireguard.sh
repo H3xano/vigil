@@ -94,6 +94,9 @@ for i in $(seq 20); do
   sleep 1
 done
 check "fail-open-goes-direct"   bash -c "[ -n '$opened' ] && grep -q '^HTTP 10.99.0.1 /open-$opened' '$svclog'"
+# The tunnel may have turned "down" just before that connection: let one
+# more stats event (1 s interval) report it before the engine stops.
+sleep 1.5
 
 kill -INT $cli_pid; wait $cli_pid 2>/dev/null
 kill $svc 2>/dev/null

@@ -116,9 +116,14 @@ namespaces.
 
 Measured with `scripts/bench-throughput.sh` (release build, x86_64 host):
 
-- **1.28 Gbit/s** sustained through the user-space TCP stack, far above any
-  mobile link. On a real 39 Mbit/s internet link, throughput is identical to a
-  direct download.
+- **2.9 Gbit/s** sustained through the user-space TCP stack, far above any
+  mobile link, at **5.6 s of engine CPU per GB** relayed (about half of that
+  is the kernel delivering packets through the TUN device). On a real
+  39 Mbit/s internet link, throughput is identical to a direct download.
+- Small packets: about 5,000 short HTTP connections per second (as fast as
+  without vigil), about 30,000 DNS queries or UDP request/reply pairs per
+  second; 0.4 ms, 65 us and 39 us of engine CPU for each.
+- An idle engine with open connections uses about 2 ms of CPU per second.
 - **3–4 MB RSS** for the engine without feeds. Feeds are stored as a sorted
   string arena: 850 k domains take 21 MB and 2.3 M take 57 MB.
 - `libvigil.so` is 1.4 MB (arm64). The release APK with three ABIs is about 7 MB.
