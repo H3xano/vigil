@@ -21,10 +21,12 @@ usage:
   vigil-cli run (--tun NAME | --fd-socket PATH) [options]
       --config FILE          engine configuration (JSON; missing fields use defaults);
                              re-read on SIGHUP and applied like nativeUpdateConfig
-      --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom|ja4)
+      --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom|ja4|asn)
       --upstream IP:PORT     upstream resolver (repeatable; overrides config)
       --no-stats             suppress periodic stats events
   vigil-cli parse-feed FILE   parse a blocklist and print a summary
+  vigil-cli asn FILE [IP...]  load an IP-to-ASN table (iptoasn TSV), print its size, memory
+                             and the process RSS, then look up the addresses
   vigil-cli quic-probe IP:PORT SNI   send one QUIC Initial carrying SNI
   vigil-cli ja4 FILE          print the JA4 of a captured TLS ClientHello (raw TLS records)
   vigil-cli ja4 --quic-probe  print the JA4 of the ClientHello sent by quic-probe
@@ -57,6 +59,7 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("parse-feed") => parse_feed(&args[1..]),
+        Some("asn") => asn(&args[1..]),
         Some("quic-probe") => quic_probe(&args[1..]),
         Some("ja4") => ja4(&args[1..]),
         Some("wg-keypair") => wg_keypair(),
@@ -270,6 +273,51 @@ fn parse_feed(args: &[String]) -> io::Result<()> {
             "parse_ms": started.elapsed().as_millis() as u64,
         })
     );
+    Ok(())
+}
+
+/// `VmRSS` and `VmHWM` (peak) of this process in kB, from /proc.
+fn rss_kb() -> (u64, u64) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.split_whitespace().next()?.parse().ok())
+            .unwrap_or(0)
+    };
+    (field("VmRSS:"), field("VmHWM:"))
+}
+
+fn asn(args: &[String]) -> io::Result<()> {
+    let path = args
+        .first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, USAGE))?;
+    let (rss_before, _) = rss_kb();
+    let started = std::time::Instant::now();
+    let (table, rejected) =
+        vigil_core::asn::parse_asn_reader(io::BufReader::new(std::fs::File::open(path)?))?;
+    let parse_ms = started.elapsed().as_millis() as u64;
+    let (rss_after, peak) = rss_kb();
+    println!(
+        "{}",
+        serde_json::json!({
+            "ranges": table.len(),
+            "as_count": table.as_count(),
+            "rejected_lines": rejected,
+            "memory_bytes": table.memory_bytes(),
+            "parse_ms": parse_ms,
+            "rss_before_kb": rss_before,
+            "rss_after_kb": rss_after,
+            "rss_peak_kb": peak,
+        })
+    );
+    for a in &args[1..] {
+        let ip: std::net::IpAddr = a
+            .parse()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("bad address {a}")))?;
+        println!("{}", serde_json::json!({"ip": a, "asn": table.lookup(ip)}));
+    }
     Ok(())
 }
 

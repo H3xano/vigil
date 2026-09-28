@@ -8,6 +8,7 @@
 //! applies the blocking policy, relays the traffic over ordinary sockets and
 //! streams structured [`event::Event`]s back to the host.
 
+pub mod asn;
 pub mod config;
 pub mod detect;
 pub mod dnscache;

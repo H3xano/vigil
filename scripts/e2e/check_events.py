@@ -56,3 +56,12 @@ check("connect-error-reported",any(ends.get(i, {}).get("error", "") and "connect
 relayed = [f for f in flows.values() if f["verdict"] == "allow"]
 check("flows-via-direct", relayed and all(f.get("via") == "direct" for f in relayed), [(f["dst_ip"], f.get("via")) for f in relayed if f.get("via") != "direct"][:10])
 check("stats-upstream-direct", all(s.get("upstream", {}).get("mode") == "direct" for s in stats), stats[-1].get("upstream") if stats else None)
+def asn_of(f):
+    return f.get("asn") or {}
+cf = [f for f in flows.values() if f["dst_ip"] == "1.1.1.1"]
+check("asn-enriched", bool(cf) and all(asn_of(f) == {"number": 13335, "name": "CLOUDFLARENET", "country": "US"} for f in cf), [f.get("asn") for f in cf])
+check("asn-on-blocked-flow", any(f["dst_ip"] == "192.0.2.10" and f["verdict"] == "block" and asn_of(f).get("number") == 64496 and asn_of(f).get("country") == "ZZ" for f in flows.values()), [f.get("asn") for f in flows.values() if f["dst_ip"] == "192.0.2.10"])
+nat64 = [f for f in flows.values() if f["dst_ip"].startswith("64:ff9b::")]
+check("asn-nat64-embedded-ipv4", any(asn_of(f).get("number") == 64496 and f["verdict"] == "block" for f in nat64), [(f["dst_ip"], f.get("asn")) for f in nat64])
+unmapped = [f for f in flows.values() if f["domain"] == "example.com" and f["verdict"] == "allow"]
+check("asn-null-when-unknown", bool(unmapped) and all(f.get("asn") is None for f in unmapped), [(f["dst_ip"], f.get("asn")) for f in unmapped][:5])
