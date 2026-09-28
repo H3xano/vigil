@@ -8,7 +8,7 @@ use parking_lot::{Condvar, Mutex};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -222,8 +222,22 @@ impl Event {
 /// Bounded multi-producer event queue. When full, an old event is dropped
 /// (and counted) so a stalled consumer can never exhaust memory: preferably
 /// a `stats` or `flow_update` near the front, otherwise the oldest event.
+/// How long a [`EventQueue::poll`] that had to wait keeps collecting after
+/// the first event, so a busy engine wakes its consumer (on Android a JVM
+/// thread that parses and stores every batch) at most about 50 times a
+/// second instead of once per event.
+const POLL_BATCH_WINDOW: Duration = Duration::from_millis(20);
+
+struct Queue {
+    events: VecDeque<Event>,
+    /// Queue length at which `push` wakes the consumer: 1 while a poll
+    /// waits for its first event, its `max` while it collects a batch,
+    /// `usize::MAX` when no poll is waiting.
+    wake_at: usize,
+}
+
 pub struct EventQueue {
-    inner: Mutex<VecDeque<Event>>,
+    inner: Mutex<Queue>,
     cv: Condvar,
     capacity: usize,
     dropped: AtomicU64,
@@ -234,7 +248,10 @@ pub struct EventQueue {
 impl EventQueue {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(VecDeque::with_capacity(1024)),
+            inner: Mutex::new(Queue {
+                events: VecDeque::with_capacity(1024),
+                wake_at: usize::MAX,
+            }),
             cv: Condvar::new(),
             capacity: capacity.max(1),
             dropped: AtomicU64::new(0),
@@ -243,7 +260,8 @@ impl EventQueue {
     }
 
     pub fn push(&self, e: Event) {
-        let mut q = self.inner.lock();
+        let mut guard = self.inner.lock();
+        let Queue { events: q, wake_at } = &mut *guard;
         if q.len() >= self.capacity {
             let victim = q
                 .iter()
@@ -254,19 +272,39 @@ impl EventQueue {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
         q.push_back(e);
-        drop(q);
-        self.cv.notify_one();
+        if q.len() >= *wake_at {
+            *wake_at = usize::MAX;
+            drop(guard);
+            self.cv.notify_one();
+        }
     }
 
     /// Waits up to `timeout` for at least one event, then drains up to `max`.
-    /// Returns immediately once the queue is [closed](Self::close).
+    /// If it had to wait, it keeps collecting for up to 20 ms more (within
+    /// `timeout`) unless `max` events arrive first, so a steady trickle of
+    /// events is delivered in batches. Returns immediately once the queue
+    /// is [closed](Self::close).
     pub fn poll(&self, max: usize, timeout: Duration) -> Vec<Event> {
+        let max = max.max(1);
         let mut q = self.inner.lock();
-        if q.is_empty() && !self.closed.load(Ordering::Acquire) {
+        if q.events.is_empty() && !self.closed.load(Ordering::Acquire) {
+            let start = Instant::now();
+            q.wake_at = 1;
             self.cv.wait_for(&mut q, timeout);
+            let waited = start.elapsed();
+            if !q.events.is_empty()
+                && q.events.len() < max
+                && waited < timeout
+                && !self.closed.load(Ordering::Acquire)
+            {
+                q.wake_at = max;
+                self.cv
+                    .wait_for(&mut q, POLL_BATCH_WINDOW.min(timeout - waited));
+            }
+            q.wake_at = usize::MAX;
         }
-        let n = q.len().min(max);
-        q.drain(..n).collect()
+        let n = q.events.len().min(max);
+        q.events.drain(..n).collect()
     }
 
     /// Wakes a blocked [`poll`](Self::poll) call.
@@ -292,7 +330,7 @@ impl EventQueue {
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().len()
+        self.inner.lock().events.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -367,6 +405,48 @@ mod tests {
         q.push(Event::FlowEnd(FlowEndEvent::default()));
         q.push(Event::FlowEnd(FlowEndEvent::default()));
         assert_eq!(q.dropped(), 3);
+    }
+
+    #[test]
+    fn waiting_poll_collects_a_batch() {
+        use std::sync::Arc;
+        let q = Arc::new(EventQueue::new(100));
+        let producer = {
+            let q = q.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                for id in 0..5 {
+                    q.push(Event::FlowEnd(FlowEndEvent {
+                        id,
+                        ..Default::default()
+                    }));
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+        let t = Instant::now();
+        let got = q.poll(100, Duration::from_secs(5));
+        let took = t.elapsed();
+        producer.join().unwrap();
+        assert_eq!(got.len(), 5, "one batch, not one event per wake-up");
+        assert!(took < Duration::from_secs(1), "{took:?}");
+        // A full batch is returned without waiting for the window, and the
+        // window never extends a poll past its timeout.
+        let t = Instant::now();
+        let feeder = {
+            let q = q.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                for _ in 0..3 {
+                    q.push(Event::FlowEnd(FlowEndEvent::default()));
+                }
+            })
+        };
+        assert_eq!(q.poll(3, Duration::from_secs(5)).len(), 3);
+        feeder.join().unwrap();
+        assert!(t.elapsed() < Duration::from_secs(1));
+        q.push(Event::FlowEnd(FlowEndEvent::default()));
+        assert_eq!(q.poll(3, Duration::ZERO).len(), 1);
     }
 
     #[test]
