@@ -133,12 +133,18 @@ receive-with-callback), and says which path it took (`via`).
   session survives and the peer learns the new address from the next
   packet. A replaced tunnel's driver ends when its last connection does.
 - **socks5**: `socks5.rs` speaks CONNECT (by address, or by the sniffed
-  SNI/Host with `send_domain`, which defers the connect to the app's first
-  bytes) and UDP ASSOCIATE (one association per UDP flow; the proxy's
-  refusal is remembered and UDP is blocked from then on). Plain DNS goes to
-  the proxy as DNS over TCP. Only failures to use the proxy itself (connect,
-  handshake, authentication) count as "down"; a CONNECT refused by the
-  destination is reported to the app like a direct refusal.
+  SNI/Host with `send_domain`: the connection to the proxy and the
+  authentication are made at the SYN gate, only the CONNECT waits for the
+  app's first bytes) and UDP ASSOCIATE (one association per UDP flow; a
+  refusal by reply code is remembered and UDP is blocked from then on).
+  Plain DNS goes to the proxy as DNS over TCP. Only failures to use the
+  proxy itself count as "down": lookup, connect, method selection or
+  authentication failing or taking more than 7 s together, a reply taking
+  more than 30 s, or an I/O error mid-negotiation (Tor restarting). A
+  CONNECT refused by the destination (a reply code) is reported to the app
+  like a direct refusal. A proxy host name is looked up with a 3 s timeout
+  and cached for 5 minutes (re-resolved after a failed connect; the last
+  address is kept if the lookup fails).
 - **fail closed** (default): errors are returned, never replaced by a direct
   connection. With `fail_closed: false` the dialer goes direct while the path
   is down. WireGuard destinations outside AllowedIPs always go direct, as

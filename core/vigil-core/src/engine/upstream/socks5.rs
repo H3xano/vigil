@@ -3,7 +3,7 @@
 
 use super::super::sock;
 use super::ProxyUnavailable;
-use crate::config::upstream::{literal_socket_addr, split_host_port, Socks5Config, Socks5Udp};
+use crate::config::upstream::{literal_socket_addr, Socks5Config, Socks5Udp};
 use crate::platform::Platform;
 use crate::proto::{http, tls};
 use parking_lot::Mutex;
@@ -11,7 +11,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
@@ -28,12 +28,19 @@ const ATYP_V6: u8 = 0x04;
 /// Reply code "command not supported".
 const REP_CMD_UNSUPPORTED: u8 = 0x07;
 
-/// Time allowed to reach the proxy itself. Kept short so that fail-open
-/// mode can still fall back within the connect timeout.
-const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Time allowed for the SOCKS negotiation (the CONNECT reply can take a few
-/// seconds through Tor).
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Time allowed to reach the proxy itself: resolving its name, the TCP
+/// connect, method selection and authentication. Kept short so that
+/// fail-open mode can still fall back within the engine's connect timeout
+/// (15 s by default).
+const REACH_TIMEOUT: Duration = Duration::from_secs(7);
+/// Part of [`REACH_TIMEOUT`] a lookup of the proxy's name may take.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Time allowed for the reply to a request (the CONNECT reply can take a
+/// few seconds through Tor).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// A looked-up proxy address is reused this long (and after a failed
+/// lookup, until one succeeds).
+const RESOLVE_TTL: Duration = Duration::from_secs(300);
 
 /// Where a CONNECT goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +157,25 @@ fn protocol_error(msg: &str) -> io::Error {
     )
 }
 
+/// An I/O error on the connection to the proxy during the negotiation
+/// (reset, EOF): the proxy is unusable, whatever the destination.
+fn negotiation_io(e: io::Error) -> io::Error {
+    if super::is_proxy_unavailable(&e) {
+        return e;
+    }
+    match e.kind() {
+        io::ErrorKind::UnexpectedEof => protocol_error("proxy closed the connection"),
+        k => io::Error::new(k, ProxyUnavailable(format!("socks5: {e}"))),
+    }
+}
+
+fn timed_out(what: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        ProxyUnavailable(format!("socks5: {what} timed out")),
+    )
+}
+
 /// Reads a reply's bound address (after VER, REP and RSV were checked).
 async fn read_bound_addr<S: AsyncRead + Unpin>(s: &mut S) -> io::Result<Option<SocketAddr>> {
     let atyp = s.read_u8().await?;
@@ -176,28 +202,31 @@ async fn read_bound_addr<S: AsyncRead + Unpin>(s: &mut S) -> io::Result<Option<S
     Ok(ip.map(|ip| SocketAddr::new(ip, port)))
 }
 
-/// Runs the method negotiation, authentication and one request on an open
-/// connection to the proxy. Returns the bound address from the reply.
-pub(crate) async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
+/// Runs the method negotiation and authentication on an open connection to
+/// the proxy. Every error means the proxy is unusable
+/// ([`super::is_proxy_unavailable`]).
+pub(crate) async fn greet<S: AsyncRead + AsyncWrite + Unpin>(
     s: &mut S,
     user: &str,
     pass: &str,
-    cmd: u8,
-    target: &Target,
-) -> io::Result<Option<SocketAddr>> {
+) -> io::Result<()> {
     let with_auth = !user.is_empty();
-    s.write_all(&encode_greeting(with_auth)).await?;
+    s.write_all(&encode_greeting(with_auth))
+        .await
+        .map_err(negotiation_io)?;
     let mut sel = [0u8; 2];
-    s.read_exact(&mut sel).await?;
+    s.read_exact(&mut sel).await.map_err(negotiation_io)?;
     if sel[0] != VERSION {
         return Err(protocol_error("not a SOCKS5 server"));
     }
     match sel[1] {
         METHOD_NONE => {}
         METHOD_USERPASS if with_auth => {
-            s.write_all(&encode_auth(user, pass)).await?;
+            s.write_all(&encode_auth(user, pass))
+                .await
+                .map_err(negotiation_io)?;
             let mut r = [0u8; 2];
-            s.read_exact(&mut r).await?;
+            s.read_exact(&mut r).await.map_err(negotiation_io)?;
             if r[1] != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -213,9 +242,22 @@ pub(crate) async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
         }
         _ => return Err(protocol_error("unexpected authentication method")),
     }
-    s.write_all(&encode_request(cmd, target)).await?;
+    Ok(())
+}
+
+/// Sends one request on a connection that passed [`greet`] and reads the
+/// reply's bound address. Only a non-zero reply code yields an error that
+/// is not [`super::is_proxy_unavailable`]: the proxy answered, and refused.
+pub(crate) async fn request<S: AsyncRead + AsyncWrite + Unpin>(
+    s: &mut S,
+    cmd: u8,
+    target: &Target,
+) -> io::Result<Option<SocketAddr>> {
+    s.write_all(&encode_request(cmd, target))
+        .await
+        .map_err(negotiation_io)?;
     let mut head = [0u8; 3];
-    s.read_exact(&mut head).await?;
+    s.read_exact(&mut head).await.map_err(negotiation_io)?;
     if head[0] != VERSION {
         return Err(protocol_error("bad reply version"));
     }
@@ -224,7 +266,7 @@ pub(crate) async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
         let _ = read_bound_addr(s).await;
         return Err(reply_error(head[1]));
     }
-    read_bound_addr(s).await
+    read_bound_addr(s).await.map_err(negotiation_io)
 }
 
 /// The name to hand to the proxy for a relayed connection: the TLS SNI or
@@ -279,11 +321,36 @@ struct Health {
     last_error: Option<String>,
 }
 
+/// Timeouts of one dialer (shortened in tests).
+#[derive(Clone, Copy)]
+struct Timeouts {
+    reach: Duration,
+    resolve: Duration,
+    request: Duration,
+}
+
+const TIMEOUTS: Timeouts = Timeouts {
+    reach: REACH_TIMEOUT,
+    resolve: RESOLVE_TIMEOUT,
+    request: REQUEST_TIMEOUT,
+};
+
+/// The proxy's looked-up address.
+struct Resolved {
+    addr: SocketAddr,
+    at: Instant,
+    /// A connection to it failed: look the name up again next time (the
+    /// address stays usable if that lookup fails).
+    stale: bool,
+}
+
 /// Dials through one SOCKS5 proxy.
 pub(crate) struct Socks5Dialer {
     cfg: Socks5Config,
     health: Mutex<Health>,
     udp: AtomicU8,
+    resolved: Mutex<Option<Resolved>>,
+    timeouts: Timeouts,
 }
 
 impl Socks5Dialer {
@@ -292,7 +359,20 @@ impl Socks5Dialer {
             cfg,
             health: Mutex::new(Health::default()),
             udp: AtomicU8::new(UDP_UNKNOWN),
+            resolved: Mutex::new(None),
+            timeouts: TIMEOUTS,
         }
+    }
+
+    #[cfg(test)]
+    fn with_timeouts(cfg: Socks5Config, reach: Duration, request: Duration) -> Self {
+        let mut d = Self::new(cfg);
+        d.timeouts = Timeouts {
+            reach,
+            resolve: reach / 2,
+            request,
+        };
+        d
     }
 
     pub fn send_domain(&self) -> bool {
@@ -343,39 +423,85 @@ impl Socks5Dialer {
         self.cfg.udp != Socks5Udp::Block && self.udp.load(Relaxed) != UDP_UNSUPPORTED
     }
 
-    /// Opens a (protected) TCP connection to the proxy itself.
-    async fn open(&self, platform: &Arc<dyn Platform>) -> io::Result<TcpStream> {
+    fn mark_address_stale(&self) {
+        if let Some(r) = self.resolved.lock().as_mut() {
+            r.stale = true;
+        }
+    }
+
+    /// The proxy's address: the literal, a cached lookup, or a new lookup
+    /// (falling back to the last known address when that fails).
+    async fn resolve(&self) -> io::Result<SocketAddr> {
+        if let Some(a) = literal_socket_addr(&self.cfg.server) {
+            return Ok(a);
+        }
+        let previous = match &*self.resolved.lock() {
+            Some(r) if !r.stale && r.at.elapsed() < RESOLVE_TTL => return Ok(r.addr),
+            r => r.as_ref().map(|r| r.addr),
+        };
+        match super::resolve(&self.cfg.server, self.timeouts.resolve).await {
+            Ok(addrs) => {
+                let addr = addrs[0];
+                *self.resolved.lock() = Some(Resolved {
+                    addr,
+                    at: Instant::now(),
+                    stale: false,
+                });
+                Ok(addr)
+            }
+            Err(e) => match previous {
+                Some(a) => {
+                    log::debug!("socks5: {e}; using the last known address {a}");
+                    Ok(a)
+                }
+                None => Err(e),
+            },
+        }
+    }
+
+    /// Opens a (protected) TCP connection to the proxy and runs the method
+    /// negotiation and authentication, all within [`REACH_TIMEOUT`]. Every
+    /// error is [`super::is_proxy_unavailable`].
+    pub async fn handshake(&self, platform: &Arc<dyn Platform>) -> io::Result<TcpStream> {
         let unavailable = |e: io::Error| {
             io::Error::new(
                 e.kind(),
                 ProxyUnavailable(format!("socks5 proxy {}: {e}", self.cfg.server)),
             )
         };
-        let addr = match literal_socket_addr(&self.cfg.server) {
-            Some(a) => a,
-            None => {
-                let (host, port) = split_host_port(&self.cfg.server)
-                    .ok_or_else(|| unavailable(io::Error::other("bad address")))?;
-                let mut addrs = tokio::net::lookup_host((host.as_str(), port))
-                    .await
-                    .map_err(unavailable)?;
-                addrs
-                    .next()
-                    .ok_or_else(|| unavailable(io::Error::other("no address")))?
-            }
-        };
-        match tokio::time::timeout(
-            PROXY_CONNECT_TIMEOUT,
-            sock::connect_tcp(platform.clone(), addr),
-        )
+        let result = tokio::time::timeout(self.timeouts.reach, async {
+            let addr = self.resolve().await.map_err(unavailable)?;
+            let mut s = sock::connect_tcp(platform.clone(), addr)
+                .await
+                .map_err(|e| {
+                    self.mark_address_stale();
+                    unavailable(e)
+                })?;
+            greet(&mut s, &self.cfg.username, &self.cfg.password).await?;
+            Ok(s)
+        })
         .await
-        {
-            Ok(r) => r.map_err(unavailable),
-            Err(_) => Err(unavailable(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "connect timed out",
-            ))),
-        }
+        .unwrap_or_else(|_| {
+            self.mark_address_stale();
+            Err(timed_out(&format!("proxy {}", self.cfg.server)))
+        });
+        self.note(result.as_ref().map(|_| ()));
+        result
+    }
+
+    /// Runs one request on a connection returned by [`Self::handshake`],
+    /// within [`REQUEST_TIMEOUT`]. Returns the reply's bound address.
+    pub async fn request_on(
+        &self,
+        s: &mut TcpStream,
+        cmd: u8,
+        target: &Target,
+    ) -> io::Result<Option<SocketAddr>> {
+        let result = tokio::time::timeout(self.timeouts.request, request(s, cmd, target))
+            .await
+            .unwrap_or_else(|_| Err(timed_out("reply")));
+        self.note(result.as_ref().map(|_| ()));
+        result
     }
 
     /// Opens a connection to the proxy and runs one request on it.
@@ -385,24 +511,9 @@ impl Socks5Dialer {
         cmd: u8,
         target: &Target,
     ) -> io::Result<(TcpStream, Option<SocketAddr>)> {
-        let result = async {
-            let mut s = self.open(platform).await?;
-            let bound = tokio::time::timeout(
-                HANDSHAKE_TIMEOUT,
-                negotiate(&mut s, &self.cfg.username, &self.cfg.password, cmd, target),
-            )
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "socks5: no reply"))?
-            .map_err(|e| match e.kind() {
-                // EOF in the middle of the negotiation: not a working proxy.
-                io::ErrorKind::UnexpectedEof => protocol_error("proxy closed the connection"),
-                _ => e,
-            })?;
-            Ok((s, bound))
-        }
-        .await;
-        self.note(result.as_ref().map(|_| ()));
-        result
+        let mut s = self.handshake(platform).await?;
+        let bound = self.request_on(&mut s, cmd, target).await?;
+        Ok((s, bound))
     }
 
     /// CONNECT to `target`.
@@ -437,8 +548,10 @@ impl Socks5Dialer {
         {
             Ok(r) => r,
             Err(e) => {
+                // Only a reply code is a refusal (remembered: UDP is out). A
+                // proxy that could not be reached, hung or dropped the
+                // connection says nothing about UDP.
                 if !super::is_proxy_unavailable(&e) {
-                    // The proxy answered but refused: remember that UDP is out.
                     self.udp.store(UDP_UNSUPPORTED, Relaxed);
                     log::info!("SOCKS5 proxy refused UDP ASSOCIATE ({e}); UDP is blocked");
                     return Err(udp_blocked());
@@ -732,5 +845,244 @@ mod tests {
         assert!(super::super::is_udp_blocked(&e));
         assert_eq!(d.udp_state(), "unsupported");
         assert!(!d.udp_possible());
+    }
+
+    const SHORT: Duration = Duration::from_millis(300);
+
+    fn quick_dialer(server: SocketAddr) -> Socks5Dialer {
+        Socks5Dialer::with_timeouts(
+            Socks5Config {
+                server: server.to_string(),
+                ..Default::default()
+            },
+            SHORT,
+            SHORT,
+        )
+    }
+
+    /// A proxy that accepts connections, answers the first `replies` client
+    /// messages from `script`, then either hangs (holds the connection) or
+    /// resets it.
+    async fn broken_proxy(script: Vec<(usize, Vec<u8>)>, reset: bool) -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((mut s, _)) = l.accept().await {
+                for (len, reply) in &script {
+                    let mut got = vec![0u8; *len];
+                    if s.read_exact(&mut got).await.is_err() {
+                        break;
+                    }
+                    let _ = s.write_all(reply).await;
+                }
+                if reset {
+                    let mut b = [0u8; 64];
+                    let _ = s.read(&mut b).await;
+                    sock::set_reset_on_close(&s);
+                    drop(s);
+                } else {
+                    held.push(s);
+                }
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn hung_proxy_is_unavailable() {
+        let platform: Arc<dyn Platform> = Arc::new(NullPlatform);
+        let target = Target::Ip("192.0.2.1:80".parse().unwrap());
+        // Silent after accepting.
+        let d = quick_dialer(broken_proxy(vec![], false).await);
+        let e = d.connect(&platform, &target).await.unwrap_err();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(d.health().0, "down");
+        // Silent after the method selection: the reply never comes.
+        let d = quick_dialer(broken_proxy(vec![(3, vec![5, 0])], false).await);
+        let e = d.connect(&platform, &target).await.unwrap_err();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+        assert_eq!(d.health().0, "down");
+        let e = d
+            .associate(&platform, "9.9.9.9:53".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+        assert!(!super::super::is_udp_blocked(&e));
+        assert_eq!(d.udp_state(), "unknown", "a hung proxy did not refuse UDP");
+        assert!(d.udp_possible());
+    }
+
+    #[tokio::test]
+    async fn reset_mid_negotiation_is_unavailable_not_a_udp_refusal() {
+        let platform: Arc<dyn Platform> = Arc::new(NullPlatform);
+        // Resets the connection instead of answering the request (a proxy
+        // restarting, as Tor does).
+        let d = quick_dialer(broken_proxy(vec![(3, vec![5, 0])], true).await);
+        let e = d
+            .associate(&platform, "9.9.9.9:53".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+        assert_eq!(d.udp_state(), "unknown");
+        assert!(d.udp_possible());
+        assert_eq!(d.health().0, "down");
+        let e = d
+            .connect(&platform, &Target::Ip("192.0.2.1:80".parse().unwrap()))
+            .await
+            .unwrap_err();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+    }
+
+    #[tokio::test]
+    async fn proxy_name_is_resolved_once_and_the_last_address_survives_a_failed_lookup() {
+        let platform: Arc<dyn Platform> = Arc::new(NullPlatform);
+        let target = Target::Ip("192.0.2.1:80".parse().unwrap());
+        let ok = || vec![(3, vec![5, 0]), (10, vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0])];
+        // "localhost" resolves; listen on whatever it resolves to first.
+        let first = tokio::net::lookup_host(("localhost", 1))
+            .await
+            .unwrap()
+            .next()
+            .unwrap();
+        let l = TcpListener::bind((first.ip(), 0)).await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                for (len, reply) in ok() {
+                    let mut got = vec![0u8; len];
+                    if s.read_exact(&mut got).await.is_err() {
+                        break;
+                    }
+                    let _ = s.write_all(&reply).await;
+                }
+            }
+        });
+        let d = Socks5Dialer::new(Socks5Config {
+            server: format!("localhost:{port}"),
+            ..Default::default()
+        });
+        d.connect(&platform, &target).await.unwrap();
+        let cached = d.resolved.lock().as_ref().map(|r| (r.addr, r.stale));
+        assert_eq!(cached, Some((SocketAddr::new(first.ip(), port), false)));
+        d.connect(&platform, &target).await.unwrap();
+
+        // A name that no longer resolves: the last address is used.
+        let live = broken_proxy(ok(), false).await;
+        let d = quick_dialer(live);
+        let d = Socks5Dialer {
+            cfg: Socks5Config {
+                server: "no-such-proxy.invalid:1080".into(),
+                ..Default::default()
+            },
+            ..d
+        };
+        *d.resolved.lock() = Some(Resolved {
+            addr: live,
+            at: Instant::now(),
+            stale: true,
+        });
+        d.connect(&platform, &target).await.unwrap();
+    }
+
+    fn dialer_with(
+        s: Socks5Dialer,
+        fail_closed: bool,
+    ) -> (super::super::Dialer, Arc<dyn Platform>) {
+        (
+            super::super::Dialer {
+                path: super::super::Path::Socks5(Arc::new(s)),
+                fail_closed,
+                generation: 1,
+            },
+            Arc::new(NullPlatform),
+        )
+    }
+
+    async fn echo_server() -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let mut b = [0u8; 64];
+                    while let Ok(n) = s.read(&mut b).await {
+                        if n == 0 || s.write_all(&b[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn fail_open_falls_back_on_a_hung_proxy() {
+        let dst = echo_server().await;
+        let hung = broken_proxy(vec![], false).await;
+        let (d, platform) = dialer_with(quick_dialer(hung), false);
+        let s = tokio::time::timeout(Duration::from_secs(5), d.connect_tcp(&platform, dst, false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.via(), "direct");
+        let (d, platform) = dialer_with(quick_dialer(hung), true);
+        let e = d.connect_tcp(&platform, dst, false).await.err().unwrap();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+    }
+
+    #[tokio::test]
+    async fn send_domain_reports_the_path_it_takes() {
+        let dst = echo_server().await;
+        let send_domain = |server: SocketAddr| {
+            Socks5Dialer::with_timeouts(
+                Socks5Config {
+                    server: server.to_string(),
+                    send_domain: true,
+                    ..Default::default()
+                },
+                SHORT,
+                SHORT,
+            )
+        };
+        // The proxy is down: fail-open goes direct at the gate and says so;
+        // fail-closed refuses at the gate.
+        let dead = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (d, platform) = dialer_with(send_domain(dead), false);
+        let mut s = d.connect_tcp(&platform, dst, true).await.unwrap();
+        assert_eq!(s.via(), "direct");
+        s.write_all(b"ping").await.unwrap();
+        let mut b = [0u8; 4];
+        s.read_exact(&mut b).await.unwrap();
+        let (d, platform) = dialer_with(send_domain(dead), true);
+        let e = d.connect_tcp(&platform, dst, true).await.err().unwrap();
+        assert!(super::super::is_proxy_unavailable(&e), "{e}");
+
+        // The proxy is up: the CONNECT names the Host the app sent.
+        let target = Target::Domain("example.org".into(), dst.port());
+        let proxy = fake_proxy(vec![
+            (vec![5, 1, 0], vec![5, 0]),
+            (
+                encode_request(CMD_CONNECT, &target),
+                vec![5, 0, 0, 1, 10, 0, 0, 1, 0x1f, 0x90],
+            ),
+        ])
+        .await;
+        let (d, platform) = dialer_with(send_domain(proxy), false);
+        let mut s = d.connect_tcp(&platform, dst, true).await.unwrap();
+        assert_eq!(s.via(), "socks5");
+        let req = b"GET / HTTP/1.1\r\nHost: example.org\r\n\r\n";
+        s.write_all(req).await.unwrap();
+        let mut b = vec![0u8; req.len()];
+        s.read_exact(&mut b).await.unwrap();
+        assert_eq!(&b, req);
     }
 }
