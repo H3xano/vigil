@@ -240,7 +240,7 @@ pub(crate) struct Shared {
     pub upstream: upstream::Upstream,
     open_flows: Mutex<OpenFlows>,
     /// Bumped whenever the device state or the per-app rules change, so
-    /// UDP flows held blocked by an app condition re-decide.
+    /// UDP flows held blocked by a per-app rule re-decide.
     pub app_rules_changed: watch::Sender<u64>,
     shut_down: AtomicBool,
     /// Per feed id, how many loads or removals have begun. The start-time
@@ -456,7 +456,7 @@ impl Shared {
 
     /// After a change of the device state or the per-app rules: cuts every
     /// open relay and UDP flow that the per-app rules now block, and wakes
-    /// UDP flows held blocked by an app condition so they re-decide.
+    /// UDP flows held blocked by a per-app rule so they re-decide.
     /// One HashMap lookup per open flow; nothing when no per-app rule exists.
     pub fn recheck_open_flows(&self) {
         self.app_rules_changed

@@ -391,8 +391,8 @@ per open flow.
 Changes apply at once to everything: new connections, UDP datagrams and DNS
 lookups follow the new state, and open relays and UDP flows that it (or an
 updated rule list) blocks are cut (`flow_end.error` = `blocked: <reason>`;
-TCP is reset both ways). UDP flows held blocked by a condition are released
-when the state changes, so the app's next datagram is decided again. The
+TCP is reset both ways). UDP flows held blocked by a per-app rule are released
+when a change lifts the block, so the app's next datagram is decided again. The
 global lists and feeds still apply to new connections only.
 
 DNS answers that depend on the app are never cached by Android's resolver

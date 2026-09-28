@@ -131,7 +131,7 @@
    `Shared::recheck_open_flows` walks that table and cuts the flows the
    per-app rules now block (the relay resets both sides, the UDP flow ends;
    `flow_end.error` = `blocked: <reason>`), and wakes UDP flows held blocked
-   by a condition so they re-decide. Per-app DNS decisions are answered with
+   by a per-app rule so they re-decide. Per-app DNS decisions are answered with
    TTL 0 (and answers for names with a per-app rule get their TTLs zeroed),
    because Android's resolver cache is per network and shared by every app.
 8. **Alerts** (`detect.rs`) are deduplicated per kind, app and finding for an

@@ -293,13 +293,17 @@ async fn flow(
         }
     }
     if let Decision::Block(reason) = decision {
+        let name = match ev.domain_source {
+            Some("sni" | "http" | "quic") => ev.domain.clone(),
+            _ => None,
+        };
         mark_blocked(shared, &mut ev, &reason);
         emit_closed_flow(shared, ev, None);
         // Keep absorbing the flow's datagrams so retries don't produce a
-        // stream of new flow events. A block by an app condition ends when
-        // the device state (or the rules) change, so the app's next
-        // datagram is decided again (e.g. once it is in the foreground).
-        if reason.is_conditional() {
+        // stream of new flow events. A per-app block ends as soon as the
+        // device state or the rules lift it, so the app's next datagram is
+        // decided again (e.g. once it is in the foreground).
+        if reason.is_per_app() {
             let mut changed = shared.app_rules_changed.subscribe();
             loop {
                 tokio::select! {
@@ -309,7 +313,9 @@ async fn flow(
                         }
                     }
                     r = changed.changed() => {
-                        if r.is_err() || shared.policy.read().app_block(uid).is_none() {
+                        if r.is_err()
+                            || shared.policy.read().recheck_open(uid, name.as_deref()).is_none()
+                        {
                             break;
                         }
                     }
