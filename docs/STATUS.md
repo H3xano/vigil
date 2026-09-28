@@ -1,7 +1,9 @@
 # Project status and handoff
 
-Last updated: 2026-09-28, version 0.4.0 (ASN enrichment, in-flow beaconing
-and upload alerts, 2× less CPU, toolchain upgrade), GitHub pre-release.
+Last updated: 2026-09-28. Latest release 0.4.0 (GitHub pre-release); `main`
+is ahead of it with unreleased work: a second full review with every
+finding fixed, and four features (packet capture, per-app firewall
+conditions, spyware/stalkerware packs with a health check, tracker labels).
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -10,9 +12,13 @@ to rebuild the toolchain, run the tests and cut a release.
 
 ## Resume here (handoff of 2026-09-28)
 
-State: `main` = tag `v0.4.0` (`b160031`) plus this docs commit, pushed; CI
-green; v0.4.0 published as a GitHub pre-release. The working tree is clean
-and no worktrees or feature branches are left.
+State: local `main` is tag `v0.4.0` plus the post-0.4.0 work ("Unreleased"
+in CHANGELOG.md, section "After 0.4.0" below). **Not pushed, not tagged,
+not released**: the owner decides when (the next version would be 0.5.0,
+versionCode 500; follow the release checklist in DEVELOPMENT.md and update
+the F-Droid recipe). Every host suite and every emulator suite passes (see
+the table). The agent worktrees under `.claude/worktrees/` can be removed
+(`git worktree remove`); their branches are merged.
 
 **Waiting on the owner** (ask about these first; none can be done without them):
 
@@ -45,9 +51,13 @@ and no worktrees or feature branches are left.
    Orbot. Record the phone model and Android version below.
 
 **Next development candidates** (owner has not chosen yet): the backlog below
-from item 3 on; the owner earlier deferred "the rest" of the competitor-gap
-list (MDM managed configuration + device id in events, PCAP export,
-conditional firewall rules, tracker-company labels).
+from item 3 on. From the competitor review of 2026-09-28, still open: ready-made
+SIEM content (Sigma rules, Wazuh decoders, Kibana/Splunk dashboards), MDM
+managed configuration plus a device id in events, an incident bundle export
+(alerts + flows + PCAP, hashed), a local automation API (intents / localhost),
+user-defined detection rules, several WireGuard peers with per-app routing,
+offline geolocation, a Play Store listing. Deliberately not planned: TLS
+interception (MITM) and cosmetic ad blocking.
 
 How recent work was done: features were built in parallel by sub-agents in
 git worktrees (one per area, with a pre-agreed JSON/JNI contract), merged by
@@ -56,20 +66,21 @@ the main session, then an integration pass and the full test matrix
 
 ## Where things stand
 
-vigil 0.4.0 is **feature-complete for its scope and verified on Android 15
-and Android 16 emulators** (all suites below). The owner installed v0.1.0 on
-their own phone (2026-09-27) and reports that it works; that was an informal
-check, and the systematic device testing in backlog item 1 is still to do.
+vigil is **feature-complete for its scope and verified on Android 15 and
+Android 16 emulators** (all suites below, on the unreleased `main`). The
+owner installed v0.1.0 on their own phone (2026-09-27) and reports that it
+works; that was an informal check, and the systematic device testing in
+backlog item 1 is still to do.
 
 | Area | State | Verified by |
 |---|---|---|
-| Rust engine (`core/vigil-core`) | done | 130 unit tests, 171 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / edns / socks5 / wireguard) |
-| JNI layer (`core/vigil-jni`) | done | 28 checks from a real JVM (`scripts/jni-smoke.sh`) |
-| Android app (`android/`) | done | 117 Kotlin unit tests (1 skipped: live TAXII), lint clean incl. `GradleDependency`; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 21 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`) |
-| Release APK (R8-minified) | builds, runs | reproducible (two clean builds identical); smoke-tested on the emulator; upgrade from the previous release tested on Android 16 |
+| Rust engine (`core/vigil-core`) | done | 181 unit tests (1 ignored: `wg_bench`), 209 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / apprules / capture / edns / socks5 / wireguard) |
+| JNI layer (`core/vigil-jni`) | done | 38 checks from a real JVM (`scripts/jni-smoke.sh`) |
+| Android app (`android/`) | done | 212 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
+| Release APK (R8-minified) | builds, runs | reproducible at v0.4.0 (two clean builds identical; not yet re-checked for the unreleased work); the unreleased `main` built as a signed R8 release and installed over the published v0.4.0 on Android 16: schema 4 kept, rows kept, traffic flows, feed preload works, every screen opens, no JNI/serialization errors or crashes in logcat |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
-| CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
-| Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, this file | |
+| CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.4.0; the unreleased work has not been pushed, so CI has not run on it | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
+| Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, HEALTH_CHECK, this file; all brought up to date after the post-0.4.0 work | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
 | Release | [v0.4.0](https://github.com/H3xano/vigil/releases/tag/v0.4.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
 
@@ -183,6 +194,39 @@ tree. Every suite passes (numbers in DEVELOPMENT.md).
   the lint `GradleDependency` check is enabled again. Reproducible builds
   still verified (two clean builds, identical APKs).
 
+## After 0.4.0 (unreleased, on `main`)
+
+A second full review (engine, upstream chaining, service/data, UI/export,
+competitive landscape) by parallel reviewers, with every verified finding
+fixed, then four features. Fixes and features were built by agents in
+worktrees and merged; the full matrix (host and both emulators) passes on
+the merged tree. CHANGELOG.md "Unreleased" lists everything; the highlights:
+
+- **Most important fixes:** netstack sockets reset by the app during the
+  handshake went back to LISTEN and leaked their relay (and could capture a
+  later connection); a panic or a dead engine task was silent and left the
+  device black-holed (now an `engine` error, so the service restarts the
+  session); the UDP flow cap did not stop evicted flows; DNS over TCP to a
+  hard-coded resolver bypassed app blocks and IP feeds; WireGuard in
+  fail-open went direct during every network change; SOCKS5 timeouts
+  disabled UDP permanently; foreground status was lost on a quick
+  Stop→Start; feeds were only loaded after traffic started (now preloaded
+  from the start config); SIEM batches refused with 400/413 were dropped.
+- **Packet capture:** an in-memory ring (off by default, 16 MB) exported as
+  PCAPng per connection, alert or app, and an optional PCAP-over-IP server.
+- **Per-app firewall conditions:** Wi-Fi, mobile data, background, screen
+  off, and per-app domain allow/block rules; the app pushes the device state
+  (`nativeSetDeviceState`) and the engine cuts connections that become
+  blocked.
+- **Spyware and stalkerware:** MVT packs and Echap lists as threat feeds with
+  spyware names in alerts, and a local health check (installed packages and
+  signing certificates, recorded history) with an exportable report.
+- **Tracker labels:** AdGuard companiesdb (CC BY-SA 4.0), labels only.
+- **Feed downloads are ordered by importance:** threat lists, then spyware
+  packs, then other lists, then the tracker labels and the ASN table (with
+  about 30 built-in downloads now, a run stopped early must have fetched the
+  protective ones first; found by the Android 16 e2e run).
+
 ## Feature inventory
 
 **Engine:** TUN dispatch; user-space TCP (smoltcp via `netstack-smoltcp`)
@@ -192,20 +236,32 @@ detection; DNS over TCP to the virtual resolver; truncation retry over TCP;
 IP→name cache; TLS ClientHello parsing across records and segments; JA4;
 QUIC v1/v2 Initial decryption with CRYPTO reassembly; HTTP Host sniffing;
 feeds (hosts, domains, AdGuard `||d^`, IP/CIDR) streamed from disk into
-arena sets; policy (app block, allow/deny, feeds, encrypted-DNS blocking);
-detectors (beaconing, threat hits, hard-coded DNS, encrypted DNS); bounded
-event queue; `flow`/`flow_update`/`flow_end` contract.
+arena sets, preloaded from the start config before the first packet;
+policy (app block, per-app conditions on network / background / screen,
+per-app domain rules, allow/deny, feeds, encrypted-DNS blocking) with open
+connections cut when the device state makes them blocked; detectors
+(beaconing between and within connections, threat hits, JA4, hard-coded DNS,
+encrypted DNS, new ASN); ASN enrichment; upstream dialer (direct, WireGuard,
+SOCKS5) with DoT/DoH; packet capture ring with PCAPng export and
+PCAP-over-IP; supervised engine tasks; bounded event queue;
+`flow`/`flow_update`/`flow_end` contract.
 
 **App:** VpnService (always-on capable, Quick Settings tile, LAN exclusion
 routes, underlying-network DNS tracking); EngineHandle lock; batched Room
 persistence; UID→app resolution including shared UIDs; foreground/background
-tagging (usage access); novelty alerts (opt-in); alert notifications; feed
-catalogue (19 built-in) with daily WorkManager refresh and atomic
-validated downloads; custom feeds with an Authorization header (MISP);
-SIEM export (syslog UDP/TCP/TLS with KeyChain mTLS, HTTP NDJSON / Splunk
-HEC / Elastic bulk); Compose UI (Overview, Activity, Apps plus detail,
-Alerts, Settings, Feeds, Export, Rules, Flow detail); retention and clear
-history.
+tagging (usage access) and the device-state push for per-app conditions;
+novelty, new-ASN and upload-volume alerts; alert notifications with mutes;
+feed catalogue (19 built-in lists, the ASN table, tracker labels, and the
+spyware packs: Echap plus one feed per MVT pack) with a WorkManager refresh
+in priority order and atomic validated downloads; custom feeds with a
+credential header (MISP) and TAXII 2.1 collections, credentials never sent
+to other hosts; spyware alert labels and the health check; tracker-company
+labels and per-app tracker summaries; SIEM export (syslog UDP/TCP/TLS with
+KeyChain mTLS, HTTP NDJSON / Splunk HEC / Elastic bulk, batch splitting);
+packet capture settings and PCAPng export; Compose UI (Overview, Activity,
+Apps plus detail with network access and per-app rules, Alerts, Settings,
+Feeds, Export, Rules, Flow detail, Encrypted DNS, Upstream, Packet capture,
+Health check); retention and clear history.
 
 ## Backlog (priority order)
 
@@ -219,6 +275,12 @@ history.
    (1 engine worker, the default) and on (2 workers), plus vigil's battery
    use in Android settings over a day in each mode, to confirm the default.
    And WireGuard with a real provider `.conf`, and Orbot on 127.0.0.1:9050.
+   For the post-0.4.0 features: a background rule with real app switching
+   (usage access; expect up to about 1 s of refused connections when an app
+   returns to the foreground, the foreground poll interval), PCAPng export
+   through the system file picker and opened in Wireshark, PCAP-over-IP from
+   a PC on the same Wi-Fi, and the health check with a known stalkerware
+   test APK (see docs/HEALTH_CHECK.md).
 2. **F-Droid submission.** Decided: F-Droid first, with reproducible builds so
    F-Droid publishes the developer-signed APK. Done: release keystore (kept
    outside the repo by the owner; certificate SHA-256
@@ -245,7 +307,19 @@ history.
    today) and export `new_asn` / `new_destination` alerts to the SIEM.
 7. **Geolocation** (country of the address, not of the AS registration) if a
    free offline dataset with a compatible licence exists.
-8. **PCAP export** of selected flows, for Wireshark users.
+8. **Follow-ups from the post-0.4.0 work:**
+    - The app assumes every feed in the start config was preloaded; the
+      engine only logs load errors. A per-feed load result (event or stats
+      field) would let the app retry a failed preload.
+    - Packet capture: no throughput benchmark with capture on; the
+      PCAP-over-IP listener binds IPv4 only; export goes through the file
+      picker only (no share sheet).
+    - Optional extra tracker sources (Exodus, DuckDuckGo app list; both
+      non-commercial licences, so off by default).
+    - Health check: `android-property` and file-hash indicators from the MVT
+      packs are ignored today.
+    - The TCP/TLS syslog "test event" still says "delivered" when the
+      collector only accepted the connection.
 9. **compileSdk and targetSdk 37.** The build is on compileSdk and
     targetSdk 36 with the newest AndroidX that supports them. Compose BOM
     2026.08.00+ (UI 1.12), core 1.19, lifecycle 2.11 and navigation-compose
@@ -261,7 +335,8 @@ history.
     - Extend `ECH_PUBLIC_NAMES` in `proto/tls.rs` as providers deploy ECH.
     - Handle IP fragments (currently dropped and counted).
     - UI tests (Compose) and a dark-mode screenshot set.
-    - Room migrations: the schema is at version 4 (exported to
+    - Room migrations: the schema is still at version 4 (the post-0.4.0
+      work added queries and settings, no schema change) (exported to
       `android/app/schemas`); every entity change needs a hand-written
       migration and a `MigrationTest` case.
     - Move UI strings to resources (localisation) and add a theme toggle /
@@ -329,3 +404,13 @@ history.
 | Engine error → bounded auto-restart | A dead TUN reader with routes up black-holes the device; the user may not notice. |
 | SIEM: retry until delivered, deterministic record ids | Alerts are low-volume and high-value; ids make retries and Elastic partial failures idempotent. |
 | Version pins (AGP 9.4.1, Kotlin 2.4.20, Gradle 9.8.0, compileSdk/targetSdk 36) | Newest stable, mutually compatible releases as of 2026-09. AGP 9 compiles Kotlin itself (no kotlin-android plugin); KGP is pinned on the build classpath to match the compose and serialization plugins. AndroidX stops where minCompileSdk 37 starts (backlog item 9). |
+| Download feeds in priority order (threat lists first, ASN and tracker labels last) | About 30 built-in downloads since the spyware packs; a refresh stopped early (network change, WorkManager stop) must have fetched the protective lists first. |
+| Feed preload in the start config (`feeds`, up to 10 s) | Blocklists apply from the first packet after boot or a restart; loading all built-in feeds took under 1 s on the emulator. |
+| Engine tasks supervised; any exit or panic is an `engine` error | A dead task with routes up black-holes the device; the app's restart budget only works if the failure is reported. |
+| Per-app device state pushed with its own JNI call (`nativeSetDeviceState`) | It changes on every app switch; `nativeUpdateConfig` rebuilds every domain list. |
+| Per-app allow beats feeds for that app; any app block beats everything | Consistent with the global allowlist; an app block applies before the name is known, so allows cannot punch holes in it. |
+| TTL 0 for DNS answers that depend on the app | Android's resolver cache is shared by all apps on a network. |
+| Packet capture in memory only, attributed at export time | No payloads on disk unless the user exports; no per-packet lookups on the hot path (one atomic load when off). |
+| PCAP-over-IP in Rust, Wi-Fi address only by default | The packets are already in the engine; streaming through Kotlin would cost a JNI call per packet. Exposure is limited to the local Wi-Fi, with an optional allowlist. |
+| Spyware packs from MVT's index and Echap, downloaded by the device; labels kept app-side | Source allowlist (mvt-project, AmnestyTech, AssoEchap on GitHub); the engine carries no per-entry labels for domain feeds. A small hand-written YAML reader instead of a YAML library. |
+| AdGuard companiesdb for tracker labels, not loaded by the engine | CC BY-SA 4.0 (commercial use allowed; DuckDuckGo, Ghostery and Disconnect data are non-commercial); labels are looked up at display and export time. |

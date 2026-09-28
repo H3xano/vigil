@@ -84,7 +84,8 @@ scripts/
   e2e-netns.sh        real traffic through the engine in an unprivileged netns
   jni-smoke.sh        drives libvigil.so from a JVM through the JNI surface
   android-e2e.sh      on-device test: install, start, generate traffic, assert DB
-  android-lifecycle.sh, android-features.sh   on-device lifecycle and feature tests
+  android-lifecycle.sh, android-features.sh,
+  android-newfeatures.sh                      on-device lifecycle and feature tests
   bench-throughput.sh throughput through the engine vs. direct
 docs/                 architecture, event schema, privacy notes, health check, development, status, screenshots
 fastlane/             F-Droid store metadata
@@ -120,7 +121,7 @@ installable. Pass `-Pvigil.abis=arm64-v8a` to build fewer ABIs, or
 | JNI | `scripts/jni-smoke.sh` | 38 checks: the exact entry points the app calls, from a real JVM |
 | Kotlin unit tests | `cd android && ./gradlew testDebugUnitTest` | routes, config (incl. the JSON contracts with the engine), event parsing, SIEM records and wire formats, feed/STIX/TAXII/spyware/tracker converters, the health check |
 | On device | `scripts/android-e2e.sh` | 28 checks on an emulator/userdebug device: per-app attribution, Chrome TLS SNI + JA4, sinkholing, HTTP Host blocking, per-app blocking through the UI, SIEM export to a live syslog collector, real feed downloads, screenshots, no crashes |
-| On device | `scripts/android-lifecycle.sh`, `scripts/android-features.sh` | network switches, airplane mode, Doze, engine-error restarts, process death, always-on VPN at boot, Private DNS; DoH, SOCKS5 through a proxy, fail-closed, Maximum throughput |
+| On device | `scripts/android-lifecycle.sh`, `scripts/android-features.sh`, `scripts/android-newfeatures.sh` | network switches, airplane mode, Doze, engine-error restarts, process death, always-on VPN at boot, Private DNS; DoH, SOCKS5 through a proxy, fail-closed, Maximum throughput; tracker and spyware downloads, spyware sinkhole, health check, PCAP-over-IP, per-app network conditions |
 
 The netns and JNI suites need no root. They use unprivileged user
 namespaces.

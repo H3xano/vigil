@@ -21,8 +21,8 @@ Working rules for this repo:
   `scripts/e2e-netns.sh`, `scripts/jni-smoke.sh`, and
   `./gradlew lintDebug testDebugUnitTest -Pvigil.skipCargo=true`. For app or
   engine behaviour changes, also run `scripts/android-e2e.sh`,
-  `scripts/android-lifecycle.sh` (`SKIP_BOOT=1` to skip the reboot) and
-  `scripts/android-features.sh` on the emulators (AVDs `vigil35` and
+  `scripts/android-lifecycle.sh` (`SKIP_BOOT=1` to skip the reboot),
+  `scripts/android-features.sh` and `scripts/android-newfeatures.sh` on the emulators (AVDs `vigil35` and
   `vigil36`, one at a time).
 - When changing the event or config JSON, update both sides and `docs/EVENTS.md`.
 - Update `docs/STATUS.md` (state table, backlog, decision log) and

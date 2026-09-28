@@ -2,9 +2,6 @@
 # in https://gitlab.com/fdroid/fdroiddata). Descriptions, screenshots, icon and
 # changelogs come from fastlane/metadata/android/ in the source repo.
 #
-# BLOCKER: F-Droid only builds from public source. github.com/H3xano/vigil is
-# private; make it public before submitting.
-#
 # Reproducible build: unsigned release APKs built from clean clones in
 # different directories (including one with fdroidserver's signing-config
 # stripping applied) were bit-for-bit identical, and `apksigcopier compare`

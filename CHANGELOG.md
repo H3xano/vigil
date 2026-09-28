@@ -27,6 +27,10 @@ New features:
 
 Fixes from the post-0.4.0 review:
 
+- Feed downloads run in order of importance (threat lists, then spyware
+  packs, then other lists, then tracker labels and the ASN table), so a
+  refresh stopped early has fetched the protective lists first.
+
 - Engine: connections reset by the app during the handshake were leaked
   (netstack sockets back in LISTEN); a panic or a dead engine task now reports
   an error and restarts the session instead of black-holing the device; the

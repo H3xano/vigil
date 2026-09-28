@@ -47,10 +47,11 @@ those runs.
 cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 181 unit tests
 scripts/e2e-netns.sh          # 209 checks: direct, beacon (in-flow beaconing), apprules (per-app conditions and device state), capture (PCAPng export, PCAP-over-IP), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
 scripts/jni-smoke.sh          # 38 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest   # 211 JVM tests (1 skipped: TaxiiLiveTest)
+cd android && ./gradlew lintDebug testDebugUnitTest   # 212 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 scripts/android-features.sh   # 14 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed, Maximum throughput restart
+scripts/android-newfeatures.sh # 12 checks: tracker and spyware downloads (internet), spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions
 LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
 scripts/bench-throughput.sh                            # vs. real internet link
 ```
