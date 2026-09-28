@@ -38,6 +38,12 @@ data class Settings(
     val blockJa4Matches: Boolean = false,
     /** Keep private/LAN destinations out of the tunnel (casting, printers...). */
     val excludeLan: Boolean = true,
+    /**
+     * Two engine worker threads instead of one: higher peak throughput (for
+     * links above roughly 500 Mbit/s) at the cost of more CPU and battery.
+     * Read when inspection starts; changing it restarts the session.
+     */
+    val maxThroughput: Boolean = false,
     /** "network" (resolvers of the underlying network) or "custom". */
     val upstreamMode: String = "network",
     val customUpstreams: List<String> = listOf("1.1.1.1", "9.9.9.9"),

@@ -172,4 +172,12 @@ class ConfigFactoryTest {
         const val COMBINED_EDNS = "\"encrypted_dns\":{\"mode\":\"dot\",\"servers\":[{\"host\":\"dns.quad9.net\"," +
             "\"addrs\":[\"9.9.9.9\",\"149.112.112.112\",\"2620:fe::fe\",\"2620:fe::9\"]}],\"fallback_plain\":false}"
     }
+
+    @Test
+    fun workerThreadsFollowMaxThroughput() {
+        val net = listOf("192.168.1.1:53")
+        assertEquals(1, ConfigFactory.build(Settings(), net, emptyList()).workerThreads)
+        assertEquals(2, ConfigFactory.build(Settings(maxThroughput = true), net, emptyList()).workerThreads)
+        assertTrue(ConfigFactory.build(Settings(), net, emptyList()).toJson().contains("\"worker_threads\":1"))
+    }
 }

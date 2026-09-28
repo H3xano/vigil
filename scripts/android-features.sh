@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# On-device checks for encrypted upstream DNS (DoH via Quad9) and SOCKS5
-# chaining (a proxy on the host, reached from the emulator at 10.0.2.2).
+# On-device checks for encrypted upstream DNS (DoH via Quad9), SOCKS5
+# chaining (a proxy on the host, reached from the emulator at 10.0.2.2) and
+# the Maximum throughput toggle (restarts the session).
 #
 # Requires: adb in PATH, an emulator with `adb root`, the debug APK built.
 # WireGuard needs a real peer and is covered by scripts/e2e-netns.sh.
@@ -68,6 +69,28 @@ txt=$(screen_text upstream); adb exec-out screencap -p > /tmp/vigil-ft-upstream.
 echo "$txt" | grep -qiE "socks|connected|working|up" && ok "Upstream screen shows SOCKS5 status" || bad "Upstream screen shows SOCKS5 status" "$(echo "$txt" | head -5)"
 kill $spid 2>/dev/null; wait $spid 2>/dev/null; sleep 2
 if http_ok example.net; then bad "fail-closed blocks traffic when the proxy is down" "HTTP still worked"; else ok "fail-closed blocks traffic when the proxy is down"; fi
+stop
+
+# --- Maximum throughput toggle restarts the session with 2 workers ---------------
+settings '{"upstream": {"mode": "direct"}, "maxThroughput": false}'
+start >/dev/null
+adb logcat -c
+adb shell am start -n $pkg/dev.vigil.inspector.ui.MainActivity --es destination settings -f 0x14000000 >/dev/null; sleep 3
+tap_text() { # scrolls until a node with this text is visible, then taps its centre
+  for _ in 1 2 3 4 5 6; do
+    adb shell uiautomator dump /data/local/tmp/ft-ui.xml >/dev/null 2>&1
+    b=$(adb shell cat /data/local/tmp/ft-ui.xml | grep -o "text=\"$1\"[^>]*bounds=\"[^\"]*\"" | grep -o 'bounds="[^"]*"' | head -1 | tr -dc '0-9,[]' | tr '][' ' ,' )
+    if [ -n "$b" ]; then set -- $(echo "$b" | tr ',' ' '); adb shell input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 )); return 0; fi
+    adb shell input swipe 540 1800 540 700 300; sleep 1
+  done; return 1
+}
+if tap_text "Maximum throughput"; then
+  for _ in $(seq 20); do adb logcat -d | grep -q "engine worker threads changed" && break; sleep 1; done
+  adb logcat -d | grep -q "engine worker threads changed" && ok "Maximum throughput toggle restarts inspection" || bad "Maximum throughput toggle restarts inspection" "no restart logged"
+  wait_tun && http_ok && ok "HTTP after the throughput restart" || bad "HTTP after the throughput restart"
+else
+  bad "Maximum throughput toggle restarts inspection" "setting not found on screen"
+fi
 stop
 
 crashes=$(adb logcat -d -b crash | grep -c "$pkg")

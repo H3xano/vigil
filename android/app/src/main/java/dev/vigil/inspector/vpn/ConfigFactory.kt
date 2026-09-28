@@ -59,8 +59,14 @@ object ConfigFactory {
             // Invalid settings (which the DNS screen does not save) become "off".
             encryptedDns = s.encryptedDns.toEngine(),
             upstream = upstreamConfig(up, networkId),
+            // One worker uses 17-34% less CPU per packet than two; two only
+            // pay off on links faster than a phone usually has.
+            workerThreads = workerThreads(s),
         )
     }
+
+    /** Engine worker threads: 1 by default (battery), 2 with "Maximum throughput". */
+    fun workerThreads(s: Settings): Int = if (s.maxThroughput) 2 else 1
 
     /**
      * The engine's upstream section. A WireGuard mode without an imported

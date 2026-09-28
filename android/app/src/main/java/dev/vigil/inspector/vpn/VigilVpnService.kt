@@ -476,6 +476,11 @@ class VigilVpnService : android.net.VpnService() {
                     commands.trySend(Command.Restart(s.id, "VPN routes or excluded apps changed"))
                     return@collect
                 }
+                // The engine sizes its runtime once, at start.
+                if (config.workerThreads != s.applied.workerThreads) {
+                    commands.trySend(Command.Restart(s.id, "engine worker threads changed"))
+                    return@collect
+                }
                 // The upstream path (direct/WireGuard/SOCKS5) changes in place:
                 // the engine rebuilds its dialer; open connections keep theirs.
                 if (config == s.applied) return@collect

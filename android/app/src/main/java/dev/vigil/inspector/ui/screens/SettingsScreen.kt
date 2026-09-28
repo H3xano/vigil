@@ -129,6 +129,11 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 "Private and link-local destinations (printers, casting, NAS) bypass the inspector. Changing this restarts inspection.",
                 s.excludeLan, onChecked = { v -> vm.updateSettings { it.copy(excludeLan = v) } },
             )
+            SettingRow(
+                "Maximum throughput",
+                "Uses a second engine thread for the fastest connections (roughly above 500 Mbit/s). Uses more battery; off is best for everyday use. Changing this restarts inspection.",
+                s.maxThroughput, onChecked = { v -> vm.updateSettings { it.copy(maxThroughput = v) } },
+            )
             Text("Upstream DNS resolver", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
             Segmented(listOf("network" to "Network's resolver", "custom" to "Custom"), s.upstreamMode, { v -> vm.updateSettings { it.copy(upstreamMode = v) } })
             if (s.upstreamMode == "custom") {
