@@ -7,6 +7,7 @@
 #   MODE=tcp             N short HTTP requests, one connection each (CONC at once)
 #   MODE=udp             N request/reply datagrams of SIZE bytes over CONC flows
 #   MODE=dns             N DNS queries (unique names) to the virtual resolver
+#   MODE=idle            a few connections, 4 of them left open, then SECS idle
 #
 # The small-packet modes always use servers on this host. Engine CPU is
 # utime + stime of the engine process during the transfer only.
@@ -47,6 +48,9 @@ case "$mode" in
     python3 "$load" serve-dns "$host_ip" 8768 & srv=$!
     engine_args=(--upstream "$host_ip:8768")
     client=(python3 "$load" dns 10.111.222.2 "$n" "$conc") ;;
+  idle)
+    python3 "$load" serve-tcp "$host_ip" 8766 1000 & srv=$!
+    client=(python3 "$load" idle "$host_ip" 8766 "${SECS:-10}") ;;
   *) echo "unknown MODE $mode" >&2; exit 2 ;;
 esac
 
@@ -75,7 +79,9 @@ unset pid
 hz=$(getconf CLK_TCK)
 cpu=$(awk -v a="$cpu0" -v b="$cpu1" -v hz="$hz" 'BEGIN { printf "%.2f", (b - a) / hz }')
 cs=$((ctx1 - ctx0))
-if [ "$mode" = bulk ]; then
+if [ "$mode" = idle ]; then
+  echo "idle: engine CPU ${cpu}s in ${SECS:-10}s after a burst, $cs context switches, RSS $((rss / 1024)) MB"
+elif [ "$mode" = bulk ]; then
   LC_ALL=C awk -v d="$direct" -v t="$(cat "$work/out")" -v c="$cpu" -v r="$rss" -v b="$bytes" -v cs="$cs" 'BEGIN {
     printf "direct:    %7.1f Mbit/s\n", d*8/1e6
     printf "via vigil: %7.1f Mbit/s (%.0f%% of direct)\n", t*8/1e6, 100*t/d

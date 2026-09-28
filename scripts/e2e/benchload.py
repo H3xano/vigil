@@ -11,6 +11,7 @@ Clients (run inside the namespace, through vigil); print "<ops> <seconds>":
   tcp HOST PORT N CONC       N short HTTP/1.0 requests, one connection each
   udp HOST PORT N CONC SIZE  N request/reply datagrams over CONC flows
   dns SERVER N CONC          N A queries for unique names over CONC sockets
+  idle HOST PORT SECS        20 requests, then 4 open connections for SECS
 """
 import asyncio, os, socket, struct, sys, threading, time
 
@@ -113,6 +114,16 @@ def client_dgram(server, n, conc, make, check):
     return sum(done), secs
 
 
+def client_idle(host, port, secs):
+    ops, _ = client_tcp(host, port, 20, 4)
+    # The server waits for a request that never comes: idle relays.
+    held = [socket.create_connection((host, port)) for _ in range(4)]
+    time.sleep(secs)
+    for s in held:
+        s.close()
+    return ops, secs
+
+
 def dns_query(i, k):
     qid = (i * 7919 + k) & 0xFFFF
     name = b"".join(bytes([len(l)]) + l for l in (b"q%d-%d" % (i, k), b"bench", b"test"))
@@ -140,6 +151,8 @@ def main():
             ops, secs = client_dgram(
                 (a[0], 53), int(a[1]), int(a[2]), dns_query,
                 lambda m, r: r[:2] == m[:2])
+        elif cmd == "idle":
+            ops, secs = client_idle(a[0], int(a[1]), float(a[2]))
         else:
             sys.exit(__doc__)
         print(ops, "%.3f" % secs)
