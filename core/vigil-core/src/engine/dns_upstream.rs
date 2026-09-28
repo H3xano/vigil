@@ -83,6 +83,8 @@ const DOH_CONNS: usize = 6;
 const DOH_IDLE_CONNS: usize = 4;
 /// Requests per DoH connection before it is retired.
 const DOH_MAX_REQUESTS: u32 = 1000;
+/// Server addresses with connection state kept per session.
+const MAX_ENDPOINTS: usize = 64;
 /// Bootstrap lookups (fallback_plain without addrs) are cached this long at most.
 const BOOTSTRAP_MAX_TTL: u32 = 3600;
 
@@ -300,12 +302,16 @@ impl Session {
                 attempts += 1;
                 let addr = SocketAddr::new(ip, target.port);
                 let ep = self.endpoint(ti, addr, &target);
+                let started = Instant::now();
                 let r = tokio::time::timeout(
                     left.min(ATTEMPT_TIMEOUT),
                     ep.query(shared, &self.tls, self.mode, query),
                 )
                 .await
-                .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "timed out")));
+                .unwrap_or_else(|_| {
+                    ep.drop_stalled(started);
+                    Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
+                });
                 match r {
                     Ok(resp) => {
                         self.penalty.lock().remove(&(ti, ip));
@@ -330,8 +336,12 @@ impl Session {
         addr: SocketAddr,
         target: &Arc<EncryptedTarget>,
     ) -> Arc<Endpoint> {
-        self.endpoints
-            .lock()
+        let mut endpoints = self.endpoints.lock();
+        // Bootstrap lookups may keep returning new addresses.
+        if endpoints.len() >= MAX_ENDPOINTS && !endpoints.contains_key(&(ti, addr)) {
+            endpoints.clear();
+        }
+        endpoints
             .entry((ti, addr))
             .or_insert_with(|| {
                 Arc::new(Endpoint {
@@ -444,6 +454,23 @@ struct Endpoint {
 }
 
 impl Endpoint {
+    /// After a query timed out: closes connections that received nothing
+    /// since `since` (e.g. stranded on a network that went away), so later
+    /// queries do not wait on them too. The HTTP/2 connection is replaced
+    /// (its other requests are retried on the new one).
+    fn drop_stalled(&self, since: Instant) {
+        *self.h2.lock() = None;
+        if let Ok(mut conns) = self.dot.try_lock() {
+            conns.retain(|c| {
+                let alive = c.received_since(since);
+                if !alive {
+                    c.close();
+                }
+                alive
+            });
+        }
+    }
+
     async fn connect(
         &self,
         shared: &Shared,
@@ -829,6 +856,10 @@ impl DotConn {
         self.pending.lock().waiters.len()
     }
 
+    fn received_since(&self, t: Instant) -> bool {
+        matches!(self.pending.lock().last_rx, Some(rx) if rx >= t)
+    }
+
     fn close(&self) {
         self.pending.lock().close();
         for t in &self.tasks {
@@ -888,7 +919,7 @@ impl DotConn {
             Err(_) => {
                 // Nothing at all arrived since this query was sent: the
                 // connection is dead (e.g. a silently dropped NAT mapping).
-                let dead = !matches!(self.pending.lock().last_rx, Some(t) if t >= sent_at);
+                let dead = !self.received_since(sent_at);
                 if dead {
                     self.close();
                 }
@@ -1444,6 +1475,7 @@ mod tls_tests {
             Kind::Dot => &[],
             Kind::Http1 => &[b"http/1.1"],
             Kind::H2 => &[b"h2"],
+            Kind::Silent => &[],
         });
         tokio::spawn(async move {
             while let Ok((tcp, _)) = l.accept().await {
@@ -1457,6 +1489,11 @@ mod tls_tests {
                         Kind::Dot => serve_dot(s).await,
                         Kind::Http1 => serve_doh(s).await,
                         Kind::H2 => serve_h2(s).await,
+                        Kind::Silent => {
+                            let mut s = s;
+                            let mut sink = vec![0u8; 4096];
+                            while matches!(s.read(&mut sink).await, Ok(n) if n > 0) {}
+                        }
                     }
                 });
             }
@@ -1469,6 +1506,8 @@ mod tls_tests {
         Dot,
         Http1,
         H2,
+        /// DoT handshake, then never answers.
+        Silent,
     }
 
     async fn serve_h2<S: AsyncRead + AsyncWrite + Unpin>(s: S) {
@@ -1780,6 +1819,36 @@ mod tls_tests {
         let session = shared.encrypted_dns.session.lock().clone().unwrap();
         assert!(session.penalty.lock().contains_key(&(0, dead.ip())));
         assert_eq!(session.penalty.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn silent_server_times_out_and_is_skipped() {
+        let (silent, _) = server(Kind::Silent).await;
+        let (good, _) = server(Kind::Dot).await;
+        let (plain, leaks) = plain_resolver().await;
+        let shared = test_shared(config(
+            EncryptedDnsMode::Dot,
+            vec![(HOST.into(), silent), (HOST.into(), good)],
+            plain,
+            false,
+            true,
+        ));
+        let q = dns_proto::build_query(5, "a.example", dns_proto::TYPE_A);
+        let t = std::time::Instant::now();
+        let (_, via) = forward(&shared, &q, "udp").await.unwrap();
+        assert_eq!(via, "dot");
+        assert!(t.elapsed() >= ATTEMPT_TIMEOUT && t.elapsed() < QUERY_DEADLINE);
+        let session = shared.encrypted_dns.session.lock().clone().unwrap();
+        let stalled = session.endpoints.lock()[&(0, silent)].clone();
+        assert!(
+            stalled.dot.lock().await.is_empty(),
+            "stalled connection closed"
+        );
+        // The silent server is now skipped: the next query is fast.
+        let t = std::time::Instant::now();
+        forward(&shared, &q, "udp").await.unwrap();
+        assert!(t.elapsed() < Duration::from_secs(1));
+        assert_eq!(leaks.load(Relaxed), 0);
     }
 
     #[tokio::test]

@@ -26,6 +26,18 @@ Turn feeds off in Settings → Threat intelligence feeds to stop these
 downloads; custom feeds go to the URL you enter, with the Authorization
 header you configure.
 
+## Where lookups go
+
+vigil answers apps' DNS lookups itself and forwards them to a resolver: by
+default the network's resolvers (or the ones you enter) over plain DNS, which
+the network operator can read and alter. With Settings → Encrypted DNS they
+go over DNS over TLS or DNS over HTTPS to the provider you choose (Quad9,
+Cloudflare, Google, Mullvad or your own server), which then sees your
+lookups and IP address instead. The providers' addresses are built in, so
+no lookup is sent in cleartext to find them. If the encrypted server is
+unreachable, lookups fail unless you allow a fallback to plain DNS. Lookups
+an app sends to a DNS server of its own choosing still go there as sent.
+
 SIEM export sends the records you select to the collector you configure.
 Use `https://` or syslog over TLS: over plain `http://`, UDP or TCP the
 records (and any Authorization header or token) cross the network

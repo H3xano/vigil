@@ -28,6 +28,7 @@ feeds from their publishers (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 | **Threat intelligence** | Built-in feeds (HaGeZi TIF, abuse.ch URLhaus / ThreatFox / Feodo, Phishing Army, Spamhaus DROP, tracker and OEM-telemetry lists) plus custom URLs, including authenticated MISP text exports. Hosts, domain lists, AdGuard `\|\|domain^` rules and IP/CIDR lists are supported. A 2.3 M-domain feed loads in under 1 s and 58 MB. |
 | **Blocking** | DNS sinkholing (`0.0.0.0` or NXDOMAIN), including **CNAME-cloaked trackers**. Connections are refused by IP, SNI, QUIC SNI or HTTP Host. You can cut an app off entirely and keep custom allow/deny rules. |
 | **Behavioural detection** | **Beaconing** (near-constant-interval check-ins), apps **bypassing the system resolver** with hard-coded DNS servers, **encrypted DNS** use (DoH/DoT/DoQ), optional **new-destination** alerts, and foreground/background tagging. |
+| **Encrypted upstream DNS** | Optional DNS over TLS or DNS over HTTPS (HTTP/2) from vigil's resolver to Quad9, Cloudflare, Google, Mullvad or a custom server, so inspecting DNS does not mean giving up Private DNS. Fails closed unless a plain-DNS fallback is allowed. |
 | **SIEM streaming** | ECS-shaped JSON over RFC 5424 syslog (UDP, TCP or TLS with optional **mutual TLS** from the Android KeyChain), HTTP NDJSON, **Splunk HEC** or **Elasticsearch `_bulk`**. |
 | **Faithful relaying** | Upstream connection failures reach the app as real refusals, because the SYN is held until the upstream connect succeeds. There is no fake handshake followed by a reset. |
 
