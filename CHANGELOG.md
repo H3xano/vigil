@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Connections show which path they took (direct, WireGuard, SOCKS5) and
+  lookups which DNS transport answered (UDP, TCP, DoT, DoH).
+- Network (ASN) labels from an offline iptoasn.com table, and opt-in alerts
+  when an app contacts a network it never used before.
+- Beaconing detection inside long-lived connections; alerts for unusual
+  background upload volume.
+- About 2× less CPU per GB relayed; connections are released immediately
+  after they close (they were held for 10 s).
+- One engine thread by default to save battery; new "Maximum throughput"
+  setting.
+- Toolchain: AGP 9.4, Kotlin 2.4, compileSdk/targetSdk 36, current AndroidX.
+
 ## 0.3.0 (2026-09-28): GitHub pre-release
 
 - Encrypted upstream DNS: DNS over TLS and DNS over HTTPS (HTTP/2), with

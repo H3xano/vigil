@@ -49,7 +49,7 @@ scripts/jni-smoke.sh          # 28 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest   # 116 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
-scripts/android-features.sh   # 12 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed
+scripts/android-features.sh   # 14 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed, Maximum throughput restart
 LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
 scripts/bench-throughput.sh                            # vs. real internet link
 ```
@@ -96,8 +96,9 @@ inspection.
 ## Emulator for on-device tests
 
 ```sh
-sdkmanager "emulator" "system-images;android-35;google_apis;x86_64"
+sdkmanager "emulator" "system-images;android-35;google_apis;x86_64" "system-images;android-36;google_apis;x86_64"
 echo no | avdmanager create avd -n vigil35 -k "system-images;android-35;google_apis;x86_64" -d pixel_6
+echo no | avdmanager create avd -n vigil36 -k "system-images;android-36;google_apis;x86_64" -d pixel_6   # targetSdk 36 behaviour
 emulator -avd vigil35 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -memory 3072 -cores 4 &
 adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 3; done
 cd android && ./gradlew assembleDebug -Pvigil.abis=x86_64,arm64-v8a && cd .. && scripts/android-e2e.sh

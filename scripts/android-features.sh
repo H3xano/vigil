@@ -76,12 +76,13 @@ settings '{"upstream": {"mode": "direct"}, "maxThroughput": false}'
 start >/dev/null
 adb logcat -c
 adb shell am start -n $pkg/dev.vigil.inspector.ui.MainActivity --es destination settings -f 0x14000000 >/dev/null; sleep 3
-tap_text() { # scrolls until a node with this text is visible, then taps its centre
-  for _ in 1 2 3 4 5 6; do
-    adb shell uiautomator dump /data/local/tmp/ft-ui.xml >/dev/null 2>&1
-    b=$(adb shell cat /data/local/tmp/ft-ui.xml | grep -o "text=\"$1\"[^>]*bounds=\"[^\"]*\"" | grep -o 'bounds="[^"]*"' | head -1 | tr -dc '0-9,[]' | tr '][' ' ,' )
+tap_text() { # scrolls down in small steps until a node with this text is visible, then taps its centre
+  for _ in $(seq 14); do
+    adb shell rm -f /data/local/tmp/ft-ui.xml
+    for _ in 1 2 3; do adb shell uiautomator dump /data/local/tmp/ft-ui.xml >/dev/null 2>&1 && adb shell test -s /data/local/tmp/ft-ui.xml && break; sleep 1; done
+    b=$(adb shell cat /data/local/tmp/ft-ui.xml 2>/dev/null | grep -o "text=\"$1\"[^>]*bounds=\"[^\"]*\"" | grep -o 'bounds="[^"]*"' | head -1 | tr -dc '0-9,[]' | tr '][' ' ,')
     if [ -n "$b" ]; then set -- $(echo "$b" | tr ',' ' '); adb shell input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 )); return 0; fi
-    adb shell input swipe 540 1800 540 700 300; sleep 1
+    adb shell input swipe 540 1600 540 1100 400; sleep 1
   done; return 1
 }
 if tap_text "Maximum throughput"; then

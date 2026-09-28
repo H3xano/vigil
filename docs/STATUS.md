@@ -104,6 +104,37 @@ Costs and caveats: arm64 `libvigil.so` grew from 1.44 MB to 3.16 MB
 Still needs a device: a real WireGuard provider `.conf` (roaming, battery
 with keepalive) and Orbot on 127.0.0.1:9050 with Orbot excluded from the VPN.
 
+## New after 0.3.0 (2026-09-28, unreleased)
+
+Built in parallel by three agents, then a toolchain upgrade on the merged
+tree. Every suite passes (numbers in DEVELOPMENT.md).
+
+- **Path and DNS transport per connection:** Room schema v4 stores `via`
+  (direct / WireGuard / SOCKS5) and the DNS `upstream` (UDP / TCP / DoT /
+  DoH); shown in flow detail and Activity (with a "via tunnel/proxy" filter).
+- **Offline ASN enrichment:** iptoasn.com (public domain), downloaded weekly
+  (9 MB gzipped), about 10 MB of engine memory; `asn` on flow events, AS
+  labels in the UI, ECS `destination.as.*` in the SIEM export. Opt-in
+  `new_asn` alerts ("an app contacted a network it never used") with a
+  learning period (7 days by default).
+- **Beaconing inside one connection** (`beacon` with `detail.kind =
+  "intra_flow"`), sampled from flow counters once per housekeeping tick;
+  push channels (FCM, Apple, Mozilla) are ignored by default.
+- **Upload-volume alerts** (`exfil_volume`, app-side): background uploads
+  above a floor (50 MB/h by default) and 3× the app's own baseline, one-way
+  traffic only; backup/sync apps exempt.
+- **Performance:** 5.6 s CPU per GB instead of 12.1, 2.9 Gbit/s instead of
+  1.3 on the host; fixed relays being held 10 s after close (and SYNs on a
+  reused port being swallowed): 5,000 short connections in 1 s instead of
+  12–23 s. Events reach the app up to 20 ms later (batched).
+- **One engine worker by default:** 17–34% less CPU than two; the "Maximum
+  throughput" setting switches to two (session restart). Rust's own default
+  stays 2 (CLI and benchmarks).
+- **Toolchain:** Gradle 9.8.0, AGP 9.4.1, Kotlin 2.4.20, compileSdk and
+  targetSdk 36, current AndroidX, Room 2.8.5 (KSP2), CI actions on Node 24;
+  the lint `GradleDependency` check is enabled again. Reproducible builds
+  still verified (two clean builds, identical APKs).
+
 ## Feature inventory
 
 **Engine:** TUN dispatch; user-space TCP (smoltcp via `netstack-smoltcp`)
@@ -136,7 +167,10 @@ history.
    also runs on a rooted/userdebug phone. Still needed on real hardware: at
    least one Pixel and one Samsung (One UI is aggressive with background
    services), battery drain over a day, and an IPv6-only carrier (464XLAT /
-   NAT64).
+   NAT64). Also: a speed test with vigil on, with "Maximum throughput" off
+   (1 engine worker, the default) and on (2 workers), plus vigil's battery
+   use in Android settings over a day in each mode, to confirm the default.
+   And WireGuard with a real provider `.conf`, and Orbot on 127.0.0.1:9050.
 2. **F-Droid submission.** Decided: F-Droid first, with reproducible builds so
    F-Droid publishes the developer-signed APK. Done: release keystore (kept
    outside the repo by the owner; certificate SHA-256
@@ -151,20 +185,18 @@ history.
    open unprivileged ICMP datagram sockets (`SOCK_DGRAM`/`IPPROTO_ICMP`), so
    echo requests could be relayed in `engine/mod.rs` `dispatch()` (the
    `_ => drop_it()` arm).
-4. **Per-packet CPU.** Profile the relay (about 12 s/GB). Candidates: a
-   `Vec` allocation per packet in `dispatch`, mpsc hops (TUN → stack sink →
-   smoltcp → stack stream → TUN writer), and reads of 16 KB copy chunks.
-   Batching TUN reads or reusing buffers is likely the biggest win. Measure
-   with `LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh`. A larger TCP
-   window made no difference.
-5. **Store `via` and DNS `upstream` in Room** (schema v4) so the app can
-   show per-flow which path and DNS transport was used; add a WireGuard
-   throughput benchmark and consider a larger tunnelled TCP window.
-6. **ASN / geo enrichment.** An offline IP→ASN database (e.g. iptoasn.com)
-   would enable "new ASN for this app" alerts and nicer UI labels.
-7. **Beaconing on long-lived connections.** Today only connection starts
-   are observed. Periodic `flow_update` byte deltas could detect heartbeats
-   inside one connection.
+4. **More per-packet CPU work** (5.6 s/GB now, from 12.1). Ranked ideas from
+   the profiling pass: a 4-tuple lookup instead of smoltcp's per-packet
+   linear socket scan (big refactor); lazy or pooled per-connection 64 KB
+   buffers (cuts zeroing on short connections); a coarse clock for the
+   smoltcp loop (little gain on phones). Profile without `perf` as described
+   in DEVELOPMENT.md.
+5. **WireGuard throughput benchmark** and a larger tunnelled TCP window
+   (256 KiB today, about 40 Mbit/s at 50 ms RTT).
+6. **Persist the upload baseline in Room** (it is in `exfil_baseline.json`
+   today) and export `new_asn` / `new_destination` alerts to the SIEM.
+7. **Geolocation** (country of the address, not of the AS registration) if a
+   free offline dataset with a compatible licence exists.
 8. **PCAP export** of selected flows, for Wireshark users.
 9. **compileSdk and targetSdk 37.** The build is on compileSdk and
     targetSdk 36 with the newest AndroidX that supports them. Compose BOM
@@ -211,6 +243,9 @@ history.
 | Rust engine + Kotlin app, JNI (not UniFFI) | Tiny surface (9 functions), and no generated bindings to maintain. |
 | Poll events instead of JNI callbacks | Keeps JVM calls off the packet path; a slow consumer drops events, not packets. |
 | `netstack-smoltcp` instead of `ipstack`/tun2proxy | smoltcp's TCP is mature, and vigil keeps control of raw packets. `ipstack` describes itself as unstable and uses unbounded channels. |
+| One engine worker by default, two with "Maximum throughput" | Phones spend their time on small packets, where one worker uses 17–34% less CPU; it still relays about 1.75 Gbit/s on the host, beyond typical phone links. To be confirmed on a phone (backlog 1). |
+| Netstack TIME-WAIT 1 s and a new SYN replaces an old socket | The app side is a local TUN with no delayed segments; the 10 s TIME-WAIT held relays and buffers and swallowed SYNs on reused ports. |
+| iptoasn.com for ASN data | Public domain and anonymously downloadable; IPinfo Lite needs a token and is CC-BY-SA, DB-IP's URL changes monthly. |
 | 64 KB TCP window | The netstack default (320 KB × 4 buffers per connection) is too much memory on a phone, and 256 KB measured no faster. |
 | Upstream connect before SYN-ACK | Faithful failures for apps. |
 | minSdk 29 | `getConnectionOwnerUid`; the pre-29 kernel paths are SELinux-blocked. |
