@@ -17,6 +17,7 @@ import dev.vigil.inspector.engine.EngineJson
 import dev.vigil.inspector.engine.FeedSummary
 import dev.vigil.inspector.engine.VigilNative
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
@@ -40,6 +41,9 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
 
     fun fileFor(id: String) = File(dir, "$id.txt")
 
+    /** Indicator state of a TAXII source, kept between incremental polls. */
+    private fun stateFor(id: String) = File(dir, "$id.taxii")
+
     suspend fun seedBuiltins() = dao.insertIfAbsent(FeedCatalog.builtin)
 
     /**
@@ -52,43 +56,109 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             if (!fileFor(id).exists()) scheduleRefreshNow(force = false)
         } else {
             fileFor(id).delete()
+            stateFor(id).delete()
             dao.clearDownload(id)
         }
     }
 
-    suspend fun addCustom(name: String, url: String, category: String, authHeader: String?): String {
-        val id = "custom-" + name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "feed" } +
+    private fun newId(prefix: String, name: String) =
+        prefix + name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "feed" } +
             "-" + (System.currentTimeMillis() % 100_000)
+
+    /**
+     * Adds a custom downloaded list. [kind] is [FeedKinds.LIST] (domains/IPs,
+     * in [category]) or [FeedKinds.JA4] (category `ja4`).
+     */
+    suspend fun addCustom(name: String, url: String, category: String, authHeader: String?, kind: String = FeedKinds.LIST): String {
+        val id = newId("custom-", name)
+        val ja4 = kind == FeedKinds.JA4
         dao.upsert(
             FeedEntity(
-                id = id, name = name, url = url, category = category, enabled = true, builtin = false,
-                description = "Custom feed", authHeader = authHeader?.takeIf { it.isNotBlank() },
+                id = id, name = name, url = url, category = if (ja4) "ja4" else category, enabled = true, builtin = false,
+                description = if (ja4) "Custom JA4 feed" else "Custom feed", authHeader = authHeader?.takeIf { it.isNotBlank() },
+                kind = if (ja4) FeedKinds.JA4 else FeedKinds.LIST,
             ),
         )
         scheduleRefreshNow(force = false)
         return id
     }
 
+    /**
+     * Adds a TAXII 2.1 collection. Its domains, IPs and JA4 fingerprints go
+     * into one feed file loaded with [category] (a threat category), so
+     * domain/IP hits raise threat alerts and JA4 hits `threat_ja4` alerts.
+     */
+    suspend fun addTaxii(name: String, collection: TaxiiCollection, category: String, authHeaderName: String?, authValue: String?): String {
+        val id = newId("taxii-", name)
+        val auth = authValue?.takeIf { it.isNotBlank() }
+        dao.upsert(
+            FeedEntity(
+                id = id, name = name, url = collection.apiRoot, category = category, enabled = true, builtin = false,
+                description = "TAXII 2.1 collection “${collection.title}”", authHeader = auth,
+                authHeaderName = authHeaderName?.trim()?.takeIf { auth != null && it.isNotEmpty() && !it.equals("Authorization", ignoreCase = true) },
+                kind = FeedKinds.TAXII, taxiiCollection = collection.id,
+            ),
+        )
+        scheduleRefreshNow(force = false)
+        return id
+    }
+
+    /** Lists the collections of a TAXII 2.1 discovery URL or API root. */
+    suspend fun taxiiCollections(url: String, authHeaderName: String?, authValue: String?): Result<List<TaxiiCollection>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val probe = FeedEntity(
+                    id = "probe", name = "probe", url = url, category = "c2", enabled = false, builtin = false,
+                    authHeader = authValue?.takeIf { it.isNotBlank() }, authHeaderName = authHeaderName?.takeIf { it.isNotBlank() },
+                )
+                Result.success(TaxiiClient(taxiiTransport(probe)).collections(url))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                Result.failure(e)
+            } catch (e: RuntimeException) {
+                Result.failure(e)
+            }
+        }
+
     suspend fun delete(id: String) {
         dao.deleteCustom(id)
         fileFor(id).delete()
+        stateFor(id).delete()
     }
 
     /** Downloads one feed; the previous copy is kept if anything fails. */
     suspend fun refresh(feed: FeedEntity): Result<FeedSummary> = refreshLock.withLock { refreshLocked(feed) }
 
     private suspend fun refreshLocked(feed: FeedEntity): Result<FeedSummary> = withContext(Dispatchers.IO) {
-        // Unique name: a crashed or cancelled run can never collide with this one.
+        // Unique names: a crashed or cancelled run can never collide with this one.
         val tmp = File.createTempFile("${feed.id}-", ".tmp", dir)
+        val converted = File.createTempFile("${feed.id}-conv-", ".tmp", dir)
+        val stateTmp = File.createTempFile("${feed.id}-state-", ".tmp", dir)
         val target = fileFor(feed.id)
+        var nextAddedAfter: String? = null
         val result = try {
-            download(feed, tmp)
-            val summary = VigilNative.nativeInspectFeedFile(tmp.absolutePath)
-                ?.let { EngineJson.json.decodeFromString(FeedSummary.serializer(), it) }
-                ?: throw IOException("unreadable feed")
-            val previous = if (feed.lastUpdated != null && target.exists()) feed.domains + feed.ipRanges else null
-            FeedValidation.check(summary, previous)?.let { throw IOException(it) }
-            if (!tmp.renameTo(target)) throw IOException("could not store feed")
+            val summary = if (feed.isTaxii) {
+                val (s, after) = pollTaxii(feed, tmp, stateTmp)
+                nextAddedAfter = after
+                s
+            } else {
+                download(feed, tmp)
+                val file = if (Ja4Converters.needsConversion(feed.format)) {
+                    Ja4Converters.convert(feed.format, tmp, converted)
+                    converted
+                } else {
+                    tmp
+                }
+                val summary = VigilNative.nativeInspectFeedFile(file.absolutePath)
+                    ?.let { EngineJson.json.decodeFromString(FeedSummary.serializer(), it) }
+                    ?: throw IOException("unreadable feed")
+                val previous = if (feed.lastUpdated != null && target.exists()) feed.entries else null
+                FeedValidation.check(summary, previous, feed.kind)?.let { throw IOException(it) }
+                if (!file.renameTo(target)) throw IOException("could not store feed")
+                // The engine loads a JA4 feed with category `ja4`, which ignores other lines.
+                if (feed.kind == FeedKinds.JA4) summary.copy(domains = 0, ipRanges = 0) else summary
+            }
             Result.success(summary)
         } catch (e: CancellationException) {
             throw e
@@ -98,6 +168,8 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             Result.failure(e)
         } finally {
             tmp.delete()
+            converted.delete()
+            stateTmp.delete()
         }
         ensureActive() // a cancelled download fails with a socket error; don't record that as the feed's error
         result.onSuccess { s ->
@@ -105,10 +177,17 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             val current = dao.get(feed.id)
             if (current == null || !current.enabled) {
                 target.delete()
+                stateFor(feed.id).delete()
                 if (current != null) dao.clearDownload(feed.id)
                 return@withContext Result.failure(IOException("feed was removed or disabled during the download"))
             }
-            dao.markUpdated(feed.id, System.currentTimeMillis(), s.domains, s.ipRanges)
+            dao.markUpdated(feed.id, System.currentTimeMillis(), s.domains, s.ipRanges, s.ja4)
+            if (feed.isTaxii) {
+                dao.setTaxiiAddedAfter(feed.id, nextAddedAfter)
+                if (s.domains + s.ipRanges + s.ja4 == 0) {
+                    dao.markError(feed.id, "no supported indicators yet (domain, IP, URL and JA4 indicators are used)")
+                }
+            }
         }.onFailure { e ->
             Log.w(TAG, "feed ${feed.id}: ${e.message}")
             dao.markError(feed.id, e.message ?: e.javaClass.simpleName)
@@ -134,6 +213,85 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         failures
     }
 
+    /**
+     * Polls a TAXII collection into [out] (the feed file) and [stateOut]
+     * (the indicator state), then moves both into place. Incremental from
+     * the stored `added_after`; a full sync when there is no state yet or
+     * the last full sync is older than [TAXII_FULL_SYNC_MS] (this catches
+     * objects deleted from the collection). Any failure leaves the previous
+     * files and state untouched. Returns the summary and the next `added_after`.
+     */
+    private suspend fun pollTaxii(feed: FeedEntity, out: File, stateOut: File): Pair<FeedSummary, String?> = coroutineScope {
+        val collection = feed.taxiiCollection ?: throw IOException("no TAXII collection selected")
+        val now = System.currentTimeMillis()
+        val previous = TaxiiState.read(stateFor(feed.id))?.takeIf { fileFor(feed.id).exists() }
+        val incremental = previous != null && feed.taxiiAddedAfter != null && now - previous.fullSyncAt <= TAXII_FULL_SYNC_MS
+        val state = if (incremental) previous!! else TaxiiState(fullSyncAt = now)
+        // Cancellation disconnects the current request (see taxiiTransport) and is checked between pages.
+        val poll = TaxiiClient(taxiiTransport(feed)).poll(feed.url, collection, if (incremental) feed.taxiiAddedAfter else null) { page ->
+            ensureActive()
+            for (o in page) Stix.item(o)?.let(state::apply)
+        }
+        val lines = state.feedLines(now)
+        val before = previous?.feedLines(now)?.total
+        FeedValidation.checkTaxiiResync(lines.total, before.takeIf { !incremental })?.let { throw IOException(it) }
+        out.bufferedWriter().use { w ->
+            w.write("# TAXII 2.1 collection $collection\n")
+            for (l in lines.domains) w.write(l + "\n")
+            for (l in lines.ips) w.write(l + "\n")
+            for (l in lines.ja4) w.write(l + "\n")
+        }
+        state.write(stateOut)
+        ensureActive()
+        if (!stateOut.renameTo(stateFor(feed.id)) || !out.renameTo(fileFor(feed.id))) throw IOException("could not store feed")
+        Log.i(
+            TAG,
+            "taxii ${feed.id}: ${if (incremental) "incremental" else "full"} poll, ${poll.pages} pages, ${poll.objects} objects, " +
+                "${state.entries.size} indicators" + if (state.dropped > 0) ", ${state.dropped} over the limit" else "",
+        )
+        FeedSummary(id = feed.id, domains = lines.domains.size, ipRanges = lines.ips.size, ja4 = lines.ja4.size) to
+            (poll.nextAddedAfter ?: feed.taxiiAddedAfter.takeIf { incremental })
+    }
+
+    /** HTTP for the TAXII client: Accept header, credentials, size cap, disconnect on cancellation. */
+    private fun CoroutineScope.taxiiTransport(feed: FeedEntity): TaxiiTransport = TaxiiTransport { url ->
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 20_000
+        conn.readTimeout = 60_000
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("Accept", TaxiiClient.MEDIA_TYPE)
+        conn.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+TAXII poller)")
+        feed.authHeader?.let { conn.setRequestProperty(feed.authHeaderName ?: "Authorization", it) }
+        val watchdog = launch(Dispatchers.IO) {
+            try {
+                awaitCancellation()
+            } finally {
+                conn.disconnect()
+            }
+        }
+        try {
+            val code = conn.responseCode
+            val body = if (code in 200..299) readCapped(conn, MAX_TAXII_PAGE_BYTES) else ""
+            val headers = conn.headerFields.orEmpty().mapNotNull { (k, v) -> k?.lowercase()?.let { it to v.lastOrNull().orEmpty() } }.toMap()
+            TaxiiResponse(code, conn.contentType, headers, body)
+        } finally {
+            watchdog.cancel()
+            conn.disconnect()
+        }
+    }
+
+    private fun readCapped(conn: HttpURLConnection, max: Long): String = conn.inputStream.use { input ->
+        val buf = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(64 * 1024)
+        while (true) {
+            val n = input.read(chunk)
+            if (n < 0) break
+            if (buf.size() + n > max) throw IOException("TAXII response larger than ${max / 1_000_000} MB")
+            buf.write(chunk, 0, n)
+        }
+        buf.toString(Charsets.UTF_8.name())
+    }
+
     /** Blocking download that still honours cancellation (WorkManager stop, REPLACE). */
     private suspend fun download(feed: FeedEntity, dest: File) = coroutineScope {
         val conn = URL(feed.url).openConnection() as HttpURLConnection
@@ -141,7 +299,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         conn.readTimeout = 60_000
         conn.instanceFollowRedirects = true
         conn.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+feed updater)")
-        feed.authHeader?.let { conn.setRequestProperty("Authorization", it) }
+        feed.authHeader?.let { conn.setRequestProperty(feed.authHeaderName ?: "Authorization", it) }
         // Disconnecting from another thread unblocks a read stuck in the socket.
         val watchdog = launch(Dispatchers.IO) {
             try {
@@ -200,6 +358,8 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         private const val TAG = "vigil.feeds"
         private const val MAX_FEED_BYTES = 150L * 1024 * 1024
         const val MAX_AGE_MS = 20L * 3600 * 1000
+        private const val MAX_TAXII_PAGE_BYTES = 32L * 1024 * 1024
+        private const val TAXII_FULL_SYNC_MS = 7L * 24 * 3600 * 1000
         private val networkConstraint = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
         /** Process-wide: serialises every feed download and the files it replaces. */

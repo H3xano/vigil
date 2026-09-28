@@ -1,6 +1,7 @@
 package dev.vigil.inspector.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -52,6 +53,10 @@ data class FlowEntity(
     val error: String? = null,
     /** null = unknown (usage access not granted). */
     val background: Boolean? = null,
+    /** Feed that lists [ja4] (engine `ja4_match.feed`); null if not listed. */
+    val ja4Feed: String? = null,
+    /** That feed's label for the fingerprint, e.g. a malware family. */
+    val ja4Label: String? = null,
 ) {
     val destination: String get() = domain ?: dstIp
     val isBlocked: Boolean get() = verdict == "block"
@@ -120,7 +125,34 @@ data class FeedEntity(
     val domains: Int = 0,
     val ipRanges: Int = 0,
     val lastError: String? = null,
-)
+    /** [FeedKinds]: what the source is and what the file may contain. */
+    @ColumnInfo(defaultValue = FeedKinds.LIST) val kind: String = FeedKinds.LIST,
+    /** Download format converted to the line format (see [Ja4Converters]); "text" needs none. */
+    @ColumnInfo(defaultValue = Ja4Converters.FORMAT_TEXT) val format: String = Ja4Converters.FORMAT_TEXT,
+    /** JA4 fingerprints in the downloaded copy. */
+    @ColumnInfo(defaultValue = "0") val ja4: Int = 0,
+    /** Header carrying [authHeader]; null means `Authorization`. */
+    val authHeaderName: String? = null,
+    /** TAXII: collection id ([url] is the API root). */
+    val taxiiCollection: String? = null,
+    /** TAXII: `added_after` for the next incremental poll (server timestamp). */
+    val taxiiAddedAfter: String? = null,
+) {
+    val isTaxii: Boolean get() = kind == FeedKinds.TAXII
+    val entries: Int get() = domains + ipRanges + ja4
+}
+
+/** Values of [FeedEntity.kind]. */
+object FeedKinds {
+    /** A downloaded list of domains and/or IP ranges (JA4 lines are matched too). */
+    const val LIST = "list"
+
+    /** A downloaded list of JA4 fingerprints (engine category `ja4`). */
+    const val JA4 = "ja4"
+
+    /** A TAXII 2.1 collection polled incrementally; may hold domains, IPs and JA4. */
+    const val TAXII = "taxii"
+}
 
 data class AppUsage(
     val pkg: String,
@@ -311,14 +343,17 @@ interface FeedDao {
     suspend fun setEnabled(id: String, enabled: Boolean)
 
     /** Targeted updates: unlike an upsert they cannot resurrect a feed deleted meanwhile. Return the rows changed. */
-    @Query("UPDATE feeds SET lastUpdated = :ts, domains = :domains, ipRanges = :ipRanges, lastError = NULL WHERE id = :id")
-    suspend fun markUpdated(id: String, ts: Long, domains: Int, ipRanges: Int): Int
+    @Query("UPDATE feeds SET lastUpdated = :ts, domains = :domains, ipRanges = :ipRanges, ja4 = :ja4, lastError = NULL WHERE id = :id")
+    suspend fun markUpdated(id: String, ts: Long, domains: Int, ipRanges: Int, ja4: Int): Int
+
+    @Query("UPDATE feeds SET taxiiAddedAfter = :addedAfter WHERE id = :id")
+    suspend fun setTaxiiAddedAfter(id: String, addedAfter: String?): Int
 
     @Query("UPDATE feeds SET lastError = :error WHERE id = :id")
     suspend fun markError(id: String, error: String): Int
 
     /** The downloaded copy was deleted (feed disabled). */
-    @Query("UPDATE feeds SET lastUpdated = NULL, domains = 0, ipRanges = 0, lastError = NULL WHERE id = :id")
+    @Query("UPDATE feeds SET lastUpdated = NULL, domains = 0, ipRanges = 0, ja4 = 0, taxiiAddedAfter = NULL, lastError = NULL WHERE id = :id")
     suspend fun clearDownload(id: String)
 
     @Query("DELETE FROM feeds WHERE id = :id AND builtin = 0")
@@ -327,7 +362,7 @@ interface FeedDao {
 
 @Database(
     entities = [FlowEntity::class, DnsEntity::class, AlertEntity::class, DestinationEntity::class, FeedEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class VigilDatabase : RoomDatabase() {
@@ -341,7 +376,7 @@ abstract class VigilDatabase : RoomDatabase() {
         fun create(context: Context): VigilDatabase =
             Room.databaseBuilder(context, VigilDatabase::class.java, "vigil.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
 
         /**
@@ -353,6 +388,24 @@ abstract class VigilDatabase : RoomDatabase() {
                 for (sql in MIGRATION_1_2_SQL) db.execSQL(sql)
             }
         }
+
+        /** JA4 match columns on flows; feed kind, format, JA4 count and TAXII state on feeds. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (sql in MIGRATION_2_3_SQL) db.execSQL(sql)
+            }
+        }
+
+        val MIGRATION_2_3_SQL = listOf(
+            "ALTER TABLE `flows` ADD COLUMN `ja4Feed` TEXT",
+            "ALTER TABLE `flows` ADD COLUMN `ja4Label` TEXT",
+            "ALTER TABLE `feeds` ADD COLUMN `kind` TEXT NOT NULL DEFAULT 'list'",
+            "ALTER TABLE `feeds` ADD COLUMN `format` TEXT NOT NULL DEFAULT 'text'",
+            "ALTER TABLE `feeds` ADD COLUMN `ja4` INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE `feeds` ADD COLUMN `authHeaderName` TEXT",
+            "ALTER TABLE `feeds` ADD COLUMN `taxiiCollection` TEXT",
+            "ALTER TABLE `feeds` ADD COLUMN `taxiiAddedAfter` TEXT",
+        )
 
         val MIGRATION_1_2_SQL = listOf(
             "DROP INDEX IF EXISTS `index_flows_domain`",

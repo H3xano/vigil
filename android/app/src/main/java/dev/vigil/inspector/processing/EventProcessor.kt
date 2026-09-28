@@ -146,6 +146,7 @@ class EventProcessor(
         dstPort = dstPort, domain = domain, domainSource = domainSource, appProto = appProto, alpn = alpn,
         tlsVersion = tlsVersion, ja4 = ja4, ech = ech, httpMethod = httpMethod, verdict = verdict ?: "allow",
         reason = reason, tags = tags.joinToString(","), background = foreground.isBackground(app.key),
+        ja4Feed = ja4Match?.feed, ja4Label = ja4Match?.label,
     )
 
     private class Seen(val first: FlowEntity, var count: Long = 0, var minTs: Long = Long.MAX_VALUE, var maxTs: Long = Long.MIN_VALUE)

@@ -26,12 +26,18 @@ data class FlowEvent(
     val alpn: String? = null,
     @SerialName("tls_version") val tlsVersion: String? = null,
     val ja4: String? = null,
+    /** Set when [ja4] is listed by a loaded feed. */
+    @SerialName("ja4_match") val ja4Match: Ja4Match? = null,
     val ech: Boolean = false,
     @SerialName("http_method") val httpMethod: String? = null,
     val verdict: String? = null,
     val reason: String? = null,
     val tags: List<String> = emptyList(),
 ) : EngineEvent
+
+/** A flow's JA4 fingerprint is listed by [feed]; [rule] is the entry (`a_b_*` for wildcards). */
+@Serializable
+data class Ja4Match(val feed: String, val rule: String, val label: String? = null)
 
 @Serializable
 @SerialName("flow_end")
@@ -103,6 +109,7 @@ data class FeedSummary(
     val id: String = "",
     val domains: Int = 0,
     @SerialName("ip_ranges") val ipRanges: Int = 0,
+    val ja4: Int = 0,
     @SerialName("rejected_lines") val rejectedLines: Int = 0,
     @SerialName("memory_bytes") val memoryBytes: Long = 0,
 )

@@ -62,6 +62,7 @@ class AlertNotifier(private val context: Context, private val apps: AppResolver)
         fun titleFor(kind: String) = when (kind) {
             "threat_domain" -> "threat domain blocked"
             "threat_ip" -> "threat IP blocked"
+            "threat_ja4" -> "known malicious TLS fingerprint"
             "beacon" -> "periodic beaconing"
             "encrypted_dns" -> "encrypted DNS in use"
             "hardcoded_dns" -> "bypasses system DNS"

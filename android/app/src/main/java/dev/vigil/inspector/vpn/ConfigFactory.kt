@@ -24,6 +24,7 @@ object ConfigFactory {
             upstreamDns = upstreams,
             sinkhole = s.sinkhole,
             blockEncryptedDns = s.blockEncryptedDns,
+            blockJa4Matches = s.blockJa4Matches,
             blockedUids = blockedUids,
             allowDomains = s.allowDomains.sorted(),
             denyDomains = s.denyDomains.sorted(),

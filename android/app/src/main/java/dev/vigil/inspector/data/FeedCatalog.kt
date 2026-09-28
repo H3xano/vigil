@@ -43,9 +43,20 @@ object FeedCatalog {
             "TikTok's tracking and telemetry endpoints."),
         feed("native-amazon", "Amazon telemetry", "$HAGEZI/wildcard/native.amazon-onlydomains.txt", "tracking", false,
             "Amazon device and app telemetry."),
+        // FoxIO's sample JA4+ mapping: the only openly downloadable JA4 list with malware entries (ja4db.com now
+        // needs an account). Converted at download time; only rows naming malware or C2 tooling are kept.
+        // Off by default: a handful of entries, and the Sliver fingerprint is also Go's default TLS client.
+        FeedEntity(
+            id = "foxio-ja4-mapping", name = "FoxIO JA4+ mapping (malware rows)",
+            url = "https://raw.githubusercontent.com/FoxIO-LLC/ja4/main/ja4plus-mapping.csv",
+            category = "ja4", enabled = false, builtin = true, kind = FeedKinds.JA4, format = Ja4Converters.FORMAT_FOXIO_MAPPING,
+            description = "JA4 fingerprints of Sliver, Cobalt Strike and IcedID from FoxIO's reference mapping. " +
+                "Small and prone to false positives: Sliver's fingerprint is Go's default TLS client, which some " +
+                "legitimate apps also use.",
+        ),
     )
 
-    val categories = listOf("malware", "phishing", "c2", "tracking", "ads", "custom")
+    val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom")
 
     private fun feed(id: String, name: String, url: String, category: String, enabled: Boolean, description: String) =
         FeedEntity(id = id, name = name, url = url, category = category, enabled = enabled, builtin = true, description = description)
