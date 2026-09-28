@@ -335,6 +335,14 @@ mod tests {
         assert_eq!(c.upstream.wireguard.as_ref().unwrap().mtu, 1280);
         let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
+        // Verbatim from ConfigFactoryTest.kt (nulls omitted, as the app sends).
+        for app in [
+            r#"{"upstream":{"mode":"direct","fail_closed":true,"network_id":"100"}}"#,
+            r#"{"upstream":{"mode":"wireguard","fail_closed":true,"wireguard":{"private_key":"YAnz4CFg6SqZkWpBHQ3K3G3oN6bT9x5cyTqQyzQ8bVE=","peer_public_key":"xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=","endpoint":"vpn.example.com:51820","addresses":["10.64.0.2/32","fd00::2/128"],"allowed_ips":["0.0.0.0/0","::/0"],"mtu":1280,"persistent_keepalive":25},"network_id":"101"}}"#,
+            r#"{"upstream":{"mode":"socks5","fail_closed":false,"socks5":{"server":"[::1]:9050","username":"u","password":"secret","send_domain":true,"udp":"block"},"network_id":""}}"#,
+        ] {
+            Config::from_json(app).unwrap();
+        }
     }
 
     #[test]

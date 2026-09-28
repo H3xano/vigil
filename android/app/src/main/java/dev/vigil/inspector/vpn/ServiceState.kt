@@ -17,6 +17,8 @@ data class NetworkInfo(
     val privateDnsActive: Boolean = false,
     /** NAT64 prefixes of the underlying network (CIDR), API 30+. */
     val nat64Prefixes: List<String> = emptyList(),
+    /** Handle of the underlying network; a change makes a WireGuard upstream roam. */
+    val networkId: String = "",
 )
 
 /** Process-wide observable state of the inspector service. */

@@ -47,6 +47,8 @@ data class Settings(
     val notifyAlerts: Boolean = true,
     val retentionDays: Int = 7,
     val export: ExportSettings = ExportSettings(),
+    /** Route relayed traffic through a WireGuard peer or SOCKS5 proxy. */
+    val upstream: UpstreamSettings = UpstreamSettings(),
     val deviceId: String = "",
     val onboarded: Boolean = false,
 )

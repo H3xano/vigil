@@ -1,8 +1,12 @@
 package dev.vigil.inspector.vpn
 
 import dev.vigil.inspector.data.Settings
+import dev.vigil.inspector.data.Socks5Settings
+import dev.vigil.inspector.data.UpstreamSettings
+import dev.vigil.inspector.data.WireGuardSettings
 import dev.vigil.inspector.engine.EngineConfig
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -55,6 +59,67 @@ class ConfigFactoryTest {
         assertEquals(EngineConfig.FALLBACK_UPSTREAMS, ConfigFactory.build(s, emptyList(), emptyList()).upstreamDns)
         val custom = s.copy(upstreamMode = "custom", customUpstreams = listOf("8.8.8.8", "bogus"))
         assertEquals(listOf("8.8.8.8:53"), ConfigFactory.build(custom, listOf("192.168.1.1:53"), emptyList()).upstreamDns)
+    }
+
+    private val wg = WireGuardSettings(
+        privateKey = "YAnz4CFg6SqZkWpBHQ3K3G3oN6bT9x5cyTqQyzQ8bVE=",
+        addresses = listOf("10.64.0.2/32", "fd00::2/128"),
+        dns = listOf("10.64.0.1", "fd00::1"),
+        peerPublicKey = "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=",
+        endpoint = "vpn.example.com:51820",
+        allowedIps = listOf("0.0.0.0/0", "::/0"),
+        persistentKeepalive = 25,
+    )
+
+    @Test
+    fun directByDefault() {
+        val json = ConfigFactory.build(Settings(), emptyList(), emptyList(), networkId = "100").toJson()
+        assertTrue(json, json.contains("\"upstream\":{\"mode\":\"direct\",\"fail_closed\":true,\"network_id\":\"100\"}"))
+    }
+
+    @Test
+    fun wireguardSectionAndTunnelDns() {
+        val s = Settings(upstream = UpstreamSettings(mode = "wireguard", wireguard = wg))
+        val cfg = ConfigFactory.build(s, listOf("192.168.1.1:53"), emptyList(), networkId = "101")
+        // The tunnel's resolvers replace the network's.
+        assertEquals(listOf("10.64.0.1:53", "[fd00::1]:53"), cfg.upstreamDns)
+        val json = cfg.toJson()
+        val expected = "\"upstream\":{\"mode\":\"wireguard\",\"fail_closed\":true,\"wireguard\":{" +
+            "\"private_key\":\"${wg.privateKey}\",\"peer_public_key\":\"${wg.peerPublicKey}\",\"endpoint\":\"vpn.example.com:51820\"," +
+            "\"addresses\":[\"10.64.0.2/32\",\"fd00::2/128\"],\"allowed_ips\":[\"0.0.0.0/0\",\"::/0\"],\"mtu\":1280," +
+            "\"persistent_keepalive\":25},\"network_id\":\"101\"}"
+        assertTrue(json, json.contains(expected))
+        // Secrets never reach logs.
+        val log = cfg.toLogJson()
+        assertFalse(log.contains(wg.privateKey))
+        assertTrue(log.contains(wg.peerPublicKey))
+        // Without tunnel DNS, public resolvers (through the tunnel), not the LAN's.
+        val noDns = s.copy(upstream = s.upstream.copy(wireguard = wg.copy(dns = emptyList(), mtu = 1400)))
+        val c2 = ConfigFactory.build(noDns, listOf("192.168.1.1:53"), emptyList())
+        assertEquals(EngineConfig.FALLBACK_UPSTREAMS, c2.upstreamDns)
+        assertEquals(1400, c2.upstream.wireguard!!.mtu)
+        // Chosen but never imported: passed on so the engine refuses to start.
+        val missing = ConfigFactory.build(Settings(upstream = UpstreamSettings(mode = "wireguard")), emptyList(), emptyList())
+        assertEquals("wireguard", missing.upstream.mode)
+        assertNull(missing.upstream.wireguard)
+    }
+
+    @Test
+    fun socks5Section() {
+        val socks = Socks5Settings(host = "::1", port = 9050, username = "u", password = "secret", sendDomain = true, udp = "block", proxyApp = "org.torproject.android")
+        val s = Settings(upstream = UpstreamSettings(mode = "socks5", failClosed = false, socks5 = socks), upstreamMode = "network")
+        val cfg = ConfigFactory.build(s, listOf("192.168.1.1:53"), emptyList())
+        assertEquals(EngineConfig.FALLBACK_UPSTREAMS, cfg.upstreamDns)
+        val json = cfg.toJson()
+        val expected = "\"upstream\":{\"mode\":\"socks5\",\"fail_closed\":false,\"socks5\":{\"server\":\"[::1]:9050\"," +
+            "\"username\":\"u\",\"password\":\"secret\",\"send_domain\":true,\"udp\":\"block\"},\"network_id\":\"\"}"
+        assertTrue(json, json.contains(expected))
+        assertFalse(cfg.toLogJson().contains("secret"))
+        // A custom resolver choice is kept (and reached through the proxy).
+        val custom = s.copy(upstreamMode = "custom", customUpstreams = listOf("9.9.9.9"))
+        assertEquals(listOf("9.9.9.9:53"), ConfigFactory.build(custom, emptyList(), emptyList()).upstreamDns)
+        assertEquals("127.0.0.1:9050", ConfigFactory.hostPort(" 127.0.0.1 ", 9050))
+        assertEquals("[2001:db8::1]:1080", ConfigFactory.hostPort("[2001:db8::1]", 1080))
     }
 
     @Test

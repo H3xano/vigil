@@ -38,6 +38,27 @@ class EngineJsonTest {
     }
 
     @Test
+    fun upstreamFields() {
+        val events = EngineJson.parseBatch(
+            """[
+              {"type":"flow","id":2,"ts":2,"proto":"udp","uid":null,"src":"10.111.222.1:5000","dst_ip":"1.1.1.1","dst_port":443,
+               "domain":null,"domain_source":null,"app_proto":null,"alpn":null,"tls_version":null,"ja4":null,"ech":false,
+               "http_method":null,"verdict":"allow","reason":null,"tags":[],"via":"wireguard"},
+              {"type":"stats","ts":7,"packets_in":1,"packets_out":2,"bytes_in":3,"bytes_out":4,"tcp_active":0,"udp_active":1,
+               "flows_total":9,"dns_queries":15,"blocked":6,"dropped_packets":3,"dropped_events":0,"dns_cache_size":10,
+               "upstream":{"mode":"wireguard","state":"up","fail_closed":true,"endpoint":"198.51.100.1:51820",
+                           "handshake_age_s":42,"tx_bytes":1000,"rx_bytes":5000,"last_error":null,"udp":null}}
+            ]""",
+        )
+        assertEquals("wireguard", (events[0] as FlowEvent).via)
+        val up = (events[1] as StatsEvent).upstream!!
+        assertEquals("up", up.state)
+        assertEquals(42L, up.handshakeAgeS)
+        assertEquals(5000L, up.rxBytes)
+        assertEquals("198.51.100.1:51820", up.endpoint)
+    }
+
+    @Test
     fun garbageYieldsEmptyBatch() {
         assertTrue(EngineJson.parseBatch("not json").isEmpty())
         assertTrue(EngineJson.parseBatch("{}").isEmpty())

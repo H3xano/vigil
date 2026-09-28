@@ -110,6 +110,8 @@ class VigilVpnService : android.net.VpnService() {
         val engine: EngineHandle,
         val processor: EventProcessor,
         val excludeLan: Boolean,
+        /** App excluded from the VPN as the SOCKS5 proxy (e.g. Orbot). */
+        val excludedPackage: String?,
         /** The configuration the engine currently runs with. */
         @Volatile var applied: EngineConfig,
     ) {
@@ -296,6 +298,16 @@ class VigilVpnService : android.net.VpnService() {
         } catch (e: Exception) {
             Log.w(TAG, "could not exclude self from VPN; relying on protect()", e)
         }
+        // A proxy app (e.g. Orbot) must reach the internet itself, not loop
+        // back through vigil into its own proxy.
+        val excluded = settings.upstream.excludedPackage
+        excluded?.let { pkg ->
+            try {
+                builder.addDisallowedApplication(pkg)
+            } catch (e: Exception) {
+                Log.w(TAG, "could not exclude proxy app $pkg from the VPN", e)
+            }
+        }
         VpnRoutes.ipv4(settings.excludeLan).forEach { builder.addRoute(it.address, it.prefix) }
         VpnRoutes.ipv6(settings.excludeLan, net.nat64Prefixes).forEach { builder.addRoute(it.address, it.prefix) }
 
@@ -317,7 +329,7 @@ class VigilVpnService : android.net.VpnService() {
         val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id) { message ->
             commands.trySend(Command.EngineError(id, message))
         }
-        return Result.success(Session(id, pfd, EngineHandle(handle), processor, settings.excludeLan, config))
+        return Result.success(Session(id, pfd, EngineHandle(handle), processor, settings.excludeLan, excluded, config))
     }
 
     /**
@@ -442,7 +454,7 @@ class VigilVpnService : android.net.VpnService() {
     }
 
     private fun buildConfig(s: Settings, net: NetworkInfo): EngineConfig =
-        ConfigFactory.build(s, net.upstreamDns, app.apps.uidsFor(s.blockedPackages), net.nat64Prefixes)
+        ConfigFactory.build(s, net.upstreamDns, app.apps.uidsFor(s.blockedPackages), net.nat64Prefixes, net.networkId)
 
     /**
      * Pushes engine-relevant setting, network and package changes into the
@@ -455,14 +467,17 @@ class VigilVpnService : android.net.VpnService() {
     private suspend fun applyConfigChanges(s: Session) {
         combine(app.settings.flow, ServiceState.network, packagesChanged) { st, net, _ -> st to net }
             .debounce(300)
-            .map { (st, net) -> st.excludeLan to buildConfig(st, net) }
+            .map { (st, net) -> Triple(st.excludeLan, st.upstream.excludedPackage, buildConfig(st, net)) }
             .distinctUntilChanged()
-            .collect { (excludeLan, config) ->
-                if (excludeLan != s.excludeLan) {
-                    // Routes can only change by re-establishing the interface.
-                    commands.trySend(Command.Restart(s.id, "LAN exclusion changed"))
+            .collect { (excludeLan, excludedPackage, config) ->
+                if (excludeLan != s.excludeLan || excludedPackage != s.excludedPackage) {
+                    // Routes and excluded apps can only change by
+                    // re-establishing the interface.
+                    commands.trySend(Command.Restart(s.id, "VPN routes or excluded apps changed"))
                     return@collect
                 }
+                // The upstream path (direct/WireGuard/SOCKS5) changes in place:
+                // the engine rebuilds its dialer; open connections keep theirs.
                 if (config == s.applied) return@collect
                 val ok = s.engine.use { VigilNative.nativeUpdateConfig(it, config.toJson()) } ?: return@collect
                 if (ok) {
@@ -471,7 +486,7 @@ class VigilVpnService : android.net.VpnService() {
                     notifications.cancel(NOTIFICATION_CONFIG_ID)
                 } else {
                     val msg = "The engine rejected the new settings; the previous settings stay active."
-                    Log.e(TAG, "$msg ${config.toJson()}")
+                    Log.e(TAG, "$msg ${config.toLogJson()}")
                     ServiceState.configError.value = msg
                     postProblem(NOTIFICATION_CONFIG_ID, "Settings not applied", msg, AlertNotifier.CHANNEL_SERVICE)
                 }
@@ -501,6 +516,7 @@ class VigilVpnService : android.net.VpnService() {
             privateDnsStrictHost = props?.privateDnsServerName,
             privateDnsActive = props?.isPrivateDnsActive == true,
             nat64Prefixes = nat64,
+            networkId = network?.networkHandle?.toString().orEmpty(),
         )
         ServiceState.network.value = info
         return info
