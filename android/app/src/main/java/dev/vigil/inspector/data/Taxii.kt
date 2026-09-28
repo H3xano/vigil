@@ -29,7 +29,16 @@ data class TaxiiPollResult(val pages: Int, val objects: Int, val nextAddedAfter:
  * collections and paginated object retrieval. The HTTP layer is injected, so
  * the logic is testable on the JVM.
  */
-class TaxiiClient(private val http: TaxiiTransport) {
+class TaxiiClient(
+    private val http: TaxiiTransport,
+    /**
+     * The URL the user entered, when credentials are configured: API roots
+     * listed by discovery that are on another host or use plain HTTP (see
+     * [FeedHttp.mayCarryCredential]) are then refused, so the credentials
+     * are never stored for (and later sent to) a host the user did not enter.
+     */
+    private val credentialOrigin: String? = null,
+) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
@@ -46,7 +55,12 @@ class TaxiiClient(private val http: TaxiiTransport) {
         var lastError: IOException? = null
         for (root in roots.take(MAX_API_ROOTS)) {
             try {
-                out += collectionsOf(resolve(url, root))
+                val resolved = resolve(url, root)
+                credentialOrigin?.let { origin ->
+                    val allowed = runCatching { FeedHttp.mayCarryCredential(java.net.URL(origin), java.net.URL(resolved)) }.getOrDefault(false)
+                    if (!allowed) throw IOException("API root $resolved is on another host or uses plain HTTP; vigil does not send the credentials there")
+                }
+                out += collectionsOf(resolved)
             } catch (e: IOException) {
                 lastError = e
             }
