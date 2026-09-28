@@ -7,7 +7,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 (cd "$root/core" && cargo build -q --release -p vigil-cli)
 cli="$root/core/target/release/vigil-cli"
 bytes="${BYTES:-50000000}"
-work="$(mktemp -d)"; trap 'kill ${pid:-0} ${srv:-0} 2>/dev/null || true; rm -rf "$work"' EXIT
+# Unset pids expand to nothing: `kill 0` would signal the whole process group.
+work="$(mktemp -d)"; trap 'kill ${pid:-} ${srv:-} 2>/dev/null || true; rm -rf "$work"' EXIT
 if [ "${LOCAL:-0}" = 1 ]; then
   # Serve a file from this host to measure the engine's own ceiling.
   host_ip="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
@@ -30,6 +31,7 @@ tunneled=$(unshare -rnm bash -c '
 cpu=$(ps -o times= -p $pid | tr -d ' ')
 rss=$(ps -o rss= -p $pid | tr -d ' ')
 kill -INT $pid; wait $pid || true
+unset pid
 LC_ALL=C awk -v d="$direct" -v t="$tunneled" -v c="$cpu" -v r="$rss" -v b="$bytes" 'BEGIN {
   printf "direct:    %7.1f Mbit/s\n", d*8/1e6
   printf "via vigil: %7.1f Mbit/s (%.0f%% of direct)\n", t*8/1e6, 100*t/d
