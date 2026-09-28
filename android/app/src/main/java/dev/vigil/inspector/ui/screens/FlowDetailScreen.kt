@@ -90,6 +90,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 AsnDatabase.label(f.asn, f.asnName)?.let { l -> l + (f.asnCountry?.let { " · registered in $it" } ?: "") },
                 help = Glossary.ASN,
             )
+            TrackerFields(f.domain)
             Field("Path", when (f.via) {
                 "direct" -> "Direct"
                 "wireguard" -> "Through the WireGuard tunnel"

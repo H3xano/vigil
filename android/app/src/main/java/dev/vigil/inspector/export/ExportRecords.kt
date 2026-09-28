@@ -1,6 +1,7 @@
 package dev.vigil.inspector.export
 
 import dev.vigil.inspector.data.AppInfo
+import dev.vigil.inspector.data.TrackerMatch
 import dev.vigil.inspector.engine.AlertEvent
 import dev.vigil.inspector.engine.DnsEvent
 import dev.vigil.inspector.engine.FlowEndEvent
@@ -218,6 +219,36 @@ object ExportRecords {
     }
 
     fun eventId(record: JsonObject): String? = ((record["event"] as? JsonObject)?.get("id") as? JsonPrimitive)?.content
+
+    // --- Tracker labels (vigil.tracker.*) ---
+
+    /** The destination name of a flow (`destination.domain`) or DNS record (`dns.question.name`). */
+    fun recordDomain(record: JsonObject): String? {
+        fun JsonElement?.o() = this as? JsonObject
+        fun JsonElement?.s() = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+        return when (record["vigil"].o()?.get("type").s()) {
+            "flow" -> record["destination"].o()?.get("domain").s()
+            "dns" -> record["dns"].o()?.get("question").o()?.get("name").s()
+            else -> null
+        }
+    }
+
+    /** `vigil.tracker`: `id`, `name`, `company` (when known), `category` (companiesdb key) and the listed `domain`. */
+    fun trackerFields(m: TrackerMatch): JsonObject = obj(
+        "id" to m.tracker.id, "name" to m.tracker.name, "company" to m.tracker.companyName,
+        "category" to m.tracker.category, "domain" to m.domain,
+    )
+
+    /**
+     * Adds `vigil.tracker` to a flow or DNS record whose name has a tracker
+     * label ([label]); other records are returned unchanged.
+     */
+    fun withTracker(record: JsonObject, label: (String?) -> TrackerMatch?): JsonObject {
+        val domain = recordDomain(record) ?: return record
+        val m = label(domain) ?: return record
+        val vigil = record["vigil"] as? JsonObject ?: JsonObject(emptyMap())
+        return JsonObject(record + ("vigil" to JsonObject(vigil + ("tracker" to trackerFields(m)))))
+    }
 }
 
 /** RFC 5424 syslog framing and HTTP body formats. */

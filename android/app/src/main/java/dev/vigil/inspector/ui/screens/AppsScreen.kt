@@ -60,6 +60,7 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
     val apps by vm.appsWeek.collectAsStateWithLifecycle()
     val days by vm.appWindowDays.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val trackerCounts by vm.appTrackerCounts.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
     val label = rememberAppLabels(vm, apps.map { it.pkg })
     val filtered = apps.filter { query.isBlank() || label(it.pkg).contains(query, true) || it.pkg.contains(query, true) }
@@ -96,6 +97,7 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        trackerCounts[a.pkg]?.let { Tag(plural(it.toLong(), "tracker"), VigilColors.Medium) }
                         if (a.pkg in settings.blockedPackages) Tag("NO NETWORK", VigilColors.Block, filled = true)
                         else if (a.blocked > 0) Tag("${formatCount(a.blocked)} blocked", VigilColors.Block, filled = true)
                     }
@@ -169,6 +171,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                     StatTile("Alerts", alerts.size.toString(), Modifier.weight(1f), accent = if (alerts.isNotEmpty()) VigilColors.Medium else MaterialTheme.colorScheme.primary)
                 }
             }
+            item { AppTrackersSection(vm, pkg, days) }
             item {
                 SecondaryTabRow(selectedTabIndex = tab) {
                     listOf("Hosts", "Flows", "DNS", "Alerts").forEachIndexed { i, t ->

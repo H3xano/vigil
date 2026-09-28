@@ -1,0 +1,97 @@
+{
+	"_attribution": "Excerpt of AdGuard companiesdb (https://github.com/AdguardTeam/companiesdb, dist/ files of 2026-09-28), CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/). Trimmed for vigil's unit tests; descriptions shortened.",
+	"timeUpdated": "2026-09-28T10:12:19.506Z",
+	"categories": {
+		"0": "audio_video_player",
+		"1": "comments",
+		"2": "customer_interaction",
+		"3": "pornvertising",
+		"4": "advertising",
+		"5": "essential",
+		"6": "site_analytics",
+		"7": "social_media",
+		"8": "misc",
+		"9": "cdn",
+		"10": "hosting",
+		"11": "unknown",
+		"12": "extensions",
+		"13": "email",
+		"14": "consent",
+		"15": "telemetry",
+		"101": "mobile_analytics"
+	},
+	"trackers": {
+		"aaxads.com": {
+			"name": "Acceptable Ads Exchange",
+			"categoryId": 4,
+			"url": "https://aax.media/",
+			"companyId": null
+		},
+		"appsflyer": {
+			"name": "AppsFlyer",
+			"categoryId": 101,
+			"url": "https://www.appsflyer.com/",
+			"companyId": "appsflyer",
+			"source": "AdGuard"
+		},
+		"crashlytics": {
+			"name": "Crashlytics",
+			"categoryId": 101,
+			"url": "https://crashlytics.com/",
+			"companyId": "google",
+			"source": "AdGuard"
+		},
+		"facebook": {
+			"name": "Facebook",
+			"categoryId": 4,
+			"url": "https://www.facebook.com",
+			"companyId": "meta",
+			"source": "AdGuard"
+		},
+		"facebook_audience": {
+			"name": "Facebook Audience Network",
+			"categoryId": 4,
+			"url": "https://www.facebook.com/business/products/audience-network",
+			"companyId": "meta",
+			"source": "AdGuard"
+		},
+		"firebase": {
+			"name": "Firebase",
+			"categoryId": 101,
+			"url": "https://firebase.google.com/",
+			"companyId": "google",
+			"source": "AdGuard"
+		},
+		"google_analytics": {
+			"name": "Google Analytics",
+			"categoryId": 6,
+			"url": "http://www.google.com/analytics/",
+			"companyId": "google"
+		},
+		"google_marketing": {
+			"name": "Google Marketing",
+			"categoryId": 4,
+			"url": "https://marketingplatform.google.com/about/enterprise",
+			"companyId": "google",
+			"source": "AdGuard"
+		},
+		"googleapis.com": {
+			"name": "Google APIs",
+			"categoryId": 9,
+			"url": "https://www.googleapis.com/",
+			"companyId": "google"
+		}
+	},
+	"trackerDomains": {
+		"doubleclick.net": "google_marketing",
+		"google-analytics.com": "google_analytics",
+		"app-measurement.com": "firebase",
+		"firebaselogging-pa.googleapis.com": "firebase",
+		"googleapis.com": "googleapis.com",
+		"graph.facebook.com": "facebook_audience",
+		"facebook.com": "facebook",
+		"appsflyer.com": "appsflyer",
+		"aaxads.com": "aaxads.com",
+		"crashlytics.com": "crashlytics"
+	}
+}

@@ -51,6 +51,7 @@ import dev.vigil.inspector.data.FeedCatalog
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.FeedKinds
+import dev.vigil.inspector.data.TrackerDatabase
 import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.ui.Glossary
@@ -70,6 +71,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
     val loaded by vm.loadedFeeds.collectAsStateWithLifecycle()
     val work by vm.feedWork.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val trackersLoaded = rememberTrackerIndex() != null
     // Open dialogs survive rotation: the Add feed draft in memory (it may hold credentials), the delete target by id.
     val adding = rememberRetained("feeds.add") { null as FeedDraft? }
     var confirmDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -127,11 +129,12 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                             SectionTitle("Network (ASN) data")
                             HelpIcon("ASN", Glossary.ASN)
                         }
+                        TrackerDatabase.CATEGORY -> TrackerLabelsHeader()
                         else -> SectionTitle(category)
                     }
                 }
                 items(groups.getValue(category), key = { it.id }) { f ->
-                    FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDeleteId = f.id })
+                    FeedRow(f, active = f.id in loaded || (f.kind == FeedKinds.TRACKERS && f.enabled && trackersLoaded), onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDeleteId = f.id })
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
