@@ -61,6 +61,34 @@ struct TcpSocketControl {
     last_state: TcpState,
     // vigil patch: when the socket was first seen in TIME-WAIT.
     time_wait_since: Option<Instant>,
+    // vigil patch: when the socket was first seen in LISTEN.
+    listen_since: Option<Instant>,
+    // vigil patch: woken when send_state becomes Closed (the connection is
+    // gone), see TcpAbortHandle::closed.
+    closed_waker: Option<Waker>,
+}
+
+impl TcpSocketControl {
+    // vigil patch: marks both halves closed and wakes every waiter.
+    fn close_and_wake(&mut self) {
+        self.send_state = TcpSocketState::Closed;
+        self.recv_state = TcpSocketState::Closed;
+        self.wake_all();
+    }
+
+    // vigil patch.
+    fn wake_all(&mut self) {
+        for waker in [
+            self.send_waker.take(),
+            self.recv_waker.take(),
+            self.closed_waker.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            waker.wake();
+        }
+    }
 }
 
 // vigil patch: how long a socket stays in TIME-WAIT before it is removed.
@@ -70,6 +98,28 @@ struct TcpSocketControl {
 // second). On a virtual link to a local app, 1 s still absorbs a
 // retransmitted FIN; a later one gets a RST.
 const TIME_WAIT_REAP: Duration = Duration::from_secs(1);
+
+// vigil patch: sockets are created in LISTEN for one SYN, which is queued
+// before the socket is added and processed by the next poll. One still in
+// LISTEN after this long never took its SYN; it would only swallow a later
+// SYN to the same destination (see `is_zombie_listen`).
+const LISTEN_REAP: Duration = Duration::from_secs(10);
+
+// vigil patch: whether a socket is back in (or stuck in) LISTEN, i.e. dead.
+// smoltcp flips a socket in SYN-RECEIVED that receives a RST back to LISTEN
+// with no tuple (socket/tcp.rs, "RSTs in SYN-RECEIVED"), instead of closing
+// it. That happens when the app gives up before the handshake completes and
+// its kernel resets our late SYN-ACK. Treated as live, such a socket kept
+// its stream, the relay and the upstream socket open for up to the 2 h
+// timeout, and, listening on the destination address, accepted the next
+// SYN to that ip:port from any app (wrong flow and uid).
+fn is_zombie_listen(control: &mut TcpSocketControl, state: TcpState, now: Instant) -> bool {
+    if state != TcpState::Listen {
+        return false;
+    }
+    let since = *control.listen_since.get_or_insert(now);
+    control.last_state != TcpState::Listen || now - since >= LISTEN_REAP
+}
 
 struct TcpSocketCreation {
     control: SharedControl,
@@ -103,15 +153,7 @@ fn remove_stale_sockets(
     for handle in stale {
         trace!("replacing a stale socket for {} <-> {}", src_addr, dst_addr);
         if let Some(control) = sockets.remove(&handle) {
-            let mut control = control.lock();
-            control.send_state = TcpSocketState::Closed;
-            control.recv_state = TcpSocketState::Closed;
-            if let Some(waker) = control.send_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = control.recv_waker.take() {
-                waker.wake();
-            }
+            control.lock().close_and_wake();
         }
         socket_set.remove(handle);
     }
@@ -196,7 +238,9 @@ impl TcpListenerRunner {
             let dst_addr = SocketAddr::new(dst_ip, dst_port);
 
             // TCP first handshake packet, create a new Connection
-            if packet.syn() && !packet.ack() {
+            // vigil patch: not for SYN|RST, which is invalid; it would
+            // replace the live socket of the 4-tuple (remove_stale_sockets).
+            if packet.syn() && !packet.ack() && !packet.rst() {
                 let mut socket = TcpSocket::new(
                     TcpSocketBuffer::new(vec![0u8; tcp_recv_buffer_size as usize]),
                     TcpSocketBuffer::new(vec![0u8; tcp_send_buffer_size as usize]),
@@ -225,6 +269,8 @@ impl TcpListenerRunner {
                     reset: false,
                     last_state: TcpState::Listen,
                     time_wait_since: None,
+                    listen_since: None,
+                    closed_waker: None,
                 }));
 
                 stream_tx
@@ -289,6 +335,7 @@ impl TcpListenerRunner {
             // Check all the sockets' status
             let mut sockets_to_remove = Vec::new();
             let mut any_time_wait = false;
+            let mut any_listen = false;
 
             for (socket_handle, control) in sockets.iter() {
                 let socket_handle = *socket_handle;
@@ -302,8 +349,16 @@ impl TcpListenerRunner {
                     before_poll - since >= TIME_WAIT_REAP
                 };
 
+                // vigil patch: a socket that fell back to LISTEN was reset.
+                any_listen |= socket.state() == TcpState::Listen;
+                let zombie = is_zombie_listen(&mut control, socket.state(), before_poll);
+                if zombie && !control.abort {
+                    trace!("reaping a TCP socket reset back to LISTEN");
+                    control.reset = true;
+                }
+
                 // Remove the socket only when it is in the closed state.
-                if socket.state() == TcpState::Closed || reap {
+                if socket.state() == TcpState::Closed || reap || zombie {
                     sockets_to_remove.push(socket_handle);
 
                     // vigil patch: an orderly close reaches CLOSED from
@@ -321,15 +376,7 @@ impl TcpListenerRunner {
                         control.reset = true;
                     }
 
-                    control.send_state = TcpSocketState::Closed;
-                    control.recv_state = TcpSocketState::Closed;
-
-                    if let Some(waker) = control.send_waker.take() {
-                        waker.wake();
-                    }
-                    if let Some(waker) = control.recv_waker.take() {
-                        waker.wake();
-                    }
+                    control.close_and_wake();
 
                     trace!("closed TCP connection");
                     continue;
@@ -341,15 +388,8 @@ impl TcpListenerRunner {
                 if control.abort {
                     trace!("aborting TCP connection, {:?}", socket.state());
                     socket.abort();
-                    control.send_state = TcpSocketState::Closed;
-                    control.recv_state = TcpSocketState::Closed;
                     control.last_state = TcpState::Closed;
-                    if let Some(waker) = control.send_waker.take() {
-                        waker.wake();
-                    }
-                    if let Some(waker) = control.recv_waker.take() {
-                        waker.wake();
-                    }
+                    control.close_and_wake();
                     continue;
                 }
                 control.last_state = socket.state();
@@ -444,6 +484,10 @@ impl TcpListenerRunner {
 
                             if matches!(control.send_state, TcpSocketState::Normal) {
                                 control.send_state = TcpSocketState::Closed;
+                                // vigil patch.
+                                if let Some(waker) = control.closed_waker.take() {
+                                    waker.wake();
+                                }
                             }
                             wake_sender = true;
 
@@ -488,6 +532,10 @@ impl TcpListenerRunner {
                 // vigil patch: wake up to reap TIME-WAIT sockets.
                 if any_time_wait {
                     next_duration = next_duration.min(TIME_WAIT_REAP);
+                }
+                // vigil patch: and to reap sockets stuck in LISTEN.
+                if any_listen {
+                    next_duration = next_duration.min(LISTEN_REAP);
                 }
                 if next_duration != Duration::ZERO {
                     let _ = tokio::time::timeout(
@@ -675,6 +723,25 @@ impl TcpAbortHandle {
     /// reset it or it timed out).
     pub fn is_reset(&self) -> bool {
         self.control.lock().reset
+    }
+
+    /// Resolves once the connection is gone: reset by the peer, timed out,
+    /// aborted, replaced by a new connection with the same addresses, or
+    /// fully closed. A half-closed connection (FIN either way) is not.
+    pub async fn closed(&self) {
+        std::future::poll_fn(|cx| {
+            let mut control = self.control.lock();
+            if matches!(control.send_state, TcpSocketState::Closed) {
+                return Poll::Ready(());
+            }
+            if let Some(old) = control.closed_waker.replace(cx.waker().clone()) {
+                if !old.will_wake(cx.waker()) {
+                    old.wake();
+                }
+            }
+            Poll::Pending
+        })
+        .await
     }
 }
 

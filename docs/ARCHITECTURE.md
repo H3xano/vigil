@@ -6,7 +6,7 @@
 |---|---|---|
 | Split | Kotlin for the Android framework, UI and persistence; Rust for everything on the packet path | The JVM stays out of per-packet work, and Rust stays out of Android APIs. |
 | TCP stack | `netstack-smoltcp` (smoltcp's TCP state machine), with **vigil owning the TUN loop** | smoltcp is mature. Owning the read/write loop lets vigil see, count, gate and drop every raw packet, which an opaque tun2socks library would not allow. |
-| Vendored `netstack-smoltcp` | `core/vendor/netstack-smoltcp` (0.2.4 plus a small patch, via `[patch.crates-io]`) | Upstream cannot abort a connection, so resets reached apps as orderly FINs, and it reported a peer's RST as EOF. The patch adds `TcpStream::abort` (smoltcp sends a RST) and surfaces resets as `ConnectionReset`. Later patches: `shutdown()` completes once the FIN is queued, TIME-WAIT is 1 s (smoltcp scans every socket per packet), a new SYN replaces a lingering socket with the same 4-tuple, a direct input sender (`Stack::tcp_sender`), and a poll loop that yields without a tokio driver turn. Changes are marked `vigil patch`. |
+| Vendored `netstack-smoltcp` | `core/vendor/netstack-smoltcp` (0.2.4 plus a small patch, via `[patch.crates-io]`) | Upstream cannot abort a connection, so resets reached apps as orderly FINs, and it reported a peer's RST as EOF. The patch adds `TcpStream::abort` (smoltcp sends a RST) and surfaces resets as `ConnectionReset`. Later patches: `shutdown()` completes once the FIN is queued, TIME-WAIT is 1 s (smoltcp scans every socket per packet), a new SYN replaces a lingering socket with the same 4-tuple, a direct input sender (`Stack::tcp_sender`), a poll loop that yields without a tokio driver turn, sockets that smoltcp resets back to LISTEN (a RST in SYN-RECEIVED) reaped as resets instead of lingering as listeners, and `TcpAbortHandle::closed()`. Changes are marked `vigil patch`. |
 | UDP | vigil's own NAT, not the stack's | DNS and QUIC need per-datagram inspection, and per-flow tasks allow holding back the first QUIC datagrams until the SNI is known. |
 | Loop avoidance | `addDisallowedApplication(self)` **and** `protect()` on every relay socket | Excluding the app also covers feed downloads and SIEM export, and `protect()` is kept as a second guard. |
 | Attribution | `getConnectionOwnerUid` on Android 10+ only | `sock_diag` and `/proc/net` are blocked by SELinux for apps on modern Android, so the pre-API-29 fallback in the sketch does not work there. |
@@ -19,13 +19,21 @@
 
 ## Engine data path (`core/vigil-core/src/engine`)
 
-1. **Read loop** (`mod.rs`). Each TUN read is one IP packet, parsed by
+1. **Read loop** (`mod.rs`). Before the first read, the feed files of the
+   start configuration (`feeds`) are loaded, for at most
+   `feeds_preload_timeout_ms` (then they finish in the background), so
+   blocklists apply from the first packet after a boot or restart. Each TUN
+   read is one IP packet, parsed by
    `packet.rs`. Fragments and non-TCP/UDP packets are dropped and counted.
    IPv6 atomic fragments (offset 0, no more fragments) are whole packets and
    are processed; for TCP the fragment header is stripped before smoltcp.
+   IPv6 TCP with other extension headers (smoltcp would misparse them) and
+   SYN|RST segments are dropped, the former SYNs with a RST to the app.
    Interrupted reads are retried, ENOBUFS/ENOMEM back off (up to 1 s, 100
    times in a row); any other read error ends the session with an `engine`
-   `error` event, and the app restarts it.
+   `error` event, and the app restarts it. The same happens when a panic
+   ends the loop, or when any of the engine's long-running tasks (the TCP
+   stack, the TUN writer, the accept loop, housekeeping) ends or panics.
 2. **TCP SYN → gate** (`tcp.rs`). A connection's 4-tuple is registered from
    its first SYN until the connection ends, and retransmitted SYNs for it are
    dropped (smoltcp retransmits its own SYN-ACK), so a slow handshake never
@@ -34,8 +42,11 @@
    - looks up the UID via the platform (Binder IPC, on a blocking thread);
    - admits DNS over TCP (port 53) to *any* address into vigil's resolver
      (virtual resolver: configured upstreams; other address: that server,
-     with a `hardcoded_dns` alert), and refuses other ports on the virtual
-     resolver, including the Private DNS probe on 853;
+     with a `hardcoded_dns` alert, unless the server's address is blocked
+     for the app by IP policy), and refuses other ports on the virtual
+     resolver, including the Private DNS probe on 853. Messages to a
+     hard-coded server that are not standard queries are refused, never
+     relayed;
    - checks policy by IP (app block, IP feeds, DoT on 853);
    - connects upstream through the upstream dialer (a protected socket,
      created and protected on the blocking pool since `protect()` is a JNI
@@ -53,8 +64,11 @@
    either forwards the buffer and continues or resets the connection.
    Resets propagate: if the server resets, the app gets a RST (smoltcp
    abort); if the app resets, the upstream socket is closed with
-   `SO_LINGER` 0, which sends a RST. Blocked names and the 2 h idle timeout
-   reset both sides. A connection that ends before its `flow` was emitted
+   `SO_LINGER` 0, which sends a RST. That holds after the app has sent its
+   FIN too (the relay then watches the app's socket for a reset), and a new
+   SYN from the app on a half-closed connection's 4-tuple ends the old relay
+   so the app's retransmitted SYN is admitted. Blocked names and the 2 h
+   idle timeout reset both sides. A connection that ends before its `flow` was emitted
    (e.g. the server resets during the sniff window) is still reported.
 4. **UDP port 53** (`dns.rs`). Queries are parsed, checked against policy and
    either sinkholed or forwarded. Queries to the virtual resolver go to the
@@ -85,7 +99,10 @@
    stream type, so an upstream dialer (proxy, tunnel) plugs in at one
    place.
 5. **Other UDP** (`udp.rs`). A NAT task runs per 5-tuple, up to
-   `max_udp_flows` (then the flow idle for longest is evicted). For ports 443
+   `max_udp_flows` (then the longest idle 1/32 of the flows is evicted and
+   their tasks stopped; at most 8 flows look up their UID or create their
+   socket at once, so a UDP sprayer cannot occupy the blocking pool the TCP
+   gate and `protect()` need). For ports 443
    and 80 the first datagrams are held (for at most 250 ms) while
    `QuicSniffer` decrypts Initial packets and reassembles shuffled CRYPTO
    frames. Blocked flows are absorbed until idle, so retries don't flood the

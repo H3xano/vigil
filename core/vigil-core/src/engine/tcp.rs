@@ -84,6 +84,14 @@ impl Gate {
             // relayed. smoltcp retransmits its own SYN-ACK; passing this on
             // would create a duplicate socket (and, after the metadata was
             // taken, a second upstream connection).
+            //
+            // Unless the app had already closed its side of that connection:
+            // then it reuses the port for a new one. End the old relay; its
+            // key is released and the app's retransmitted SYN is admitted.
+            if let Some(old) = self.shared.tcp_half_closed.lock().remove(&key) {
+                log::debug!("new SYN on half-closed {} -> {}", syn.src, syn.dst);
+                old.abort();
+            }
             return;
         }
         let refuse = |why: &str| {
@@ -214,6 +222,16 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
     if dst.port() == 53 {
         // DNS over TCP to a hard-coded resolver: inspected like UDP queries
         // to it (policy, sinkholing, alert) and forwarded to that server.
+        // The server itself is checked first, like any destination (app
+        // block, IP feeds), so a blocked app cannot use it as a channel.
+        let decision = shared.policy.read().check_ip(uid, dst.ip());
+        if let Decision::Block(reason) = decision {
+            shared.stats.flows_total.fetch_add(1, Relaxed);
+            let mut ev = base_event(shared, shared.next_flow_id(), uid, src, dst, "tcp");
+            mark_blocked(shared, &mut ev, &reason);
+            emit_closed_flow(shared, ev, None);
+            return GateResult::Reject;
+        }
         return GateResult::Admit(
             uid,
             MetaKind::LocalDns {
@@ -534,6 +552,7 @@ async fn relay(
     let last = AtomicU64::new(0);
     let opened = AtomicBool::new(false);
     let client_abort = client.abort_handle();
+    let key = (*client.local_addr(), *client.remote_addr());
     let (mut cr, mut cw) = tokio::io::split(client);
     let (mut ur, mut uw) = upstream.into_split();
     let mut error: Option<String> = None;
@@ -579,18 +598,28 @@ async fn relay(
             let _ = uw.shutdown().await;
             Ok(true)
         };
-        tokio::pin!(s2c, c2s);
+        // Once the app has finished sending, nothing reads its side any
+        // more: this notices when it is reset (or replaced, see on_syn)
+        // while the server side is still open.
+        let client_gone = client_abort.closed();
+        tokio::pin!(s2c, c2s, client_gone);
         let (mut c2s_done, mut s2c_done) = (false, false);
         let mut idle_check = tokio::time::interval(Duration::from_secs(60));
         loop {
             if c2s_done && s2c_done {
                 break RelayEnd::Closed;
             }
+            // Biased: s2c's completion wins over the socket's final close.
             tokio::select! {
+                biased;
                 r = &mut c2s, if !c2s_done => {
                     c2s_done = true;
                     match r {
-                        Ok(true) => {}
+                        Ok(true) => {
+                            if !s2c_done {
+                                shared.tcp_half_closed.lock().insert(key, client_abort.clone());
+                            }
+                        }
                         Ok(false) => break RelayEnd::Blocked,
                         Err(e) => {
                             error.get_or_insert_with(|| e.err.to_string());
@@ -605,6 +634,18 @@ async fn relay(
                         break RelayEnd::Failed(e.side);
                     }
                 }
+                _ = &mut client_gone, if c2s_done => {
+                    let replaced = !shared.tcp_half_closed.lock().contains_key(&key);
+                    let reason = if client_abort.is_reset() {
+                        io::Error::from(io::ErrorKind::ConnectionReset).to_string()
+                    } else if replaced {
+                        "app reused the port for a new connection".to_string()
+                    } else {
+                        "client closed".to_string()
+                    };
+                    error.get_or_insert(reason);
+                    break RelayEnd::Failed(Side::Client);
+                }
                 _ = idle_check.tick() => {
                     let idle = started.elapsed().as_secs().saturating_sub(last.load(Relaxed));
                     if idle >= IDLE_TIMEOUT.as_secs() {
@@ -616,6 +657,7 @@ async fn relay(
         }
     };
 
+    shared.tcp_half_closed.lock().remove(&key);
     // Propagate aborts: whichever side failed, the other side is reset too,
     // as it would be end to end without vigil in the path.
     let reset_client = matches!(
@@ -649,6 +691,7 @@ mod tests {
     use super::super::tests::test_shared_with_tun;
     use super::*;
     use crate::config::Config;
+    use crate::event::Event;
     use crate::packet::{TCP_RST, TCP_SYN};
 
     fn syn(src_port: u16, dst: &str) -> (Vec<u8>, TcpInfo) {
@@ -789,6 +832,174 @@ mod tests {
         let mut trusted = flow(JA4, "api.trusted.example");
         assert!(check_ja4(&shared, &mut trusted).is_none());
         assert!(trusted.ja4_match.is_some());
+    }
+
+    /// A relay between a netstack connection from `app` and a loopback
+    /// server, after the app has sent its FIN: half-closed, the server side
+    /// still open. Returns the stack input, the relay task, the server's
+    /// end, and the app's next sequence and acknowledgement numbers.
+    async fn half_closed_relay(
+        shared: &Arc<Shared>,
+        app: SocketAddr,
+        dst: SocketAddr,
+    ) -> (
+        mpsc::Sender<Vec<u8>>,
+        tokio::task::JoinHandle<()>,
+        tokio::net::TcpStream,
+        (u32, u32),
+    ) {
+        use super::super::tests::{next_segment, test_stack};
+        use crate::packet::{build_tcp, TCP_ACK, TCP_FIN};
+        let (input, mut out, mut listener) = test_stack();
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = tokio::net::TcpStream::connect(server.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut server_end, _) = server.accept().await.unwrap();
+        let send = |p: Vec<u8>| {
+            let input = input.clone();
+            async move { input.send(p).await.unwrap() }
+        };
+        send(build_tcp(app, dst, 1000, 0, TCP_SYN, &[]).unwrap()).await;
+        let (stream, _, _) = listener.next().await.unwrap();
+        let isn = next_segment(&mut out, app).await.seq;
+        let ack = isn.wrapping_add(1);
+        send(build_tcp(app, dst, 1001, ack, TCP_ACK, &[]).unwrap()).await;
+        tokio::spawn(async move { while out.next().await.is_some() {} });
+        let ev = FlowEvent {
+            id: shared.next_flow_id(),
+            ..Default::default()
+        };
+        let s = shared.clone();
+        let relay = tokio::spawn(async move {
+            relay(&s, stream, UpstreamTcp::Direct(upstream), ev).await;
+        });
+        send(build_tcp(app, dst, 1001, ack, TCP_FIN | TCP_ACK, &[]).unwrap()).await;
+        // The server sees the app's FIN; its side stays open.
+        let mut buf = [0u8; 8];
+        let n = tokio::time::timeout(Duration::from_secs(2), server_end.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 0);
+        for _ in 0..100 {
+            if shared.tcp_half_closed.lock().contains_key(&(app, dst)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(shared.tcp_half_closed.lock().contains_key(&(app, dst)));
+        assert!(!relay.is_finished());
+        (input, relay, server_end, (1002, ack))
+    }
+
+    fn flow_end_error(shared: &Shared) -> Option<String> {
+        shared
+            .events
+            .poll(100, Duration::ZERO)
+            .into_iter()
+            .find_map(|e| match e {
+                Event::FlowEnd(f) => Some(f.error),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn half_closed_relay_ends_when_the_app_resets() {
+        let (shared, _tun) = test_shared_with_tun(Config::default());
+        let (app, dst) = (
+            "10.0.0.2:40000".parse().unwrap(),
+            "192.0.2.1:443".parse().unwrap(),
+        );
+        let (input, relay, mut server_end, (seq, _)) = half_closed_relay(&shared, app, dst).await;
+        input
+            .send(packet::build_tcp(app, dst, seq, 0, TCP_RST, &[]).unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), relay)
+            .await
+            .expect("relay still running after the app's reset")
+            .unwrap();
+        assert!(shared.tcp_half_closed.lock().is_empty());
+        let err = flow_end_error(&shared).unwrap();
+        assert!(err.contains("reset"), "{err}");
+        // The server side is reset too: it already read the FIN, and after
+        // an orderly close its first write would still succeed.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let w = server_end.write_all(b"late reply").await;
+        assert!(matches!(
+            w.unwrap_err().kind(),
+            io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+        ));
+    }
+
+    #[tokio::test]
+    async fn new_syn_on_half_closed_connection_replaces_it() {
+        let (shared, _tun) = test_shared_with_tun(Config::default());
+        let (stack_tx, _stack_rx) = mpsc::channel(16);
+        let gate = Gate::new(shared.clone(), stack_tx);
+        let (app, dst): (SocketAddr, SocketAddr) = (
+            "10.0.0.2:40001".parse().unwrap(),
+            "192.0.2.1:443".parse().unwrap(),
+        );
+        let (_input, relay, _server_end, _) = half_closed_relay(&shared, app, dst).await;
+        // As accept_loop would have it: the connection's key is registered.
+        shared.tcp_keys.lock().insert((app, dst));
+        let syn = TcpInfo {
+            src: app,
+            dst,
+            seq: 777,
+            ack: 0,
+            flags: TCP_SYN,
+            payload_len: 0,
+        };
+        gate.on_syn(Vec::new(), syn);
+        tokio::time::timeout(Duration::from_secs(2), relay)
+            .await
+            .expect("old relay still running")
+            .unwrap();
+        assert!(shared.tcp_half_closed.lock().is_empty());
+        let err = flow_end_error(&shared).unwrap();
+        assert_eq!(err, "app reused the port for a new connection");
+    }
+
+    #[tokio::test]
+    async fn tcp_dns_to_a_listed_resolver_is_refused_at_the_gate() {
+        use crate::intel::parse_feed;
+        use crate::policy::{FeedCategory, LoadedFeed};
+        let (shared, mut tun) = test_shared_with_tun(Config::default());
+        shared.policy.write().set_feed(
+            "c2ips",
+            LoadedFeed {
+                category: FeedCategory::C2,
+                feed: parse_feed("192.0.2.53\n"),
+            },
+        );
+        let (stack_tx, mut stack_rx) = mpsc::channel(16);
+        let gate = Gate::new(shared.clone(), stack_tx);
+        let (pkt, info) = syn(40010, "192.0.2.53:53");
+        gate.on_syn(pkt.clone(), info);
+        assert!(is_rst(&tun.recv().await.unwrap()));
+        assert!(stack_rx.try_recv().is_err());
+        let events = shared.events.poll(100, Duration::ZERO);
+        assert!(events.iter().any(|e| matches!(e,
+            Event::Flow(f) if f.verdict == Some(Verdict::Block) && f.dst_port == 53)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Alert(a) if a.kind == "threat_ip")));
+        // Other resolvers are still admitted into vigil's resolver.
+        let (pkt, info) = syn(40011, "192.0.2.54:53");
+        gate.on_syn(pkt, info);
+        assert!(stack_rx.recv().await.is_some());
+        assert!(matches!(
+            shared
+                .tcp_meta
+                .lock()
+                .get(&(info.src, info.dst))
+                .map(|m| &m.kind),
+            Some(MetaKind::LocalDns { upstream: Some(_) })
+        ));
     }
 
     #[tokio::test]

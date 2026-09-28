@@ -63,7 +63,38 @@ pub struct Config {
     pub encrypted_dns: EncryptedDnsConfig,
     /// How relayed traffic leaves the device (direct, WireGuard, SOCKS5).
     pub upstream: UpstreamConfig,
+    /// Feed files loaded when the engine starts, before it processes any
+    /// packet (see `feeds_preload_timeout_ms`), so blocklists apply from
+    /// the first connection after a boot or restart. Read at start only;
+    /// later loads (`Engine::load_feed_file`) with the same id replace them.
+    pub feeds: Vec<FeedFile>,
+    /// How long packet processing waits for `feeds` at start (capped at
+    /// [`MAX_FEEDS_PRELOAD_TIMEOUT_MS`]). Feeds not loaded by then finish
+    /// loading in the background.
+    pub feeds_preload_timeout_ms: u64,
 }
+
+/// A feed file to load at start: the arguments of `nativeLoadFeedFile`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct FeedFile {
+    pub id: String,
+    /// A feed category (`malware`, `phishing`, `c2`, `tracking`, `ads`,
+    /// `custom`, `ja4`, `asn`); unknown names load as `tracking`, as with
+    /// `nativeLoadFeedFile`.
+    pub category: String,
+    /// Absolute path of the file.
+    pub path: String,
+}
+
+impl FeedFile {
+    pub fn category(&self) -> crate::policy::FeedCategory {
+        serde_json::from_value(serde_json::Value::String(self.category.clone())).unwrap_or_default()
+    }
+}
+
+/// Upper bound of `feeds_preload_timeout_ms`.
+pub const MAX_FEEDS_PRELOAD_TIMEOUT_MS: u64 = 60_000;
 
 /// Transport used to forward the virtual resolver's queries.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -474,6 +505,8 @@ impl Default for Config {
             max_dns_inflight: 256,
             encrypted_dns: EncryptedDnsConfig::default(),
             upstream: UpstreamConfig::default(),
+            feeds: Vec::new(),
+            feeds_preload_timeout_ms: 10_000,
         }
     }
 }
@@ -719,6 +752,30 @@ mod tests {
         Config::default().validate().unwrap();
         assert_eq!(Config::default().upstream.mode, UpstreamMode::Direct);
         assert!(Config::default().upstream.fail_closed);
+    }
+
+    #[test]
+    fn feeds_json_contract() {
+        let c = Config::default();
+        assert!(c.feeds.is_empty());
+        assert_eq!(c.feeds_preload_timeout_ms, 10_000);
+        // Shape ConfigFactory.kt sends.
+        let c = Config::from_json(
+            r#"{"feeds":[{"id":"urlhaus","category":"malware","path":"/data/user/0/dev.vigil.inspector/files/feeds/urlhaus.txt"},
+                        {"id":"asn","category":"asn","path":"/data/feeds/ip2asn.tsv"},
+                        {"id":"x","category":"no-such-category","path":"/data/feeds/x.txt"}],
+                "feeds_preload_timeout_ms":5000}"#,
+        )
+        .unwrap();
+        use crate::policy::FeedCategory;
+        assert_eq!(c.feeds.len(), 3);
+        assert_eq!(c.feeds[0].id, "urlhaus");
+        assert_eq!(c.feeds[0].category(), FeedCategory::Malware);
+        assert_eq!(c.feeds[1].category(), FeedCategory::Asn);
+        assert_eq!(c.feeds[2].category(), FeedCategory::Tracking);
+        assert_eq!(c.feeds_preload_timeout_ms, 5000);
+        let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 
     #[test]

@@ -17,7 +17,29 @@ pub struct HttpRequest {
     pub host: Option<String>,
 }
 
+/// Empty lines tolerated before the request line.
+const MAX_LEADING_EMPTY_LINES: usize = 8;
+
 pub fn parse_request(buf: &[u8]) -> Sniff<HttpRequest> {
+    // RFC 9112 §2.2: a server SHOULD ignore empty lines (CRLF, or a bare
+    // LF) received before the request line; some clients send one after a
+    // previous POST body. A handful is enough; more is not HTTP.
+    let mut buf = buf;
+    for i in 0.. {
+        if let Some(rest) = buf
+            .strip_prefix(b"\r\n")
+            .or_else(|| buf.strip_prefix(b"\n"))
+        {
+            if i == MAX_LEADING_EMPTY_LINES {
+                return Sniff::NotMatched;
+            }
+            buf = rest;
+        } else if buf == b"\r" {
+            return Sniff::NeedMore;
+        } else {
+            break;
+        }
+    }
     // Decide early whether this can be HTTP at all.
     let prefix_len = buf.len().min(8);
     let plausible = METHODS.iter().any(|m| {
@@ -93,6 +115,25 @@ mod tests {
                 host: Some("telemetry.example.com".into())
             })
         );
+    }
+
+    #[test]
+    fn leading_empty_lines_are_skipped() {
+        let want = Sniff::Found(HttpRequest {
+            method: "POST".into(),
+            host: Some("a.example".into()),
+        });
+        let req = b"POST /x HTTP/1.1\r\nHost: a.example\r\n\r\n";
+        for prefix in [&b"\r\n"[..], b"\n", b"\r\n\r\n", b"\r\n\n"] {
+            let buf = [prefix, &req[..]].concat();
+            assert_eq!(parse_request(&buf), want, "{prefix:?}");
+        }
+        assert_eq!(parse_request(b"\r"), Sniff::NeedMore);
+        assert_eq!(parse_request(b"\r\n"), Sniff::NeedMore);
+        assert_eq!(parse_request(b"\r\nPO"), Sniff::NeedMore);
+        assert_eq!(parse_request(b"\r\n\x16\x03\x01"), Sniff::NotMatched);
+        let many = [&b"\r\n".repeat(20)[..], &req[..]].concat();
+        assert_eq!(parse_request(&many), Sniff::NotMatched);
     }
 
     #[test]

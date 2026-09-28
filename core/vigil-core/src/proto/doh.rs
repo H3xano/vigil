@@ -157,10 +157,13 @@ pub fn decode_chunked(buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>, String> {
                 }
             }
         }
-        if body.len() + size > MAX_BODY {
+        // `body.len() <= MAX_BODY` holds, so neither side can overflow (a
+        // plain `body.len() + size` wraps on 32-bit targets for sizes near
+        // 2^32, e.g. `ffffffff`).
+        if size > MAX_BODY - body.len() {
             return Err("response body too large".into());
         }
-        if buf.len() < pos + size + 2 {
+        if buf.len() - pos < size + 2 {
             return Ok(None);
         }
         body.extend_from_slice(&buf[pos..pos + size]);
@@ -254,6 +257,20 @@ mod tests {
         assert!(decode_chunked(b"zz\r\n").is_err());
         assert!(decode_chunked(b"2\r\nabX\r\n").is_err());
         assert!(decode_chunked(b"10000\r\n").is_err());
+    }
+
+    #[test]
+    fn huge_chunk_sizes_are_rejected_without_overflow() {
+        // Near usize::MAX on 32-bit targets (armeabi-v7a): the size check
+        // must not wrap around and let the slice index overflow.
+        assert!(decode_chunked(b"ffffffff\r\nab").is_err());
+        assert!(decode_chunked(b"4\r\nabcd\r\nfffffffe\r\n").is_err());
+        assert!(decode_chunked(b"fffffffff\r\n").is_err(), "9 hex digits");
+        // Exactly MAX_BODY in total is fine (needs more bytes).
+        let at_limit = format!("{MAX_BODY:x}\r\n");
+        assert_eq!(decode_chunked(at_limit.as_bytes()).unwrap(), None);
+        let over = format!("1\r\na\r\n{MAX_BODY:x}\r\n");
+        assert!(decode_chunked(over.as_bytes()).is_err());
     }
 
     #[test]

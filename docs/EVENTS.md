@@ -41,7 +41,17 @@ In `dns` events, `rcode` is `REFUSED` (with `verdict: block`) when the app
 queried a hard-coded resolver whose address is on an IP feed. Queries with
 more than one question (or none) are answered REFUSED and not logged. DNS
 over TCP to any resolver, not only the virtual one, is inspected and logged
-with `transport: tcp`; such connections do not produce `flow` events.
+with `transport: tcp`; such connections do not produce `flow` events, except
+when the server's address itself is blocked for the app (`blocked_uids`, an
+IP feed): the connection is then reset at connect time with a blocked
+`flow` event, like any TCP connection. A message to a hard-coded resolver
+that is not a standard query (unparseable, a response, or an opcode other
+than QUERY) is never forwarded: it is answered REFUSED (the connection is
+closed if it has no DNS header) and logged as a `dns` event with
+`verdict: block`, `reason: "not a standard query (…)"` and, when unparseable,
+an empty `qname`/`qtype`, plus a `hardcoded_dns` alert. (Over UDP such
+payloads are relayed as ordinary UDP flows, with the usual policy checks
+and `flow` events.)
 
 `dns.upstream` is the transport that produced the answer: `udp` (or `tcp`
 after a truncated UDP answer, and always `tcp` with a SOCKS5 upstream) for
@@ -300,16 +310,19 @@ added after 0.1.0:
 | field | type | default | meaning |
 |---|---|---|---|
 | `nat64_prefixes` | list of CIDR strings | `[]` | NAT64 prefixes of the current network, e.g. `"64:ff9b::/96"` or the carrier's own prefix. IPv6 destinations inside one are matched against IP feeds by their embedded IPv4 address (last 32 bits). `64:ff9b::/96` always applies, even if absent. Only /96 prefixes are supported; other lengths and unparseable entries are logged and ignored (they do not reject the config). |
-| `max_udp_flows` | integer > 0 | 2048 | UDP NAT entries. When full, the flow idle for longest is evicted (`flow_end.error` = `evicted: …`). |
+| `max_udp_flows` | integer > 0 | 2048 | UDP NAT entries. When full, the flows idle for longest (1/32 of the table, at least one) are evicted: an open one ends with `flow_end.error` = `evicted: …`, one still being set up is dropped without events. |
 | `max_tcp_flows` | integer > 0 | 4096 | TCP connections admitted or relaying. Further SYNs are answered with a RST. |
 | `max_pending_connects` | integer > 0 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
 | `max_dns_inflight` | integer > 0 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |
 | `block_ja4_matches` | bool | `false` | Reset connections (drop QUIC flows) whose JA4 fingerprint is on a feed, instead of only alerting. Allowlisted names are exempt. See "JA4 matches". |
 | `encrypted_dns` | object | `{"mode":"off"}` | DoT/DoH for the virtual resolver's lookups. See "`encrypted_dns`" below. |
 | `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
+| `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; unknown names load as `tracking`) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
+| `feeds_preload_timeout_ms` | integer | 10000 | How long packet processing waits for `feeds` at start (at most 60000). Feeds not loaded by then finish loading in the background while traffic flows. |
 
-The four caps are read when the engine starts; a later config update does
-not resize them.
+The four caps, `feeds` and `feeds_preload_timeout_ms` are read when the
+engine starts; a later config update does not resize the caps or reload
+the feeds.
 
 ### `beacon`
 

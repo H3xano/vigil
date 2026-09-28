@@ -23,6 +23,15 @@ const QUIC_SNIFF_WINDOW: Duration = Duration::from_millis(250);
 /// Lifetime of a flow that has never received a reply (capped by the
 /// configured idle timeout).
 const NO_REPLY_IDLE: Duration = Duration::from_secs(30);
+/// UDP flows setting up at once (UID lookup, socket creation). Both run on
+/// the blocking pool (16 threads), which the TCP gate and `protect()` need
+/// too, and neither can be cancelled once started: without a bound, a
+/// sprayer of new UDP flows starved them.
+pub(crate) const UDP_SETUP_CONCURRENCY: usize = 8;
+/// Share of a full flow table evicted at once (the longest idle flows), so
+/// finding them, a scan of the table, is not repeated for every new flow.
+const EVICT_FRACTION: usize = 32;
+const EVICTED: &str = "evicted: UDP flow limit reached";
 
 struct FlowEntry {
     tx: mpsc::Sender<Vec<u8>>,
@@ -30,6 +39,8 @@ struct FlowEntry {
     generation: u64,
     /// `Shared::ticks()` of the last datagram in either direction.
     last_active: Arc<AtomicU64>,
+    /// Stops the flow's task when the entry is evicted.
+    task: tokio::task::AbortHandle,
 }
 
 /// The UDP NAT table: one entry per (app socket, destination).
@@ -44,16 +55,30 @@ impl FlowTable {
         self.flows.len()
     }
 
-    /// Removes the least recently active flow. Its task sees its queue
-    /// close and ends the flow.
-    fn evict_idlest(&mut self) -> Option<FlowKey> {
-        let key = self
+    /// Removes the least recently active flows (1/EVICT_FRACTION of the
+    /// table, at least one) and stops their tasks: a flow still setting up
+    /// ends there, an open one gets its `flow_end` (see `FlowEnd`).
+    /// Returns how many were evicted and how many queued datagrams went
+    /// with them.
+    fn evict_idlest(&mut self) -> (usize, u64) {
+        let n = (self.flows.len() / EVICT_FRACTION).max(1);
+        let mut by_age: Vec<(u64, FlowKey)> = self
             .flows
             .iter()
-            .min_by_key(|(_, f)| f.last_active.load(Relaxed))
-            .map(|(k, _)| *k)?;
-        self.flows.remove(&key);
-        Some(key)
+            .map(|(k, f)| (f.last_active.load(Relaxed), *k))
+            .collect();
+        if n < by_age.len() {
+            by_age.select_nth_unstable(n - 1);
+            by_age.truncate(n);
+        }
+        let mut queued = 0;
+        for (_, key) in &by_age {
+            if let Some(f) = self.flows.remove(key) {
+                queued += (f.tx.max_capacity() - f.tx.capacity()) as u64;
+                f.task.abort();
+            }
+        }
+        (by_age.len(), queued)
     }
 
     fn remove(&mut self, key: &FlowKey, generation: u64) {
@@ -116,42 +141,84 @@ pub(crate) fn on_packet(shared: &Arc<Shared>, u: UdpInfo, payload: &[u8]) {
         return;
     }
     if table.len() >= shared.limits.udp_flows {
-        if let Some((src, dst)) = table.evict_idlest() {
-            log::debug!("UDP flow table full; evicted {src} -> {dst}");
-        }
+        let (n, queued) = table.evict_idlest();
+        shared.stats.dropped_packets.fetch_add(queued, Relaxed);
+        log::debug!("UDP flow table full; evicted {n} flows");
     }
-    let (tx, rx) = mpsc::channel(FLOW_QUEUE);
+    let (tx, mut rx) = mpsc::channel(FLOW_QUEUE);
     let _ = tx.try_send(payload.to_vec());
     let generation = table.next_generation;
     table.next_generation += 1;
     let last_active = Arc::new(AtomicU64::new(now));
+    let s = shared.clone();
+    let la = last_active.clone();
+    // Spawned under the table lock: the task removes its entry when done,
+    // which must not happen before the entry is inserted.
+    let task = tokio::spawn(async move {
+        flow(&s, key, &mut rx, &la).await;
+        s.udp_flows.lock().remove(&key, generation);
+        // Datagrams that arrived after the flow's last read are dropped;
+        // count them (later ones are counted by `on_packet`).
+        rx.close();
+        let mut left = 0;
+        while rx.try_recv().is_ok() {
+            left += 1;
+        }
+        s.stats.dropped_packets.fetch_add(left, Relaxed);
+    });
     table.flows.insert(
         key,
         FlowEntry {
             tx,
             generation,
-            last_active: last_active.clone(),
+            last_active,
+            task: task.abort_handle(),
         },
     );
-    drop(table);
-    let s = shared.clone();
-    tokio::spawn(async move {
-        flow(&s, key, rx, &last_active).await;
-        s.udp_flows.lock().remove(&key, generation);
-    });
 }
 
+/// Ends an open flow exactly once: with the given error at a normal end,
+/// or as evicted if the flow's task is aborted.
+struct FlowEnd<'a> {
+    shared: &'a Shared,
+    id: Option<u64>,
+}
+
+impl FlowEnd<'_> {
+    fn finish(mut self, error: Option<String>) {
+        if let Some(id) = self.id.take() {
+            self.shared.finish_flow(id, error);
+        }
+    }
+}
+
+impl Drop for FlowEnd<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            self.shared.finish_flow(id, Some(EVICTED.into()));
+        }
+    }
+}
+
+/// One UDP flow. May be aborted at any await (eviction): nothing is
+/// reported before the flow is opened, and an open flow is ended by its
+/// `FlowEnd` guard.
 async fn flow(
     shared: &Arc<Shared>,
     key: FlowKey,
-    mut rx: mpsc::Receiver<Vec<u8>>,
+    rx: &mut mpsc::Receiver<Vec<u8>>,
     last_active: &AtomicU64,
 ) {
     let _active = GaugeGuard::new(&shared.stats.udp_active);
     let (src, dst) = key;
     let cfg = shared.config();
     let idle = Duration::from_secs(cfg.udp_idle_timeout_s.max(5));
-    let uid = shared.lookup_uid(PROTO_UDP, src, dst).await;
+    let uid = {
+        let Ok(_permit) = shared.limits.udp_setup.acquire().await else {
+            return;
+        };
+        shared.lookup_uid(PROTO_UDP, src, dst).await
+    };
     shared.stats.flows_total.fetch_add(1, Relaxed);
 
     let mut ev = FlowEvent {
@@ -235,7 +302,13 @@ async fn flow(
     }
 
     ev.via = Some(shared.upstream.via());
-    let sock = match upstream::connect_udp(shared, dst).await {
+    let connected = {
+        let Ok(_permit) = shared.limits.udp_setup.acquire().await else {
+            return;
+        };
+        upstream::connect_udp(shared, dst).await
+    };
+    let sock = match connected {
         Ok(s) => s,
         Err(e) => {
             ev.verdict = Some(Verdict::Allow);
@@ -251,8 +324,11 @@ async fn flow(
     };
     ev.via = Some(sock.via());
     ev.verdict = Some(Verdict::Allow);
-    let id = ev.id;
     let counters = FlowCounters::new();
+    let end = FlowEnd {
+        shared,
+        id: Some(ev.id),
+    };
     shared.open_flow(ev.clone(), &counters);
     observe_allowed(shared, &ev);
 
@@ -272,7 +348,7 @@ async fn flow(
         tokio::select! {
             d = rx.recv() => {
                 let Some(d) = d else {
-                    error.get_or_insert_with(|| "evicted: UDP flow limit reached".into());
+                    error.get_or_insert_with(|| EVICTED.into());
                     break;
                 };
                 counters.tx.fetch_add(d.len() as u64, Relaxed);
@@ -302,7 +378,7 @@ async fn flow(
             _ = tokio::time::sleep_until(deadline) => break,
         }
     }
-    shared.finish_flow(id, error);
+    end.finish(error);
 }
 
 #[cfg(test)]
@@ -323,40 +399,115 @@ mod tests {
         (packet::parse_udp(&pkt, &ip).unwrap(), pkt)
     }
 
+    fn flow_events(events: &[Event]) -> Vec<&FlowEvent> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Flow(f) => Some(f),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[tokio::test]
-    async fn flow_table_is_capped_by_evicting_the_idlest() {
+    async fn evicted_flows_stop_before_setting_up() {
         let shared = test_shared(Config {
             max_udp_flows: 3,
             ..Default::default()
         });
+        // A single-threaded runtime: no flow task runs before the loop ends,
+        // so the seven evicted ones are stopped before their UID lookup.
         for port in 1..=10u16 {
             let (u, pkt) = udp(port, "192.0.2.1:9999");
             on_packet(&shared, u, &pkt[u.payload_offset..u.payload_end]);
             assert!(shared.udp_flows.lock().len() <= 3);
         }
-        let keys: Vec<u16> = shared
+        let mut keys: Vec<u16> = shared
             .udp_flows
             .lock()
             .flows
             .keys()
             .map(|(s, _)| s.port())
             .collect();
-        assert_eq!(keys.len(), 3);
-        // Evicted flows end with a reason (and every flow gets its end).
+        keys.sort_unstable();
+        assert_eq!(keys, vec![8, 9, 10]);
         tokio::time::sleep(Duration::from_millis(500)).await;
         let events = shared.events.poll(1000, Duration::ZERO);
-        let ended: Vec<_> = events
+        let mut ports: Vec<u16> = flow_events(&events)
             .iter()
+            .map(|f| f.src.rsplit(':').next().unwrap().parse().unwrap())
+            .collect();
+        ports.sort_unstable();
+        assert_eq!(ports, vec![8, 9, 10], "{events:?}");
+        assert!(shared.stats.udp_active.load(Relaxed) <= 3);
+        // Their queued first datagrams count as dropped.
+        assert_eq!(shared.stats.dropped_packets.load(Relaxed), 7);
+    }
+
+    #[tokio::test]
+    async fn a_full_table_evicts_its_idlest_share_at_once() {
+        let n = 2 * EVICT_FRACTION;
+        let shared = test_shared(Config {
+            max_udp_flows: n,
+            ..Default::default()
+        });
+        for port in 1..=n as u16 {
+            let (u, pkt) = udp(port, "192.0.2.1:9999");
+            on_packet(&shared, u, &pkt[u.payload_offset..u.payload_end]);
+        }
+        // Ports 5 and 3 idle for longest, the others more recently active.
+        for (key, f) in shared.udp_flows.lock().flows.iter() {
+            let t = match key.0.port() {
+                5 => 1,
+                3 => 2,
+                p => 1000 + p as u64,
+            };
+            f.last_active.store(t, Relaxed);
+        }
+        let (u, pkt) = udp(1000, "192.0.2.1:9999");
+        on_packet(&shared, u, &pkt[u.payload_offset..u.payload_end]);
+        let table = shared.udp_flows.lock();
+        assert_eq!(table.len(), n - 1, "two evicted, one added");
+        let ports: Vec<u16> = table.flows.keys().map(|(s, _)| s.port()).collect();
+        assert!(!ports.contains(&5) && !ports.contains(&3));
+        assert!(ports.contains(&1000));
+    }
+
+    #[test]
+    fn open_flows_end_once_even_when_aborted() {
+        let shared = test_shared(Config::default());
+        let c = FlowCounters::new();
+        for id in [1, 2] {
+            shared.open_flow(
+                FlowEvent {
+                    id,
+                    ..Default::default()
+                },
+                &c,
+            );
+        }
+        FlowEnd {
+            shared: &shared,
+            id: Some(1),
+        }
+        .finish(Some("timeout".into()));
+        // Dropped without finish: the task was aborted by an eviction.
+        drop(FlowEnd {
+            shared: &shared,
+            id: Some(2),
+        });
+        let ends: Vec<(u64, Option<String>)> = shared
+            .events
+            .poll(100, Duration::ZERO)
+            .into_iter()
             .filter_map(|e| match e {
-                Event::FlowEnd(f) => f.error.clone(),
+                Event::FlowEnd(f) => Some((f.id, f.error)),
                 _ => None,
             })
             .collect();
-        assert!(
-            ended
-                .iter()
-                .any(|e| e.contains("evicted") || e.contains("socket")),
-            "{events:?}"
+        assert_eq!(
+            ends,
+            vec![(1, Some("timeout".into())), (2, Some(EVICTED.into()))]
         );
     }
 

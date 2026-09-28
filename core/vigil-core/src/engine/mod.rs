@@ -122,6 +122,8 @@ pub(crate) struct Limits {
     /// DNS queries being answered.
     pub dns: Arc<Semaphore>,
     pub udp_flows: usize,
+    /// UDP flows looking up their UID or creating their socket.
+    pub udp_setup: Semaphore,
 }
 
 impl Limits {
@@ -131,6 +133,7 @@ impl Limits {
             tcp: Arc::new(Semaphore::new(cfg.max_tcp_flows)),
             dns: Arc::new(Semaphore::new(cfg.max_dns_inflight)),
             udp_flows: cfg.max_udp_flows,
+            udp_setup: Semaphore::new(udp::UDP_SETUP_CONCURRENCY),
         }
     }
 }
@@ -180,6 +183,10 @@ pub(crate) struct Shared {
     /// TCP connections the gate knows (deciding, parked or relaying).
     /// Retransmitted SYNs for these are dropped instead of re-gated.
     pub tcp_keys: Mutex<HashSet<FlowKey>>,
+    /// Relays whose app side has finished sending (FIN) while the server
+    /// side still runs. A new SYN on such a 4-tuple means the app has moved
+    /// on: the old relay is aborted so the retransmitted SYN gets through.
+    pub tcp_half_closed: Mutex<HashMap<FlowKey, netstack_smoltcp::TcpAbortHandle>>,
     pub udp_flows: Mutex<udp::FlowTable>,
     pub dns_upstreams: dns::UpstreamPool,
     pub encrypted_dns: dns_upstream::EncryptedUpstream,
@@ -187,6 +194,10 @@ pub(crate) struct Shared {
     pub upstream: upstream::Upstream,
     open_flows: Mutex<OpenFlows>,
     shut_down: AtomicBool,
+    /// Per feed id, how many loads or removals have begun. The start-time
+    /// preload installs a feed only if nothing touched its id meanwhile, so
+    /// it never undoes a later `load_feed_file`/`remove_feed` from the app.
+    feed_loads: Mutex<HashMap<String, u64>>,
 }
 
 impl Shared {
@@ -207,12 +218,73 @@ impl Shared {
             tun_tx,
             tcp_meta: Mutex::new(HashMap::new()),
             tcp_keys: Mutex::new(HashSet::new()),
+            tcp_half_closed: Mutex::new(HashMap::new()),
             udp_flows: Mutex::new(udp::FlowTable::default()),
             dns_upstreams: dns::UpstreamPool::default(),
             encrypted_dns: dns_upstream::EncryptedUpstream::default(),
             upstream: upstream::Upstream::default(),
             open_flows: Mutex::new(OpenFlows::default()),
             shut_down: AtomicBool::new(false),
+            feed_loads: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registers the start of a load or removal of feed `id`; returns its
+    /// ticket.
+    fn begin_feed_change(&self, id: &str) -> u64 {
+        let mut loads = self.feed_loads.lock();
+        let n = loads.entry(id.to_string()).or_insert(0);
+        *n += 1;
+        *n
+    }
+
+    /// Parses a feed file and installs it, unconditionally (`ticket` None,
+    /// an explicit load) or only if no other change of the id began since
+    /// `ticket` (the preload). Returns the summary and whether it was
+    /// installed.
+    fn load_feed_file(
+        &self,
+        id: &str,
+        category: FeedCategory,
+        path: &std::path::Path,
+        ticket: Option<u64>,
+    ) -> io::Result<(FeedSummary, bool)> {
+        let file = std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
+        let feed = parse_feed_reader_kind(file, category.feed_kind())?;
+        let Some(ticket) = ticket else {
+            return Ok((install_feed(&self.policy, id, category, feed), true));
+        };
+        // Held while installing, so no explicit load can slip in between.
+        let loads = self.feed_loads.lock();
+        if loads.get(id).copied().unwrap_or(0) != ticket {
+            return Ok((summarize(id, &feed), false));
+        }
+        let summary = install_feed(&self.policy, id, category, feed);
+        drop(loads);
+        Ok((summary, true))
+    }
+
+    /// Loads the start configuration's `feeds` (on a blocking thread).
+    /// Errors are logged, as for `nativeLoadFeedFile`.
+    fn preload_feeds(&self, feeds: &[crate::config::FeedFile], tickets: &[u64]) {
+        for (f, &ticket) in feeds.iter().zip(tickets) {
+            let path = std::path::Path::new(&f.path);
+            if f.id.is_empty() || !path.is_absolute() {
+                log::warn!("feed {:?}: needs an id and an absolute path", f.id);
+                continue;
+            }
+            match self.load_feed_file(&f.id, f.category(), path, Some(ticket)) {
+                Ok((sum, true)) => log::info!(
+                    "feed {} preloaded: {} domains, {} ranges, {} ja4, {} rejected",
+                    f.id,
+                    sum.domains,
+                    sum.ip_ranges,
+                    sum.ja4,
+                    sum.rejected_lines
+                ),
+                Ok((_, false)) => log::info!("feed {}: loaded by the app meanwhile", f.id),
+                Err(err) => log::warn!("feed {}: {err}", f.id),
+            }
         }
     }
 
@@ -468,6 +540,88 @@ impl Shared {
     }
 }
 
+/// Waits for the engine's main task and reports how it ended: an error or a
+/// panic becomes an `engine` event with `state: error` (the app restarts
+/// the session on it). Without this a panic in `run` was swallowed by
+/// tokio, leaving the TUN unread with the routes up: every app black-holed.
+/// Cancellation (at shutdown) is not reported.
+async fn supervise(shared: Arc<Shared>, main: tokio::task::JoinHandle<io::Result<()>>) {
+    let message = match main.await {
+        Ok(Ok(())) => "engine loop ended".to_string(),
+        Ok(Err(e)) => e.to_string(),
+        Err(e) if e.is_panic() => format!("engine panicked: {}", panic_message(e.into_panic())),
+        Err(_) => return,
+    };
+    log::error!("engine stopped: {message}");
+    shared.emit(Event::Engine(EngineEvent {
+        ts: now_ms(),
+        state: "error",
+        message,
+    }));
+}
+
+fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
+    match p.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p
+            .downcast_ref::<&str>()
+            .map_or_else(|| "(no message)".to_string(), |s| s.to_string()),
+    }
+}
+
+/// The engine's long-running tasks. Aborted when dropped, so they do not
+/// outlive `run` when it fails.
+struct EngineTasks {
+    tasks: Vec<(&'static str, tokio::task::JoinHandle<io::Result<()>>)>,
+    aborts: Vec<tokio::task::AbortHandle>,
+}
+
+impl EngineTasks {
+    fn new() -> Self {
+        Self {
+            tasks: Vec::new(),
+            aborts: Vec::new(),
+        }
+    }
+
+    fn spawn<F>(&mut self, name: &'static str, f: F)
+    where
+        F: std::future::Future<Output = io::Result<()>> + Send + 'static,
+    {
+        let h = tokio::spawn(f);
+        self.aborts.push(h.abort_handle());
+        self.tasks.push((name, h));
+    }
+
+    /// Resolves when the first task ends (none should while the engine
+    /// runs), with an error saying which one and how.
+    async fn first_exit(&mut self) -> io::Error {
+        let tasks = std::mem::take(&mut self.tasks);
+        if tasks.is_empty() {
+            return std::future::pending().await;
+        }
+        let (names, handles): (Vec<_>, Vec<_>) = tasks.into_iter().unzip();
+        let (r, i, _rest) = futures::future::select_all(handles).await;
+        let name = names[i];
+        io::Error::other(match r {
+            Ok(Ok(())) => format!("{name} task ended"),
+            Ok(Err(e)) => format!("{name}: {e}"),
+            Err(e) if e.is_panic() => {
+                format!("{name} task panicked: {}", panic_message(e.into_panic()))
+            }
+            Err(_) => format!("{name} task cancelled"),
+        })
+    }
+}
+
+impl Drop for EngineTasks {
+    fn drop(&mut self) {
+        for a in &self.aborts {
+            a.abort();
+        }
+    }
+}
+
 /// Result of loading a threat/tracker feed.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FeedSummary {
@@ -510,17 +664,8 @@ impl Engine {
             let _guard = runtime.enter();
             shared.upstream.apply(&upstream, &shared.platform);
         }
-        let s = shared.clone();
-        runtime.spawn(async move {
-            if let Err(e) = run(s.clone(), tun, tun_rx).await {
-                log::error!("engine stopped: {e}");
-                s.emit(Event::Engine(EngineEvent {
-                    ts: now_ms(),
-                    state: "error",
-                    message: e.to_string(),
-                }));
-            }
-        });
+        let main = runtime.spawn(run(shared.clone(), tun, tun_rx));
+        runtime.spawn(supervise(shared.clone(), main));
         shared.emit(Event::Engine(EngineEvent {
             ts: now_ms(),
             state: "started",
@@ -559,28 +704,28 @@ impl Engine {
     /// Parses and installs (or replaces) a feed. CPU-heavy for large lists;
     /// call from a background thread.
     pub fn load_feed(&self, id: &str, category: FeedCategory, text: &str) -> FeedSummary {
+        self.shared.begin_feed_change(id);
         let feed = parse_feed_reader_kind(text.as_bytes(), category.feed_kind())
             .expect("reading from memory cannot fail");
         install_feed(&self.shared.policy, id, category, feed)
     }
 
-    /// Streams a feed from a file (bounded memory for multi-million entry lists).
+    /// Streams a feed from a file (bounded memory for multi-million entry
+    /// lists). Replaces a feed with the same id, including one from the
+    /// start configuration's `feeds` (whose preload, if still running, then
+    /// leaves this one in place).
     pub fn load_feed_file(
         &self,
         id: &str,
         category: FeedCategory,
         path: &std::path::Path,
     ) -> io::Result<FeedSummary> {
-        let file = std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
-        Ok(install_feed(
-            &self.shared.policy,
-            id,
-            category,
-            parse_feed_reader_kind(file, category.feed_kind())?,
-        ))
+        self.shared.begin_feed_change(id);
+        Ok(self.shared.load_feed_file(id, category, path, None)?.0)
     }
 
     pub fn remove_feed(&self, id: &str) -> bool {
+        self.shared.begin_feed_change(id);
         self.shared.policy.write().remove_feed(id)
     }
 
@@ -592,6 +737,11 @@ impl Engine {
     /// stopped, every open flow gets its `flow_end`, then a `stopped` engine
     /// event is queued and the queue is closed (polls stop waiting).
     /// Idempotent; must not be called from inside the engine's runtime.
+    ///
+    /// Blocks for up to about 2 s (the runtime's shutdown timeout, waiting
+    /// for blocking-pool work such as a UID lookup or `protect()` upcall),
+    /// with the runtime lock held, so a concurrent call waits as long.
+    /// Callers must not call it on the Android main (UI) thread.
     pub fn shutdown(&self) {
         // Held throughout, so a concurrent call returns only when done.
         let mut rt = self.runtime.lock();
@@ -627,22 +777,58 @@ impl Drop for Engine {
     }
 }
 
-fn install_feed(
-    policy: &RwLock<Policy>,
-    id: &str,
-    category: FeedCategory,
-    feed: crate::intel::Feed,
-) -> FeedSummary {
-    let summary = FeedSummary {
+fn summarize(id: &str, feed: &crate::intel::Feed) -> FeedSummary {
+    FeedSummary {
         id: id.to_string(),
         domains: feed.domains.len(),
         ip_ranges: feed.ip_range_count(),
         ja4: feed.ja4.len(),
         rejected_lines: feed.rejected,
         memory_bytes: feed.memory_bytes(),
-    };
+    }
+}
+
+fn install_feed(
+    policy: &RwLock<Policy>,
+    id: &str,
+    category: FeedCategory,
+    feed: crate::intel::Feed,
+) -> FeedSummary {
+    let summary = summarize(id, &feed);
     policy.write().set_feed(id, LoadedFeed { category, feed });
     summary
+}
+
+/// Loads the start configuration's feeds, waiting up to
+/// `feeds_preload_timeout_ms` before packets are processed; the rest keeps
+/// loading in the background.
+async fn preload_feeds(shared: &Arc<Shared>) {
+    let cfg = shared.config();
+    if cfg.feeds.is_empty() {
+        return;
+    }
+    // Tickets are taken now, so an app load issued after start wins even
+    // if the preload reaches that feed later.
+    let tickets: Vec<u64> = cfg
+        .feeds
+        .iter()
+        .map(|f| shared.begin_feed_change(&f.id))
+        .collect();
+    let s = shared.clone();
+    let c = cfg.clone();
+    let started = Instant::now();
+    let load = tokio::task::spawn_blocking(move || s.preload_feeds(&c.feeds, &tickets));
+    let limit = cfg
+        .feeds_preload_timeout_ms
+        .min(crate::config::MAX_FEEDS_PRELOAD_TIMEOUT_MS);
+    match tokio::time::timeout(Duration::from_millis(limit), load).await {
+        Ok(_) => log::info!(
+            "{} feeds preloaded in {:?}",
+            cfg.feeds.len(),
+            started.elapsed()
+        ),
+        Err(_) => log::warn!("feeds still loading after {limit} ms; processing traffic meanwhile"),
+    }
 }
 
 async fn run(
@@ -664,13 +850,11 @@ async fn run(
         .tcp_send_buffer_size(TCP_WINDOW)
         .build()?;
     let listener = listener.ok_or_else(|| io::Error::other("tcp listener missing"))?;
-    if let Some(runner) = runner {
-        tokio::spawn(async move {
-            if let Err(e) = runner.await {
-                log::error!("tcp stack runner exited: {e}");
-            }
-        });
-    }
+    let runner = runner.ok_or_else(|| io::Error::other("tcp stack runner missing"))?;
+    // Every task below must run as long as the engine: if one ends (or
+    // panics), `run` fails and the session is restarted.
+    let mut tasks = EngineTasks::new();
+    tasks.spawn("tcp stack", runner);
     // Packets for the TCP stack go straight into its input queue, and the
     // TUN writer drains the stack's output itself: no forwarding tasks.
     let stack_in = stack
@@ -681,7 +865,7 @@ async fn run(
     // TUN writer: packets from the TCP stack and from vigil (UDP, DNS, RSTs).
     let s = shared.clone();
     let writer_tun = tun.clone();
-    tokio::spawn(async move {
+    tasks.spawn("tun writer", async move {
         let mut stack_open = true;
         loop {
             let p = tokio::select! {
@@ -707,11 +891,37 @@ async fn run(
                 log::warn!("tun write ({} bytes): {e}", p.len());
             }
         }
+        Ok(())
     });
 
-    tokio::spawn(tcp::accept_loop(shared.clone(), listener));
-    tokio::spawn(housekeeping(shared.clone()));
+    let s = shared.clone();
+    tasks.spawn("tcp accept", async move {
+        tcp::accept_loop(s, listener).await;
+        Ok(())
+    });
+    let s = shared.clone();
+    tasks.spawn("housekeeping", async move {
+        housekeeping(s).await;
+        Ok(())
+    });
 
+    tokio::select! {
+        r = async {
+            // Blocklists first: no packet is processed before the feeds of
+            // the start configuration are in place (or their time is up).
+            preload_feeds(&shared).await;
+            read_tun(&shared, &tun, &stack_in).await
+        } => r,
+        e = tasks.first_exit() => Err(e),
+    }
+}
+
+/// The TUN read loop; returns only on a fatal read error.
+async fn read_tun(
+    shared: &Arc<Shared>,
+    tun: &TunDevice,
+    stack_in: &mpsc::Sender<Vec<u8>>,
+) -> io::Result<()> {
     let gate = tcp::Gate::new(shared.clone(), stack_in.clone());
     let mut buf = vec![0u8; 65_536];
     let mut transient = 0u32;
@@ -735,7 +945,7 @@ async fn run(
         let pkt = &buf[..n];
         shared.stats.packets_out.fetch_add(1, Relaxed);
         shared.stats.bytes_out.fetch_add(n as u64, Relaxed);
-        dispatch(&shared, &gate, &stack_in, pkt);
+        dispatch(shared, &gate, stack_in, pkt);
     }
 }
 
@@ -785,6 +995,24 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
             let Some(t) = packet::parse_tcp(pkt, &ip) else {
                 return drop_it();
             };
+            if t.flags & packet::TCP_SYN != 0 && t.flags & packet::TCP_RST != 0 {
+                // Invalid. The gate would not see it (not an initial SYN),
+                // but the stack would take it for one and replace the live
+                // socket of that 4-tuple.
+                return drop_it();
+            }
+            if ip.dst.is_ipv6() && ip.l4_offset != packet::IPV6_HEADER_LEN {
+                // Extension headers (hop-by-hop, routing, destination
+                // options): smoltcp would parse them as the TCP header, so a
+                // gated SYN would hang after vigil connected upstream. Refuse
+                // new connections at once; drop anything else.
+                if t.is_initial_syn() {
+                    if let Some(rst) = packet::build_rst_for(&t) {
+                        shared.send_to_tun(rst);
+                    }
+                }
+                return drop_it();
+            }
             if !stack_accepts(&ip) {
                 // The netstack's own filter (its default IpFilters) drops
                 // these; it is bypassed now that packets skip its Sink.
@@ -1018,6 +1246,218 @@ mod tests {
         assert_eq!(tun_retry_delay(&err(libc::EIO), 0), None);
     }
 
+    /// Inserts an IPv6 hop-by-hop options header (PadN only).
+    fn with_hop_by_hop(pkt: &[u8]) -> Vec<u8> {
+        let mut out = pkt[..40].to_vec();
+        let next = out[6];
+        out[6] = 0;
+        let plen = u16::from_be_bytes([out[4], out[5]]) + 8;
+        out[4..6].copy_from_slice(&plen.to_be_bytes());
+        out.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]);
+        out.extend_from_slice(&pkt[40..]);
+        out
+    }
+
+    #[tokio::test]
+    async fn dispatch_drops_syn_rst_and_ipv6_extension_headers() {
+        use packet::{TCP_RST, TCP_SYN};
+        let (shared, mut tun) = test_shared_with_tun(Config::default());
+        let (stack_tx, mut stack_rx) = mpsc::channel(16);
+        let gate = tcp::Gate::new(shared.clone(), stack_tx.clone());
+        let dropped = || shared.stats.dropped_packets.load(Relaxed);
+        let (src4, dns4) = ("10.111.222.1:40000", "10.111.222.2:53");
+        let tcp = |src: &str, dst: &str, flags| {
+            packet::build_tcp(src.parse().unwrap(), dst.parse().unwrap(), 1, 0, flags, &[]).unwrap()
+        };
+
+        // SYN|RST: neither gated nor passed to the stack.
+        dispatch(
+            &shared,
+            &gate,
+            &stack_tx,
+            &tcp(src4, dns4, TCP_SYN | TCP_RST),
+        );
+        assert_eq!(dropped(), 1);
+        assert!(shared.tcp_keys.lock().is_empty());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(stack_rx.try_recv().is_err());
+
+        // IPv6 SYN behind a hop-by-hop header: refused with a RST.
+        let (src6, dns6) = ("[fd76:6967:696c::1]:40001", "[fd76:6967:696c::2]:53");
+        let syn6 = with_hop_by_hop(&tcp(src6, dns6, TCP_SYN));
+        let ip = packet::parse_ip(&syn6).unwrap();
+        assert_eq!((ip.proto, ip.l4_offset), (packet::PROTO_TCP, 48));
+        dispatch(&shared, &gate, &stack_tx, &syn6);
+        assert_eq!(dropped(), 2);
+        assert!(shared.tcp_keys.lock().is_empty());
+        let rst = tun.try_recv().expect("RST to the app");
+        let rip = packet::parse_ip(&rst).unwrap();
+        let t = packet::parse_tcp(&rst, &rip).unwrap();
+        assert_eq!(t.dst, src6.parse().unwrap());
+        assert_ne!(t.flags & TCP_RST, 0);
+        // Other segments with extension headers are dropped silently.
+        let ack6 = with_hop_by_hop(&tcp(src6, dns6, packet::TCP_ACK));
+        dispatch(&shared, &gate, &stack_tx, &ack6);
+        assert_eq!(dropped(), 3);
+        assert!(tun.try_recv().is_err());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(stack_rx.try_recv().is_err());
+
+        // The same SYNs without the oddities are gated and admitted.
+        dispatch(&shared, &gate, &stack_tx, &tcp(src4, dns4, TCP_SYN));
+        dispatch(&shared, &gate, &stack_tx, &tcp(src6, dns6, TCP_SYN));
+        for _ in 0..2 {
+            let p = tokio::time::timeout(Duration::from_secs(2), stack_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(packet::parse_ip(&p).is_some());
+        }
+        assert_eq!(dropped(), 3);
+    }
+
+    /// The TCP half of the netstack as `run` builds it: its input, its
+    /// output stream and the listener.
+    pub(crate) fn test_stack() -> (
+        mpsc::Sender<Vec<u8>>,
+        netstack_smoltcp::Stack,
+        netstack_smoltcp::TcpListener,
+    ) {
+        let (stack, runner, _udp, listener) = netstack_smoltcp::StackBuilder::default()
+            .enable_tcp(true)
+            .enable_udp(false)
+            .enable_icmp(false)
+            .build()
+            .unwrap();
+        tokio::spawn(runner.unwrap());
+        (stack.tcp_sender().unwrap(), stack, listener.unwrap())
+    }
+
+    /// The next TCP segment the stack sends to `to`.
+    pub(crate) async fn next_segment(
+        out: &mut netstack_smoltcp::Stack,
+        to: SocketAddr,
+    ) -> packet::TcpInfo {
+        loop {
+            let p = tokio::time::timeout(Duration::from_secs(2), out.next())
+                .await
+                .expect("stack output")
+                .unwrap()
+                .unwrap();
+            let ip = packet::parse_ip(&p).unwrap();
+            let t = packet::parse_tcp(&p, &ip).unwrap();
+            if t.dst == to {
+                return t;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn netstack_reaps_sockets_reset_during_handshake() {
+        use packet::{build_tcp, TCP_ACK, TCP_RST, TCP_SYN};
+        use tokio::io::AsyncReadExt;
+        let (input, mut out, mut listener) = test_stack();
+        let app: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+        let dst: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        input
+            .send(build_tcp(app, dst, 1000, 0, TCP_SYN, &[]).unwrap())
+            .await
+            .unwrap();
+        let (mut stream, src, _) = listener.next().await.unwrap();
+        assert_eq!(src, app);
+        let syn_ack = next_segment(&mut out, app).await;
+        assert_eq!(syn_ack.flags, TCP_SYN | TCP_ACK);
+        // The app gave up; its kernel resets the late SYN-ACK. smoltcp puts
+        // the socket back into LISTEN, which must count as a reset.
+        input
+            .send(build_tcp(app, dst, 1001, 0, TCP_RST, &[]).unwrap())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 16];
+        let r = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+            .await
+            .expect("stream still open: zombie LISTEN socket");
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+
+        // A later SYN to the same destination from another app socket gets
+        // its own connection (the zombie would have taken it).
+        let other: SocketAddr = "10.0.0.3:50000".parse().unwrap();
+        input
+            .send(build_tcp(other, dst, 5000, 0, TCP_SYN, &[]).unwrap())
+            .await
+            .unwrap();
+        let (_stream2, src2, _) = listener.next().await.unwrap();
+        assert_eq!(src2, other);
+        let syn_ack = next_segment(&mut out, other).await;
+        assert_eq!((syn_ack.flags, syn_ack.ack), (TCP_SYN | TCP_ACK, 5001));
+    }
+
+    fn engine_errors(s: &Shared) -> Vec<String> {
+        s.events
+            .poll(100, Duration::ZERO)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Engine(e) if e.state == "error" => Some(e.message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn supervisor_reports_errors_and_panics() {
+        let s = test_shared(Config::default());
+        let main = tokio::spawn(async { Err(io::Error::other("tun read: boom")) });
+        supervise(s.clone(), main).await;
+        assert_eq!(engine_errors(&s), vec!["tun read: boom".to_string()]);
+
+        let main = tokio::spawn(async {
+            if true {
+                panic!("bug in dispatch");
+            }
+            Ok(())
+        });
+        supervise(s.clone(), main).await;
+        assert_eq!(
+            engine_errors(&s),
+            vec!["engine panicked: bug in dispatch".to_string()]
+        );
+
+        // Cancelled at shutdown: nothing to report.
+        let main = tokio::spawn(std::future::pending::<io::Result<()>>());
+        main.abort();
+        supervise(s.clone(), main).await;
+        assert!(engine_errors(&s).is_empty());
+    }
+
+    #[tokio::test]
+    async fn engine_tasks_fail_when_any_task_ends() {
+        let mut tasks = EngineTasks::new();
+        tasks.spawn("forever", std::future::pending());
+        tasks.spawn("writer", async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            panic!("writer bug {}", 7);
+        });
+        let e = tokio::time::timeout(Duration::from_secs(2), tasks.first_exit())
+            .await
+            .unwrap();
+        assert_eq!(e.to_string(), "writer task panicked: writer bug 7");
+        let forever = tasks.aborts[0].clone();
+        assert!(!forever.is_finished());
+        drop(tasks);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(forever.is_finished(), "remaining tasks are aborted");
+
+        let mut tasks = EngineTasks::new();
+        tasks.spawn("tcp stack", async { Err(io::Error::other("closed")) });
+        assert_eq!(tasks.first_exit().await.to_string(), "tcp stack: closed");
+        let mut tasks = EngineTasks::new();
+        tasks.spawn("tcp accept", async { Ok(()) });
+        assert_eq!(
+            tasks.first_exit().await.to_string(),
+            "tcp accept task ended"
+        );
+    }
+
     /// A datagram socket pair stands in for the TUN device.
     fn fake_tun() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
         use std::os::fd::FromRawFd;
@@ -1036,6 +1476,157 @@ mod tests {
         use std::os::fd::AsRawFd;
         let n = unsafe { libc::write(fd.as_raw_fd(), pkt.as_ptr().cast(), pkt.len()) };
         assert_eq!(n as usize, pkt.len());
+    }
+
+    /// Reads one packet from the host end of a fake TUN, waiting up to 5 s.
+    fn read_packet(fd: &std::os::fd::OwnedFd) -> Option<Vec<u8>> {
+        use std::os::fd::AsRawFd;
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut pfd, 1, 5000) } != 1 {
+            return None;
+        }
+        let mut buf = vec![0u8; 65536];
+        let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+        (n > 0).then(|| {
+            buf.truncate(n as usize);
+            buf
+        })
+    }
+
+    fn temp_feed(name: &str, content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "vigil-test-{}-{name}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn start_feeds_apply_to_the_first_packet() {
+        use crate::proto::dns;
+        use std::os::fd::AsRawFd;
+        // Big enough that loading is not instant.
+        let mut list = String::new();
+        for i in 0..200_000 {
+            list.push_str(&format!("filler{i}.example\n"));
+        }
+        list.push_str("evil.example\n");
+        let path = temp_feed("malware", &list);
+        let (engine_end, host_end) = fake_tun();
+        let config = Config {
+            feeds: vec![crate::config::FeedFile {
+                id: "urlhaus".into(),
+                category: "malware".into(),
+                path: path.to_string_lossy().into_owned(),
+            }],
+            ..Default::default()
+        };
+        let engine = Engine::start(engine_end.as_raw_fd(), config, Arc::new(NullPlatform)).unwrap();
+        drop(engine_end);
+        // Sent at once: must already be answered from the loaded feed.
+        let app: SocketAddr = "10.111.222.1:40000".parse().unwrap();
+        let resolver: SocketAddr = "10.111.222.2:53".parse().unwrap();
+        let q = dns::build_query(9, "evil.example", dns::TYPE_A);
+        write_packet(&host_end, &packet::build_udp(app, resolver, &q).unwrap());
+        let reply = read_packet(&host_end).expect("DNS answer");
+        let ip = packet::parse_ip(&reply).unwrap();
+        let u = packet::parse_udp(&reply, &ip).unwrap();
+        let answer = dns::parse(&reply[u.payload_offset..u.payload_end]).unwrap();
+        assert_eq!(
+            answer.answers[0].data,
+            dns::RData::A(std::net::Ipv4Addr::UNSPECIFIED),
+            "sinkholed by the preloaded feed"
+        );
+        engine.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn start_feeds_never_undo_later_loads_or_removals() {
+        let s = test_shared(Config::default());
+        let old = temp_feed("old", "old.example\n");
+        let new = temp_feed("new", "new.example\n");
+        let blocked = |name: &str| {
+            matches!(
+                s.policy.read().check_domain(None, name),
+                crate::policy::Decision::Block(_)
+            )
+        };
+        // The preload took its ticket at start; the app then loaded the id.
+        let ticket = s.begin_feed_change("f");
+        s.begin_feed_change("f");
+        s.load_feed_file("f", FeedCategory::Malware, &new, None)
+            .unwrap();
+        s.preload_feeds(
+            &[crate::config::FeedFile {
+                id: "f".into(),
+                category: "malware".into(),
+                path: old.to_string_lossy().into_owned(),
+            }],
+            &[ticket],
+        );
+        assert!(blocked("new.example") && !blocked("old.example"));
+        // Untouched ids are installed; one load per id, replacing.
+        let ticket = s.begin_feed_change("g");
+        let (_, installed) = s
+            .load_feed_file("g", FeedCategory::Malware, &old, Some(ticket))
+            .unwrap();
+        assert!(installed && blocked("old.example"));
+        assert_eq!(s.policy.read().feed_ids().len(), 2);
+        // Missing files and relative paths are skipped (logged).
+        let ticket = s.begin_feed_change("h");
+        s.preload_feeds(
+            &[crate::config::FeedFile {
+                id: "h".into(),
+                category: "c2".into(),
+                path: "relative/feed.txt".into(),
+            }],
+            &[ticket],
+        );
+        assert!(s
+            .load_feed_file(
+                "h",
+                FeedCategory::C2,
+                std::path::Path::new("/nonexistent/x"),
+                None
+            )
+            .is_err());
+        assert_eq!(s.policy.read().feed_ids().len(), 2);
+        let _ = std::fs::remove_file(old);
+        let _ = std::fs::remove_file(new);
+    }
+
+    #[test]
+    fn slow_start_feeds_finish_in_the_background() {
+        use std::os::fd::AsRawFd;
+        let path = temp_feed("bg", "late.example\n");
+        let (engine_end, _host_end) = fake_tun();
+        let config = Config {
+            feeds: vec![crate::config::FeedFile {
+                id: "bg".into(),
+                category: "ads".into(),
+                path: path.to_string_lossy().into_owned(),
+            }],
+            feeds_preload_timeout_ms: 0,
+            ..Default::default()
+        };
+        let engine = Engine::start(engine_end.as_raw_fd(), config, Arc::new(NullPlatform)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while engine.shared.policy.read().feed_ids().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            engine.shared.policy.read().feed_ids(),
+            vec!["bg".to_string()]
+        );
+        engine.shutdown();
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

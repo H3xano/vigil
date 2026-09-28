@@ -13,6 +13,9 @@ pub const TCP_SYN: u8 = 0x02;
 pub const TCP_RST: u8 = 0x04;
 pub const TCP_ACK: u8 = 0x10;
 
+/// Length of the fixed IPv6 header.
+pub const IPV6_HEADER_LEN: usize = 40;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpInfo {
     pub src: IpAddr,
@@ -273,24 +276,40 @@ pub fn build_udp(src: SocketAddr, dst: SocketAddr, payload: &[u8]) -> Option<Vec
 
 /// Builds the RST|ACK a closed port would send in reply to `syn`.
 pub fn build_rst_for(syn: &TcpInfo) -> Option<Vec<u8>> {
-    let (src, dst) = (syn.dst, syn.src);
-    let mut pkt = ip_header(src.ip(), dst.ip(), PROTO_TCP, 20)?;
-    let off = pkt.len();
     let ack = syn
         .seq
         .wrapping_add(syn.payload_len as u32)
         .wrapping_add(if syn.flags & TCP_SYN != 0 { 1 } else { 0 });
     let seq = if syn.flags & TCP_ACK != 0 { syn.ack } else { 0 };
+    build_tcp(syn.dst, syn.src, seq, ack, TCP_RST | TCP_ACK, &[])
+}
+
+/// Builds an IP/TCP segment without options (window 0 for RSTs, else
+/// 65535).
+pub fn build_tcp(
+    src: SocketAddr,
+    dst: SocketAddr,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    let l4_len = 20 + payload.len();
+    let mut pkt = ip_header(src.ip(), dst.ip(), PROTO_TCP, l4_len)?;
+    let off = pkt.len();
+    let window: u16 = if flags & TCP_RST != 0 { 0 } else { 65535 };
     pkt.extend_from_slice(&src.port().to_be_bytes());
     pkt.extend_from_slice(&dst.port().to_be_bytes());
     pkt.extend_from_slice(&seq.to_be_bytes());
     pkt.extend_from_slice(&ack.to_be_bytes());
     pkt.push(5 << 4);
-    pkt.push(TCP_RST | TCP_ACK);
-    pkt.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    pkt.push(flags);
+    pkt.extend_from_slice(&window.to_be_bytes());
+    pkt.extend_from_slice(&[0, 0, 0, 0]);
+    pkt.extend_from_slice(payload);
     let c = fold(sum16(
         &pkt[off..],
-        pseudo_header_sum(src.ip(), dst.ip(), PROTO_TCP, 20),
+        pseudo_header_sum(src.ip(), dst.ip(), PROTO_TCP, l4_len),
     ));
     pkt[off + 16..off + 18].copy_from_slice(&c.to_be_bytes());
     Some(pkt)

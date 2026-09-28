@@ -5,7 +5,10 @@
 #   * a connection reset by the peer (or timed out) surfaces as
 #     ErrorKind::ConnectionReset from reads and writes instead of EOF;
 #   * shutdown() completes once the FIN is queued (not at CLOSED), and
-#     sockets leave TIME-WAIT after 1 s instead of smoltcp's 10 s.
+#     sockets leave TIME-WAIT after 1 s instead of smoltcp's 10 s;
+#   * a socket that smoltcp puts back into LISTEN (RST in SYN-RECEIVED) or
+#     that stays in LISTEN is reaped as reset; SYN|RST creates no socket;
+#   * TcpAbortHandle::closed() resolves when the connection is gone.
 # The upstream crate's dev-dependencies, examples and tests are omitted.
 # To rebase onto a newer release, diff src/ against the published crate.
 [package]
