@@ -48,3 +48,20 @@ codegen-units = 1
 opt-level = 3
 panic = "unwind"
 strip = "symbols"
+
+# TLS and HTTP/2 only carry DNS lookups: optimise them for size (saves
+# about 130 KB per ABI; the packet path keeps opt-level 3).
+[profile.release.package.rustls]
+opt-level = "s"
+[profile.release.package.ring]
+opt-level = "s"
+[profile.release.package.rustls-webpki]
+opt-level = "s"
+[profile.release.package.tokio-rustls]
+opt-level = "s"
+[profile.release.package.h2]
+opt-level = "s"
+[profile.release.package.http]
+opt-level = "s"
+[profile.release.package.indexmap]
+opt-level = "s"
