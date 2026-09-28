@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -192,6 +193,14 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                     )
                 }
             }
+        }
+
+        item {
+            ListItem(
+                headlineContent = { Text("Spyware health check") },
+                supportingContent = { Text("Look for known spyware and stalkerware in installed apps and recorded activity") },
+                modifier = Modifier.fillMaxWidth().clickable { nav.navigate("health") },
+            )
         }
 
         item { SectionTitle("Most active apps") }

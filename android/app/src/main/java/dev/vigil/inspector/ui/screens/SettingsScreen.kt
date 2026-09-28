@@ -119,6 +119,11 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                     "downloaded daily from their publishers",
                 onClick = { nav.navigate("feeds") },
             )
+            SettingRow(
+                "Spyware health check",
+                "Check installed apps and recorded activity against known spyware and stalkerware indicators, on this phone",
+                onClick = { nav.navigate("health") },
+            )
             SettingRow("Custom rules", "${s.denyDomains.size} blocked · ${s.allowDomains.size} allowed domains", onClick = { nav.navigate("rules") })
 
             SectionTitle("Network")
