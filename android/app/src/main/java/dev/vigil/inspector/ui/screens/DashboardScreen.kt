@@ -64,6 +64,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
     val unseen by vm.unseenAlerts.collectAsStateWithLifecycle()
     val topApps by vm.topApps.collectAsStateWithLifecycle()
     val topBlocked by vm.topBlocked.collectAsStateWithLifecycle()
+    val topTrackers by vm.topTrackerCompanies.collectAsStateWithLifecycle()
     val network by vm.network.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val feeds by vm.feeds.collectAsStateWithLifecycle()
@@ -237,6 +238,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                 }
             }
         }
+        topTrackerCompanies(topTrackers, nav)
         item { Spacer(Modifier.height(24.dp)) }
     }
     blockedSheet?.let { name -> DomainSheet(name, vm, nav, onDismiss = { blockedSheet = null }, loadReason = true) }

@@ -199,6 +199,7 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 3.dp)) {
                 if (f.isBlocked) BlockedTag()
+                TrackerTag(f.domain)
                 Tag((f.appProto ?: f.proto).uppercase())
                 if (f.dstPort != 443 && f.dstPort != 80) Tag(":${f.dstPort}")
                 if (PathLabels.isTunnelled(f.via)) PathLabels.via(f.via)?.let { Tag(it, VigilColors.Info, filled = true) }
@@ -276,6 +277,7 @@ fun DnsRow(d: DnsEntity, appLabel: String, onClick: (() -> Unit)? = null) {
                 color = if (d.isBlocked) VigilColors.Block else MaterialTheme.colorScheme.onSurface,
             )
             Text("$appLabel · ${formatTime(d.ts)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            TrackerTag(d.qname)
             if (d.answers.isNotEmpty()) {
                 Text(d.answers, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)

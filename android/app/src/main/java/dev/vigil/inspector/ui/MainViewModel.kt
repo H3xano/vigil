@@ -19,6 +19,10 @@ import dev.vigil.inspector.data.PathFilter
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.data.Totals
+import dev.vigil.inspector.data.CompanyApps
+import dev.vigil.inspector.data.CompanyHits
+import dev.vigil.inspector.data.TrackerIndex
+import dev.vigil.inspector.data.TrackerSummaries
 import dev.vigil.inspector.engine.StatsEvent
 import dev.vigil.inspector.export.ExportStatus
 import dev.vigil.inspector.vpn.NetworkInfo
@@ -42,6 +46,8 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.take
@@ -367,7 +373,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun sendExportTest(cfg: ExportSettings): Result<Unit> = app.exporter.sendTest(cfg)
 
+    // --- Tracker labels (display-time lookups; see data/Trackers.kt) ---
+
+    /** The loaded tracker labels; null when turned off or not downloaded yet. */
+    val trackerIndex: StateFlow<TrackerIndex?> get() = app.trackers.index
+
+    /** Runs [query] only while labels are loaded; emits [off] otherwise. Throttled harder than other aggregates. */
+    private fun <T> withTrackers(off: T, query: (TrackerIndex) -> Flow<T>): Flow<T> =
+        app.trackers.index.flatMapLatest { idx -> if (idx == null) flowOf(off) else query(idx) }.flowOn(Dispatchers.Default)
+
+    /** Tracking trackers contacted per app in the Apps window (the "N trackers" tag). */
+    val appTrackerCounts: StateFlow<Map<String, Int>> = withTrackers(emptyMap()) { idx ->
+        appWindowStart.flatMapLatest { db.trackerUsage().appDomains(it).throttleLatest(TRACKER_THROTTLE_MS) }
+            .map { TrackerSummaries.trackerCountsByApp(idx, it) }
+    }.state(emptyMap())
+
+    /** Tracking companies by number of apps in the last 24 hours (Overview). */
+    val topTrackerCompanies: StateFlow<List<CompanyApps>> = withTrackers(emptyList()) { idx ->
+        since(24).flatMapLatest { db.trackerUsage().appDomains(it).throttleLatest(TRACKER_THROTTLE_MS) }
+            .map { TrackerSummaries.topCompanies(idx, it) }
+    }.state(emptyList())
+
+    /** Companies [pkg] contacted in the Apps window; null when tracker labels are unavailable. */
+    fun appTrackers(pkg: String): Flow<List<CompanyHits>?> = withTrackers(null) { idx ->
+        appWindowStart.flatMapLatest { db.trackerUsage().domainsFor(pkg, it).aggregate() }.map { TrackerSummaries.byCompany(idx, it) }
+    }
+
     companion object {
+        /** Tracker summaries across all apps re-run at most this often. */
+        private const val TRACKER_THROTTLE_MS = 30_000L
+
         /** Row limit of the Activity lists (see FlowDao.recent / DnsDao.recent). */
         const val ACTIVITY_LIMIT = 500
         /** Unique work name used by FeedRepository.scheduleRefreshNow(). */
