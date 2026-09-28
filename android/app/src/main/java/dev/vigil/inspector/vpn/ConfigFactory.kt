@@ -21,6 +21,15 @@ object ConfigFactory {
         nat64Prefixes: List<String> = emptyList(),
         networkId: String = "",
     ): EngineConfig {
+        // DNS precedence when several settings apply:
+        // 1. Encrypted DNS (mode dot/doh) answers the virtual resolver's lookups,
+        //    whatever `upstream_dns` holds. Its servers are reached over the
+        //    upstream path (through the WireGuard tunnel or the SOCKS5 proxy).
+        // 2. `upstream_dns` (below) is then only used for fallback_plain,
+        //    bootstrap lookups of server names and, with encrypted DNS off,
+        //    all lookups: the WireGuard config's DNS servers, else the custom
+        //    resolvers, else public resolvers in tunnel/proxy modes, else the
+        //    network's resolvers. Also reached over the upstream path.
         val up = s.upstream
         val tunnelDns = up.wireguard?.dns.orEmpty().mapNotNull(::normalizeResolver)
         val upstreams = when {

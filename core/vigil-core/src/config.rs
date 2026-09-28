@@ -636,6 +636,17 @@ mod tests {
         ] {
             Config::from_json(app).unwrap();
         }
+        // Encrypted DNS together with a tunnel (ConfigFactoryTest's
+        // COMBINED_EDNS plus the WireGuard section): both are kept.
+        let c = Config::from_json(
+            r#"{"encrypted_dns":{"mode":"dot","servers":[{"host":"dns.quad9.net","addrs":["9.9.9.9","149.112.112.112","2620:fe::fe","2620:fe::9"]}],"fallback_plain":false},
+                "upstream_dns":["10.64.0.1:53","[fd00::1]:53"],
+                "upstream":{"mode":"wireguard","fail_closed":true,"wireguard":{"private_key":"YAnz4CFg6SqZkWpBHQ3K3G3oN6bT9x5cyTqQyzQ8bVE=","peer_public_key":"xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=","endpoint":"vpn.example.com:51820","addresses":["10.64.0.2/32","fd00::2/128"],"allowed_ips":["0.0.0.0/0","::/0"],"mtu":1280,"persistent_keepalive":25},"network_id":"101"}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.encrypted_dns.mode, EncryptedDnsMode::Dot);
+        assert_eq!(c.upstream.mode, UpstreamMode::Wireguard);
+        assert_eq!(c.upstream_dns.len(), 2);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.data.EncryptedDnsSettings
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.Socks5Settings
 import dev.vigil.inspector.data.UpstreamSettings
@@ -123,6 +124,37 @@ class ConfigFactoryTest {
     }
 
     @Test
+    fun encryptedDnsWithWireguardAndSocks5() {
+        val dot = EncryptedDnsSettings(mode = "dot", provider = "quad9")
+        // WireGuard with DNS servers in its conf, plus DoT: both are passed on.
+        // The engine sends the virtual resolver's lookups over DoT (through
+        // the tunnel); the conf's resolvers stay the plain upstreams.
+        val s = Settings(upstream = UpstreamSettings(mode = "wireguard", wireguard = wg), encryptedDns = dot)
+        val cfg = ConfigFactory.build(s, listOf("192.168.1.1:53"), emptyList(), networkId = "101")
+        assertEquals("dot", cfg.encryptedDns.mode)
+        assertEquals("dns.quad9.net", cfg.encryptedDns.servers.single().host)
+        assertEquals(listOf("10.64.0.1:53", "[fd00::1]:53"), cfg.upstreamDns)
+        assertEquals("wireguard", cfg.upstream.mode)
+        val json = cfg.toJson()
+        assertTrue(json, json.contains(COMBINED_EDNS))
+        assertTrue(json, json.contains("\"upstream\":{\"mode\":\"wireguard\""))
+        // Same with SOCKS5: DoT goes through the proxy as TCP; plain upstreams
+        // are public resolvers (the LAN resolver is not reachable via the proxy).
+        val socks = Settings(
+            upstream = UpstreamSettings(mode = "socks5", socks5 = Socks5Settings(host = "127.0.0.1", port = 9050)),
+            encryptedDns = dot.copy(fallbackPlain = true),
+        )
+        val c2 = ConfigFactory.build(socks, listOf("192.168.1.1:53"), emptyList())
+        assertEquals(EngineConfig.FALLBACK_UPSTREAMS, c2.upstreamDns)
+        assertTrue(c2.encryptedDns.fallbackPlain)
+        assertEquals("socks5", c2.upstream.mode)
+        // Encrypted DNS off: the plain selection alone decides.
+        val off = ConfigFactory.build(s.copy(encryptedDns = EncryptedDnsSettings()), emptyList(), emptyList())
+        assertEquals("off", off.encryptedDns.mode)
+        assertEquals(listOf("10.64.0.1:53", "[fd00::1]:53"), off.upstreamDns)
+    }
+
+    @Test
     fun serialisesRustFieldNames() {
         val cfg = ConfigFactory.build(
             Settings(blockEncryptedDns = true, denyDomains = setOf("b.example", "a.example"), beaconSensitivity = "high"),
@@ -133,5 +165,11 @@ class ConfigFactoryTest {
             "\"deny_domains\":[\"a.example\",\"b.example\"]", "\"max_jitter\":0.25", "\"stats_interval_ms\"")) {
             assertTrue("$key in $json", json.contains(key))
         }
+    }
+
+    private companion object {
+        /** Also parsed by the Rust test `upstream_json_contract`. */
+        const val COMBINED_EDNS = "\"encrypted_dns\":{\"mode\":\"dot\",\"servers\":[{\"host\":\"dns.quad9.net\"," +
+            "\"addrs\":[\"9.9.9.9\",\"149.112.112.112\",\"2620:fe::fe\",\"2620:fe::9\"]}],\"fallback_plain\":false}"
     }
 }
