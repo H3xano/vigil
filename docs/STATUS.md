@@ -17,8 +17,7 @@ in CHANGELOG.md, section "After 0.4.0" below). **Not pushed, not tagged,
 not released**: the owner decides when (the next version would be 0.5.0,
 versionCode 500; follow the release checklist in DEVELOPMENT.md and update
 the F-Droid recipe). Every host suite and every emulator suite passes (see
-the table). The agent worktrees under `.claude/worktrees/` can be removed
-(`git worktree remove`); their branches are merged.
+the table). No worktrees or feature branches are left.
 
 **Waiting on the owner** (ask about these first; none can be done without them):
 
