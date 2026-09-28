@@ -128,7 +128,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
             val domain = f.domain
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (domain != null) {
-                    BlockDomainButtons(domain, settings, vm)
+                    BlockDomainButtons(domain, settings, vm, pkg = f.pkg, appLabel = label)
                     if (DomainNames.matchingRule(domain, settings.denyDomains) == null && f.domainSource == "dns") {
                         Text(
                             "This name is a hint from an earlier DNS answer; other sites may share ${f.dstIp}. " +
@@ -137,7 +137,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                         )
                     }
                     val allowRule = DomainNames.matchingRule(domain, settings.allowDomains)
-                    if (f.isBlocked && allowRule == null && f.reason != "app") {
+                    if (f.isBlocked && allowRule == null && !BlockReasons.isPerApp(f.reason)) {
                         OutlinedButton(onClick = { vm.allowDomainWithUndo(domain) }, Modifier.fillMaxWidth()) { Text("Always allow $domain") }
                     }
                     if (f.isBlocked) {

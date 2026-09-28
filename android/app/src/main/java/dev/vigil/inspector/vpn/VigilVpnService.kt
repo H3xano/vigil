@@ -12,9 +12,11 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -22,7 +24,9 @@ import androidx.core.content.ContextCompat
 import dev.vigil.inspector.BuildConfig
 import dev.vigil.inspector.R
 import dev.vigil.inspector.VigilApp
+import dev.vigil.inspector.data.AppRules
 import dev.vigil.inspector.data.Settings
+import dev.vigil.inspector.engine.DeviceState
 import dev.vigil.inspector.engine.EngineConfig
 import dev.vigil.inspector.engine.EngineHandle
 import dev.vigil.inspector.engine.EngineJson
@@ -36,6 +40,7 @@ import dev.vigil.inspector.ui.formatCount
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -47,6 +52,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -100,6 +106,11 @@ class VigilVpnService : android.net.VpnService() {
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var packageReceiver: BroadcastReceiver? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    /** Type of the underlying default network, for per-app Wi-Fi / mobile data rules. */
+    private val networkType = MutableStateFlow(DeviceState.NETWORK_OTHER)
+    /** Screen on (interactive), for per-app screen-off and background rules. */
+    private val screenOn = MutableStateFlow(true)
     /** Bumped when packages are installed/removed, so blocked UIDs are recomputed. */
     private val packagesChanged = MutableStateFlow(0)
 
@@ -129,6 +140,8 @@ class VigilVpnService : android.net.VpnService() {
         @Volatile var applied: EngineConfig,
         /** Feeds passed in the start config: id → FeedEntity.lastUpdated (0 if never). */
         val preloaded: Map<String, Long>,
+        /** The device state the engine has (for per-app conditions). */
+        @Volatile var deviceState: DeviceState,
     ) {
         @Volatile var draining = false
         var pump: Job? = null
@@ -140,6 +153,7 @@ class VigilVpnService : android.net.VpnService() {
         scope.launch { commandLoop() }
         registerNetworkCallback()
         registerPackageReceiver()
+        registerScreenReceiver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -173,6 +187,8 @@ class VigilVpnService : android.net.VpnService() {
         networkCallback = null
         packageReceiver?.let { runCatching { unregisterReceiver(it) } }
         packageReceiver = null
+        screenReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenReceiver = null
         commands.trySend(Command.Destroy)
         super.onDestroy()
     }
@@ -293,6 +309,7 @@ class VigilVpnService : android.net.VpnService() {
         s.side = scope.launch {
             launch { syncFeeds(s) }
             launch { applyConfigChanges(s) }
+            launch { pushDeviceState(s) }
             launch { updateNotification(s) }
         }
         ServiceState.status.value = VpnStatus.Running(s.id)
@@ -371,7 +388,8 @@ class VigilVpnService : android.net.VpnService() {
         val config = buildConfig(settings, net)
         // The engine loads the feeds before it processes the first packet, so
         // blocking and threat alerts cover the session from its start.
-        val startConfig = ConfigFactory.startConfig(config, feeds) { app.feeds.fileFor(it).absolutePath }
+        val state = currentDeviceState(settings)
+        val startConfig = ConfigFactory.startConfig(config, feeds, state) { app.feeds.fileFor(it).absolutePath }
         val handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
         if (handle == 0L) {
             runCatching { pfd.close() }
@@ -381,7 +399,7 @@ class VigilVpnService : android.net.VpnService() {
             commands.trySend(Command.EngineError(id, message))
         }
         val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }
-        return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded))
+        return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded, state))
     }
 
     /**
@@ -524,7 +542,40 @@ class VigilVpnService : android.net.VpnService() {
     }
 
     private fun buildConfig(s: Settings, net: NetworkInfo): EngineConfig =
-        ConfigFactory.build(s, net.upstreamDns, app.apps.uidsFor(s.blockedPackages), net.nat64Prefixes, net.networkId)
+        ConfigFactory.build(s, net.upstreamDns, app.apps.uidsFor(s.blockedPackages), net.nat64Prefixes, net.networkId, app.apps::uidFor)
+
+    /** The device state for per-app conditions (PackageManager and usage-stats calls). */
+    private fun currentDeviceState(s: Settings): DeviceState = AppRules.deviceState(
+        network = networkType.value,
+        screenOn = screenOn.value,
+        needsForeground = AppRules.needsForeground(s),
+        foregroundPackage = { app.foreground.foregroundPackage(FOREGROUND_POLL_MS) },
+        uidOf = app.apps::uidFor,
+    )
+
+    /**
+     * Keeps the engine's device state current: the network type and screen
+     * state are pushed when they change; the foreground app is polled every
+     * [FOREGROUND_POLL_MS] only while some app has a background rule and
+     * the screen is on (usage stats have no change callback). Only changes
+     * reach the engine, which then cuts connections that became blocked.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun pushDeviceState(s: Session) {
+        val needsForeground = app.settings.flow.map { AppRules.needsForeground(it) }.distinctUntilChanged()
+        combine(needsForeground, screenOn, networkType, packagesChanged) { fg, screen, _, _ -> fg && screen }
+            .collectLatest { poll ->
+                while (true) {
+                    val state = currentDeviceState(app.settings.value)
+                    if (state != s.deviceState) {
+                        val ok = s.engine.use { VigilNative.nativeSetDeviceState(it, state.toJson()) } ?: return@collectLatest
+                        if (ok) s.deviceState = state else Log.w(TAG, "engine rejected device state ${state.toJson()}")
+                    }
+                    if (!poll) break
+                    delay(FOREGROUND_POLL_MS)
+                }
+            }
+    }
 
     /**
      * Pushes engine-relevant setting, network and package changes into the
@@ -603,7 +654,17 @@ class VigilVpnService : android.net.VpnService() {
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
                 refreshNetworkInfo(network, linkProperties)
             }
+
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                networkType.value = networkTypeOf(caps)
+            }
+
+            override fun onLost(network: Network) {
+                networkType.value = DeviceState.NETWORK_NONE
+            }
         }
+        networkType.value = runCatching { connectivity.activeNetwork?.let { connectivity.getNetworkCapabilities(it) } }
+            .getOrNull()?.let(::networkTypeOf) ?: DeviceState.NETWORK_NONE
         // vigil is excluded from its own VPN, so its default network is the
         // underlying Wi-Fi/cellular network.
         runCatching { connectivity.registerDefaultNetworkCallback(cb) }.onSuccess { networkCallback = cb }
@@ -626,6 +687,26 @@ class VigilVpnService : android.net.VpnService() {
         // System broadcasts are delivered to non-exported receivers too.
         ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         packageReceiver = receiver
+    }
+
+    /** Screen on/off for per-app rules; sticky state from PowerManager, changes by broadcast. */
+    private fun registerScreenReceiver() {
+        screenOn.value = runCatching { getSystemService(PowerManager::class.java).isInteractive }.getOrDefault(true)
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_ON -> screenOn.value = true
+                    Intent.ACTION_SCREEN_OFF -> screenOn.value = false
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }
+        // Protected system broadcasts, delivered to non-exported receivers too.
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        screenReceiver = receiver
     }
 
     private fun postProblem(id: Int, title: String, text: String, channel: String) {
@@ -684,12 +765,21 @@ class VigilVpnService : android.net.VpnService() {
     }
 
     companion object {
+        /** Wi-Fi or mobile data (for per-app rules); VPN-over-VPN never occurs, vigil being excluded. */
+        fun networkTypeOf(caps: NetworkCapabilities): String = when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> DeviceState.NETWORK_WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> DeviceState.NETWORK_CELLULAR
+            else -> DeviceState.NETWORK_OTHER
+        }
+
         private const val TAG = "vigil.vpn"
         private const val NOTIFICATION_ID = 1
         private const val NOTIFICATION_FAILED_ID = 2
         private const val NOTIFICATION_CONFIG_ID = 3
         private const val DRAIN_TIMEOUT_MS = 5_000L
         private const val MAX_DRAIN_BATCHES = 200
+        /** How often the foreground app is looked up while a background rule needs it. */
+        private const val FOREGROUND_POLL_MS = 1_000L
         const val ACTION_START = "dev.vigil.inspector.START"
         const val ACTION_STOP = "dev.vigil.inspector.STOP"
         const val ACTION_INJECT_ENGINE_ERROR = "dev.vigil.inspector.INJECT_ENGINE_ERROR"

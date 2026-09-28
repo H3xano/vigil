@@ -22,6 +22,7 @@ PY
   jpid=$!
   for i in $(seq 50); do [ -f "$work/ready" ] && break; sleep 0.1; done
   dig +short +time=2 +tries=1 blocked.vigil-test.example A @10.111.222.2 || true
+  dig +short +time=2 +tries=1 appblocked.vigil-test.example A @10.111.222.2 || true
   curl -s --max-time 2 http://198.51.100.7/ || true
   curl -s --max-time 2 http://203.0.113.9/ || true
   wait $jpid

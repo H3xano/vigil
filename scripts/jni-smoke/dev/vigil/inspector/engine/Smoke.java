@@ -46,7 +46,15 @@ public final class Smoke {
         check("bad-config-rejected", !VigilNative.nativeUpdateConfig(h, "{not json"));
         check("invalid-config-rejected", !VigilNative.nativeUpdateConfig(h, "{\"upstream_dns\":[]}")
             && !VigilNative.nativeUpdateConfig(h, "{\"beacon\":{\"min_interval_s\":60,\"max_interval_s\":1}}"));
-        check("config-update", VigilNative.nativeUpdateConfig(h, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"],\"sinkhole\":\"nxdomain\"}"));
+        // Per-app rules for the bridge's UID 10123: blocked on mobile data
+        // (the device is on Wi-Fi below, so nothing is blocked by it) and one
+        // name blocked for this app only.
+        check("config-update", VigilNative.nativeUpdateConfig(h, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"],\"sinkhole\":\"nxdomain\","
+            + "\"app_rules\":[{\"uid\":10123,\"block_cellular\":true}],"
+            + "\"app_domain_rules\":[{\"uid\":10123,\"domain\":\"appblocked.vigil-test.example\",\"action\":\"block\"}]}"));
+        check("device-state", VigilNative.nativeSetDeviceState(h, "{\"network\":\"wifi\",\"screen_on\":true,\"foreground_uids\":null}"));
+        check("device-state-rejected", !VigilNative.nativeSetDeviceState(h, "{\"network\":\"satellite\"}")
+            && !VigilNative.nativeSetDeviceState(h, "not json") && !VigilNative.nativeSetDeviceState(0, "{}"));
         String summary = VigilNative.nativeLoadFeedFile(h, "smoke", "malware", feed.toString());
         check("load-feed", summary != null && summary.contains("\"ip_ranges\":1"));
         Path ja4 = Files.createTempFile("ja4", ".txt");
@@ -68,6 +76,8 @@ public final class Smoke {
         check("uid-attributed", ev.contains("\"uid\":10123"));
         check("threat-alert", ev.contains("\"kind\":\"threat_domain\""));
         check("ip-block-flow", ev.contains("\"dst_ip\":\"198.51.100.7\"") && ev.contains("\"verdict\":\"block\""));
+        check("app-domain-rule", ev.contains("\"reason\":\"app domain rule (appblocked.vigil-test.example)\""));
+        check("condition-not-met-not-blocked", !ev.contains("app rule: "));
         check("stats-json", VigilNative.nativeStats(h).contains("\"dns_queries\""));
         check("uid-upcalls", uidCalls.get() >= 2);
         check("protect-upcalls", protectCalls.get() >= 1);
@@ -89,7 +99,8 @@ public final class Smoke {
             !VigilNative.nativeUpdateConfig(h, "{}")
             && VigilNative.nativeStats(h) == null
             && VigilNative.nativeLoadFeedFile(h, "x", "malware", feed.toString()) == null
-            && !VigilNative.nativeRemoveFeed(h, "x"));
+            && !VigilNative.nativeRemoveFeed(h, "x")
+            && !VigilNative.nativeSetDeviceState(h, "{}"));
         VigilNative.nativeStop(h);
         check("shutdown-null-handle", !VigilNative.nativeShutdown(0));
 

@@ -26,6 +26,29 @@ class SettingsCodecTest {
     }
 
     @Test
+    fun perAppRulesDefaultAndRoundTrip() {
+        // A document saved before per-app rules existed decodes with none.
+        val old = """{"sinkhole":"null_ip","blockedPackages":["com.a"],"allowDomains":["x.example"],"deviceId":"dev-1","onboarded":true}"""
+        val loaded = SettingsCodec.decode(old)
+        assertFalse(loaded.unreadable)
+        assertEquals(setOf("com.a"), loaded.settings.blockedPackages)
+        assertTrue(loaded.settings.appRules.isEmpty())
+        assertTrue(loaded.settings.appDomainRules.isEmpty())
+        val s = loaded.settings.copy(
+            appRules = mapOf("com.chat" to AppRule(blockWifi = true, blockBackground = true), "uid:10300" to AppRule(blockScreenOff = true)),
+            appDomainRules = listOf(AppDomainRule("com.chat", "ads.example.com", AppDomainRule.BLOCK), AppDomainRule("com.shop", "t.example", AppDomainRule.ALLOW)),
+        )
+        val doc = SettingsCodec.encode(s)
+        assertTrue(doc, doc.contains("\"appRules\":{\"com.chat\":{\"blockWifi\":true,"))
+        assertTrue(doc, doc.contains("{\"app\":\"com.chat\",\"domain\":\"ads.example.com\",\"action\":\"block\"}"))
+        assertEquals(s, SettingsCodec.decode(doc).settings)
+        // Partial rule objects (fields added later) use defaults.
+        val partial = SettingsCodec.decode("""{"appRules":{"com.x":{"blockCellular":true}},"appDomainRules":[{"app":"com.x","domain":"d.example"}]}""")
+        assertEquals(AppRule(blockCellular = true), partial.settings.appRules["com.x"])
+        assertEquals(AppDomainRule.BLOCK, partial.settings.appDomainRules.single().action)
+    }
+
+    @Test
     fun unreadableDocumentKeepsTheUpstreamWhenItCan() {
         // Another field has a wrong type: the upstream section (with its keys) still decodes.
         val doc = SettingsCodec.encode(Settings(upstream = UpstreamSettings(mode = "wireguard", wireguard = wg), deviceId = "dev-1"))

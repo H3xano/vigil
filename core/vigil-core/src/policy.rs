@@ -1,11 +1,28 @@
-//! Blocking policy: per-app blocks, threat/tracker feeds, user allow/deny
-//! lists and encrypted-DNS handling.
+//! Blocking policy: per-app blocks and conditions, per-app domain rules,
+//! threat/tracker feeds, user allow/deny lists and encrypted-DNS handling.
+//!
+//! Precedence, first match wins:
+//!
+//! 1. The app is blocked: always (`blocked_uids`, reason `app`) or by one of
+//!    its conditions in the current device state (`app rule: wifi`,
+//!    `app rule: cellular`, `app rule: screen off`, `app rule: background`).
+//!    Applies to every connection and lookup of the app, before any name is
+//!    known, so per-app allow rules do not punch holes into it.
+//! 2. A per-app allow rule for the name: allowed, whatever the global lists
+//!    and feeds (threat feeds included) say, for that app only.
+//! 3. A per-app block rule for the name (`app domain rule (<rule>)`).
+//! 4. The global allowlist: allowed (overrides the denylist and every feed).
+//! 5. The global denylist (`custom`).
+//! 6. Feeds, threat categories first (`feed:<id>`).
+//!
+//! Addresses (before a name is known) only see 1 and the IP entries of
+//! feeds, as before; name rules apply once the name is.
 
 use crate::asn::{AsnInfo, AsnTable};
-use crate::config::Config;
+use crate::config::{AppRule, Config, DeviceState, DomainAction, NetworkType};
 use crate::intel::{nat64_embedded, DomainSet, Feed, FeedKind};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
@@ -119,6 +136,74 @@ impl BlockReason {
     pub fn is_threat(&self) -> bool {
         self.category.is_some_and(FeedCategory::is_threat)
     }
+
+    /// A decision about one app (app block, app condition, per-app domain
+    /// rule) rather than about the destination for everyone.
+    pub fn is_per_app(&self) -> bool {
+        self.code == APP_BLOCK || self.code.starts_with(APP_RULE) || self.code == APP_DOMAIN_RULE
+    }
+
+    /// A block by an app condition, which may lift when the device state
+    /// changes.
+    pub fn is_conditional(&self) -> bool {
+        self.code.starts_with(APP_RULE)
+    }
+}
+
+/// Reason codes of per-app decisions.
+pub const APP_BLOCK: &str = "app";
+pub const APP_RULE: &str = "app rule: ";
+pub const APP_DOMAIN_RULE: &str = "app domain rule";
+
+/// A condition of an [`AppRule`] that currently holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppCondition {
+    Wifi,
+    Cellular,
+    ScreenOff,
+    Background,
+}
+
+impl AppCondition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppCondition::Wifi => "wifi",
+            AppCondition::Cellular => "cellular",
+            AppCondition::ScreenOff => "screen off",
+            AppCondition::Background => "background",
+        }
+    }
+
+    fn reason(self) -> BlockReason {
+        BlockReason::simple(&format!("{APP_RULE}{}", self.as_str()))
+    }
+}
+
+/// Per-app domain rules of one app.
+#[derive(Default)]
+struct AppDomains {
+    allow: DomainSet,
+    block: DomainSet,
+}
+
+/// The device state as the conditions need it.
+struct State {
+    network: NetworkType,
+    screen_on: bool,
+    foreground: Option<HashSet<u32>>,
+}
+
+impl From<&DeviceState> for State {
+    fn from(s: &DeviceState) -> Self {
+        Self {
+            network: s.network,
+            screen_on: s.screen_on,
+            foreground: s
+                .foreground_uids
+                .as_ref()
+                .map(|v| v.iter().copied().collect()),
+        }
+    }
 }
 
 /// Well-known DNS-over-HTTPS endpoints (matched as suffixes).
@@ -164,6 +249,13 @@ pub const DOT_PORT: u16 = 853;
 
 pub struct Policy {
     blocked_uids: HashSet<u32>,
+    /// Conditional app rules with at least one condition, by UID.
+    app_rules: HashMap<u32, AppRule>,
+    app_domains: HashMap<u32, AppDomains>,
+    /// Every name with a per-app domain rule (for any app): answers for them
+    /// differ between apps, so they must not be cached by the OS resolver.
+    app_ruled_names: DomainSet,
+    state: State,
     allow: DomainSet,
     deny: DomainSet,
     feeds: BTreeMap<String, Arc<LoadedFeed>>,
@@ -180,6 +272,10 @@ impl Policy {
     pub fn new(cfg: &Config) -> Self {
         let mut p = Self {
             blocked_uids: HashSet::new(),
+            app_rules: HashMap::new(),
+            app_domains: HashMap::new(),
+            app_ruled_names: DomainSet::default(),
+            state: State::from(&DeviceState::default()),
             allow: DomainSet::default(),
             deny: DomainSet::default(),
             feeds: BTreeMap::new(),
@@ -195,6 +291,37 @@ impl Policy {
 
     pub fn apply_config(&mut self, cfg: &Config) {
         self.blocked_uids = cfg.blocked_uids.iter().copied().collect();
+        self.app_rules = cfg
+            .app_rules
+            .iter()
+            .filter(|r| r.is_active())
+            .map(|r| (r.uid, *r))
+            .collect();
+        let mut by_uid: HashMap<u32, (Vec<String>, Vec<String>)> = HashMap::new();
+        let mut names = Vec::with_capacity(cfg.app_domain_rules.len());
+        for r in &cfg.app_domain_rules {
+            let d = crate::config::app_rules::normalize_domain(&r.domain);
+            let e = by_uid.entry(r.uid).or_default();
+            match r.action {
+                DomainAction::Allow => e.0.push(d.clone()),
+                DomainAction::Block => e.1.push(d.clone()),
+            }
+            names.push(d);
+        }
+        self.app_domains = by_uid
+            .into_iter()
+            .map(|(uid, (allow, block))| {
+                let sets = AppDomains {
+                    allow: DomainSet::from_names(&allow),
+                    block: DomainSet::from_names(&block),
+                };
+                (uid, sets)
+            })
+            .collect();
+        self.app_ruled_names = DomainSet::from_names(&names);
+        if let Some(state) = &cfg.device_state {
+            self.set_state(state);
+        }
         self.allow = DomainSet::from_names(&cfg.allow_domains);
         self.deny = DomainSet::from_names(&cfg.deny_domains);
         self.block_encrypted_dns = cfg.block_encrypted_dns;
@@ -240,6 +367,93 @@ impl Policy {
         uid.is_some_and(|u| self.blocked_uids.contains(&u))
     }
 
+    /// Installs a new device state for the app conditions.
+    pub fn set_state(&mut self, state: &DeviceState) {
+        self.state = State::from(state);
+    }
+
+    /// Whether any per-app rule (block list, condition or domain rule)
+    /// exists; if not, open connections never need re-checking.
+    pub fn has_app_rules(&self) -> bool {
+        !self.blocked_uids.is_empty() || !self.app_rules.is_empty() || !self.app_domains.is_empty()
+    }
+
+    /// The first condition of `uid`'s rule that holds in the current state:
+    /// network, then screen, then background.
+    pub fn app_condition(&self, uid: u32) -> Option<AppCondition> {
+        let r = self.app_rules.get(&uid)?;
+        let st = &self.state;
+        if r.block_wifi && st.network == NetworkType::Wifi {
+            return Some(AppCondition::Wifi);
+        }
+        if r.block_cellular && st.network == NetworkType::Cellular {
+            return Some(AppCondition::Cellular);
+        }
+        if r.block_screen_off && !st.screen_on {
+            return Some(AppCondition::ScreenOff);
+        }
+        if r.block_background {
+            // With the screen off no app is in the foreground, whether or
+            // not the host can tell which one is while it is on.
+            let background = match &st.foreground {
+                _ if !st.screen_on => true,
+                None => false,
+                Some(fg) => !fg.contains(&uid),
+            };
+            if background {
+                return Some(AppCondition::Background);
+            }
+        }
+        None
+    }
+
+    /// Why all traffic of `uid` is blocked right now, if it is: always
+    /// (`app`) or by a condition (`app rule: …`).
+    pub fn app_block(&self, uid: Option<u32>) -> Option<BlockReason> {
+        let uid = uid?;
+        if self.blocked_uids.contains(&uid) {
+            return Some(BlockReason::simple(APP_BLOCK));
+        }
+        self.app_condition(uid).map(AppCondition::reason)
+    }
+
+    /// Per-app domain rules of `uid` for `domain`: `Some(Allow)` or a block
+    /// reason; `None` when the app has no rule for the name.
+    fn app_domain_decision(&self, uid: Option<u32>, domain: &str) -> Option<Decision> {
+        let rules = self.app_domains.get(&uid?)?;
+        if rules.allow.match_suffix(domain).is_some() {
+            return Some(Decision::Allow);
+        }
+        let rule = rules.block.match_suffix(domain)?;
+        Some(Decision::Block(BlockReason {
+            code: APP_DOMAIN_RULE.into(),
+            rule: Some(rule.to_string()),
+            category: None,
+            ip_match: false,
+        }))
+    }
+
+    /// Whether some app has a domain rule covering `domain`: answers for it
+    /// differ between apps, so they must not be cached by the OS resolver
+    /// (Android's cache is per network, shared by every app).
+    pub fn has_app_domain_rule(&self, domain: &str) -> bool {
+        !self.app_ruled_names.is_empty() && self.app_ruled_names.match_suffix(domain).is_some()
+    }
+
+    /// Re-check of an open connection after the device state or the rules
+    /// changed: the app-level block and the app's own domain rules for the
+    /// name it sent (`domain`, only an authoritative one). Global lists and
+    /// feeds apply to new connections only.
+    pub fn recheck_open(&self, uid: Option<u32>, domain: Option<&str>) -> Option<BlockReason> {
+        if let Some(r) = self.app_block(uid) {
+            return Some(r);
+        }
+        match self.app_domain_decision(uid, domain?) {
+            Some(Decision::Block(r)) => Some(r),
+            _ => None,
+        }
+    }
+
     pub fn is_doh_host(&self, domain: &str) -> bool {
         self.doh.match_suffix(domain).is_some()
     }
@@ -248,8 +462,8 @@ impl Policy {
     /// inside a NAT64 prefix are also matched by their embedded IPv4
     /// address (reported as the rule).
     pub fn check_ip(&self, uid: Option<u32>, ip: IpAddr) -> Decision {
-        if self.is_app_blocked(uid) {
-            return Decision::Block(BlockReason::simple("app"));
+        if let Some(r) = self.app_block(uid) {
+            return Decision::Block(r);
         }
         let embedded = self.nat64_v4(ip).map(IpAddr::V4);
         for (id, lf) in &self.feeds {
@@ -270,8 +484,11 @@ impl Policy {
 
     /// Decision for a named destination (DNS query, SNI, HTTP Host).
     pub fn check_domain(&self, uid: Option<u32>, domain: &str) -> Decision {
-        if self.is_app_blocked(uid) {
-            return Decision::Block(BlockReason::simple("app"));
+        if let Some(r) = self.app_block(uid) {
+            return Decision::Block(r);
+        }
+        if let Some(d) = self.app_domain_decision(uid, domain) {
+            return d;
         }
         if self.allow.match_suffix(domain).is_some() {
             return Decision::Allow;
@@ -310,6 +527,13 @@ impl Policy {
     /// Whether `domain` is on the user allowlist.
     pub fn is_allowlisted(&self, domain: &str) -> bool {
         self.allow.match_suffix(domain).is_some()
+    }
+
+    /// Whether `domain` is allowed for `uid` by a user rule: the global
+    /// allowlist or one of the app's own allow rules.
+    pub fn is_allowlisted_for(&self, uid: Option<u32>, domain: &str) -> bool {
+        self.is_allowlisted(domain)
+            || matches!(self.app_domain_decision(uid, domain), Some(Decision::Allow))
     }
 
     /// Looks up a JA4 fingerprint in every loaded feed. Labelled entries win
@@ -411,6 +635,206 @@ mod tests {
             p.check_ip(Some(1), "198.51.100.1".parse().unwrap()),
             Decision::Allow
         );
+    }
+
+    fn reason(d: Decision) -> Option<String> {
+        match d {
+            Decision::Allow => None,
+            Decision::Block(r) => Some(r.describe()),
+        }
+    }
+
+    fn state(network: NetworkType, screen_on: bool, fg: Option<Vec<u32>>) -> DeviceState {
+        DeviceState {
+            network,
+            screen_on,
+            foreground_uids: fg,
+        }
+    }
+
+    #[test]
+    fn app_conditions() {
+        use crate::config::AppRule;
+        let rule = |uid, f: fn(&mut AppRule)| {
+            let mut r = AppRule {
+                uid,
+                ..Default::default()
+            };
+            f(&mut r);
+            r
+        };
+        let mut p = policy();
+        p.apply_config(&Config {
+            blocked_uids: vec![10500],
+            app_rules: vec![
+                rule(1, |r| r.block_wifi = true),
+                rule(2, |r| r.block_cellular = true),
+                rule(3, |r| r.block_background = true),
+                rule(4, |r| r.block_screen_off = true),
+                rule(5, |r| {
+                    r.block_wifi = true;
+                    r.block_background = true;
+                }),
+                rule(6, |_| {}), // no condition: inert
+            ],
+            ..Default::default()
+        });
+        let ip: IpAddr = "198.51.100.1".parse().unwrap();
+        let why = |p: &Policy, uid| reason(p.check_ip(Some(uid), ip));
+        // Default state: network "other", screen on, foreground unknown.
+        for uid in 1..=6 {
+            assert_eq!(why(&p, uid), None, "uid {uid}");
+        }
+        assert_eq!(why(&p, 10500).as_deref(), Some("app"));
+        assert_eq!(reason(p.check_ip(None, ip)), None);
+
+        p.set_state(&state(NetworkType::Wifi, true, Some(vec![3, 5])));
+        assert_eq!(why(&p, 1).as_deref(), Some("app rule: wifi"));
+        assert_eq!(why(&p, 2), None);
+        assert_eq!(why(&p, 3), None, "in the foreground");
+        assert_eq!(why(&p, 5).as_deref(), Some("app rule: wifi"));
+        assert_eq!(why(&p, 6), None);
+
+        p.set_state(&state(NetworkType::Cellular, true, Some(vec![5])));
+        assert_eq!(why(&p, 1), None);
+        assert_eq!(why(&p, 2).as_deref(), Some("app rule: cellular"));
+        assert_eq!(why(&p, 3).as_deref(), Some("app rule: background"));
+        assert_eq!(why(&p, 4), None);
+        assert_eq!(why(&p, 5), None);
+
+        // Foreground unknown (no usage access): background rules cannot apply...
+        p.set_state(&state(NetworkType::None, true, None));
+        assert_eq!(why(&p, 3), None);
+        // ...except with the screen off, when no app is in the foreground.
+        p.set_state(&state(NetworkType::None, false, None));
+        assert_eq!(why(&p, 3).as_deref(), Some("app rule: background"));
+        assert_eq!(why(&p, 4).as_deref(), Some("app rule: screen off"));
+        p.set_state(&state(NetworkType::Other, false, Some(vec![3])));
+        assert_eq!(why(&p, 3).as_deref(), Some("app rule: background"));
+        // Several conditions: network first, then screen, then background.
+        p.set_state(&state(NetworkType::Wifi, false, Some(vec![])));
+        assert_eq!(why(&p, 5).as_deref(), Some("app rule: wifi"));
+        // Names follow the same app block, before any allow rule.
+        let Decision::Block(r) = p.check_domain(Some(5), "good.tracker.com") else {
+            panic!()
+        };
+        assert!(r.is_per_app() && r.is_conditional() && !r.is_threat());
+        assert_eq!(p.app_block(Some(10500)).unwrap().code, "app");
+        assert!(!p.app_block(Some(10500)).unwrap().is_conditional());
+        // A configuration update carrying a state installs it; one without
+        // keeps the current state.
+        p.apply_config(&Config {
+            app_rules: vec![rule(1, |r| r.block_wifi = true)],
+            ..Default::default()
+        });
+        assert_eq!(why(&p, 1).as_deref(), Some("app rule: wifi"));
+        p.apply_config(&Config {
+            app_rules: vec![rule(1, |r| r.block_wifi = true)],
+            device_state: Some(DeviceState::default()),
+            ..Default::default()
+        });
+        assert_eq!(why(&p, 1), None);
+        assert!(p.has_app_rules());
+        p.apply_config(&Config::default());
+        assert!(!p.has_app_rules());
+    }
+
+    #[test]
+    fn per_app_domain_rules_and_precedence() {
+        use crate::config::AppDomainRule;
+        let r = |uid, domain: &str, action| AppDomainRule {
+            uid,
+            domain: domain.into(),
+            action,
+        };
+        let mut p = policy();
+        p.apply_config(&Config {
+            blocked_uids: vec![10500],
+            allow_domains: vec!["good.tracker.com".into()],
+            deny_domains: vec!["annoying.example".into()],
+            app_domain_rules: vec![
+                // App 1 may use a tracker, a threat-listed name and a denied one.
+                r(1, "tracker.com", DomainAction::Allow),
+                r(1, "bad.example", DomainAction::Allow),
+                r(1, "annoying.example", DomainAction::Allow),
+                // App 2 may not use a name everybody else may (even allowlisted).
+                r(2, "*.News.Example.", DomainAction::Block),
+                r(2, "good.tracker.com", DomainAction::Block),
+                // Allow wins over block for the same app.
+                r(3, "cdn.example", DomainAction::Allow),
+                r(3, "example", DomainAction::Block),
+                // An always-blocked app stays blocked.
+                r(10500, "news.example", DomainAction::Allow),
+            ],
+            ..Default::default()
+        });
+        let why = |uid, d| reason(p.check_domain(Some(uid), d));
+        assert_eq!(why(1, "x.tracker.com"), None);
+        assert_eq!(
+            why(1, "cdn.bad.example"),
+            None,
+            "per-app allow beats threat feeds"
+        );
+        assert_eq!(why(1, "annoying.example"), None);
+        assert_eq!(
+            why(9, "x.tracker.com").as_deref(),
+            Some("feed:easyprivacy (tracker.com)")
+        );
+        assert_eq!(
+            why(9, "cdn.bad.example").as_deref(),
+            Some("feed:urlhaus (bad.example)")
+        );
+        assert_eq!(
+            why(9, "annoying.example").as_deref(),
+            Some("custom (annoying.example)")
+        );
+        assert_eq!(
+            why(2, "www.news.example").as_deref(),
+            Some("app domain rule (news.example)")
+        );
+        assert_eq!(
+            why(2, "news.example").as_deref(),
+            Some("app domain rule (news.example)")
+        );
+        assert_eq!(
+            why(2, "good.tracker.com").as_deref(),
+            Some("app domain rule (good.tracker.com)"),
+            "per-app block beats the global allowlist"
+        );
+        assert_eq!(why(9, "www.news.example"), None);
+        assert_eq!(why(3, "img.cdn.example"), None);
+        assert_eq!(
+            why(3, "other.example").as_deref(),
+            Some("app domain rule (example)")
+        );
+        assert_eq!(why(10500, "news.example").as_deref(), Some("app"));
+        assert_eq!(reason(p.check_domain(None, "www.news.example")), None);
+        // Address checks are unaffected by name rules.
+        let ip: IpAddr = "203.0.113.9".parse().unwrap();
+        assert!(reason(p.check_ip(Some(1), ip)).is_some());
+        // Allowlisting (JA4 blocking, beacon exemption) includes per-app allows.
+        assert!(p.is_allowlisted_for(Some(1), "x.tracker.com"));
+        assert!(!p.is_allowlisted_for(Some(9), "x.tracker.com"));
+        assert!(p.is_allowlisted_for(Some(9), "good.tracker.com"));
+        // Names answered differently per app.
+        assert!(p.has_app_domain_rule("a.b.tracker.com"));
+        assert!(p.has_app_domain_rule("news.example"));
+        assert!(!p.has_app_domain_rule("unrelated.org"));
+        // Re-checks of open connections: app blocks and the app's own block rules.
+        assert_eq!(
+            p.recheck_open(Some(2), Some("www.news.example"))
+                .unwrap()
+                .code,
+            "app domain rule"
+        );
+        assert!(p.recheck_open(Some(2), None).is_none());
+        assert!(
+            p.recheck_open(Some(9), Some("annoying.example")).is_none(),
+            "global lists: new connections only"
+        );
+        assert!(p.recheck_open(Some(3), Some("img.cdn.example")).is_none());
+        assert_eq!(p.recheck_open(Some(10500), None).unwrap().code, "app");
+        assert!(p.recheck_open(None, Some("www.news.example")).is_none());
     }
 
     #[test]

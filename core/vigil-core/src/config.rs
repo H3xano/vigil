@@ -1,8 +1,10 @@
 //! Engine configuration, supplied as JSON by the host (Android app or CLI).
 
+pub mod app_rules;
 pub mod upstream;
 
 use crate::proto::dns::SinkholeMode;
+pub use app_rules::{AppDomainRule, AppRule, DeviceState, DomainAction, NetworkType};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -33,6 +35,16 @@ pub struct Config {
     pub allow_domains: Vec<String>,
     /// User denylist.
     pub deny_domains: Vec<String>,
+    /// Conditional blocking per app (on Wi-Fi, on mobile data, in the
+    /// background, screen off), evaluated against the device state.
+    pub app_rules: Vec<AppRule>,
+    /// Allow or block a domain (and its subdomains) for one app only.
+    pub app_domain_rules: Vec<AppDomainRule>,
+    /// Device state to start with (start config), or to install with a
+    /// configuration update. Normally pushed on its own with
+    /// `Engine::set_device_state`; `None` keeps the current state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_state: Option<DeviceState>,
     pub beacon: BeaconConfig,
     pub mtu: u16,
     pub tcp_connect_timeout_ms: u64,
@@ -492,6 +504,9 @@ impl Default for Config {
             blocked_uids: Vec::new(),
             allow_domains: Vec::new(),
             deny_domains: Vec::new(),
+            app_rules: Vec::new(),
+            app_domain_rules: Vec::new(),
+            device_state: None,
             beacon: BeaconConfig::default(),
             mtu: 1500,
             tcp_connect_timeout_ms: 15_000,
@@ -606,6 +621,8 @@ impl Config {
             .validate()
             .map_err(ConfigError::Invalid)?;
         self.upstream.validate().map_err(ConfigError::Invalid)?;
+        app_rules::validate(&self.app_rules, &self.app_domain_rules)
+            .map_err(ConfigError::Invalid)?;
         Ok(())
     }
 

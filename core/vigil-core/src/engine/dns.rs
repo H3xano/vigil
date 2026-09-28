@@ -239,6 +239,20 @@ async fn answer(
         }
     }
 
+    // A name with a per-app rule is answered differently per app, and
+    // Android's resolver cache is shared by all apps: keep it uncached.
+    let per_app_name = {
+        let policy = shared.policy.read();
+        policy.has_app_domain_rule(&q.name)
+            || r.answers
+                .iter()
+                .any(|a| matches!(&a.data, RData::Cname(t) if policy.has_app_domain_rule(t)))
+    };
+    let mut resp = resp;
+    if per_app_name {
+        dns::zero_ttls(&mut resp);
+    }
+
     let now = Instant::now();
     let ttl = r.min_ttl().unwrap_or(300);
     for ip in r.answer_ips() {
@@ -277,7 +291,15 @@ fn sinkhole(
 ) -> Option<Vec<u8>> {
     let cfg = shared.config();
     shared.stats.blocked.fetch_add(1, Relaxed);
-    let resp = dns::sinkhole_response(query, cfg.sinkhole, cfg.sinkhole_ttl);
+    // A block for one app (or a name with per-app rules) must not reach
+    // Android's resolver cache, which every app shares: TTL 0. It also makes
+    // unblocking (e.g. the app coming to the foreground) take effect at once.
+    let ttl = if reason.is_per_app() || shared.policy.read().has_app_domain_rule(qname) {
+        0
+    } else {
+        cfg.sinkhole_ttl
+    };
+    let resp = dns::sinkhole_response(query, cfg.sinkhole, ttl);
     ev.verdict = Verdict::Block;
     ev.reason = Some(reason.describe());
     ev.rcode = match cfg.sinkhole {
@@ -606,6 +628,100 @@ mod tests {
         let r = answer(&shared, &q, Some(10123), Some(server), "tcp").await;
         assert!(r.is_some());
         assert_eq!(received.load(Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn per_app_decisions_are_never_cached_by_the_os() {
+        use crate::config::{AppDomainRule, DeviceState, DomainAction};
+        let server = fake_resolver(false).await; // answers with TTL 5
+        let shared = test_shared(Config {
+            upstream_dns: vec![server],
+            deny_domains: vec!["denied.example".into()],
+            blocked_uids: vec![10999],
+            app_rules: vec![crate::config::AppRule {
+                uid: 10300,
+                block_screen_off: true,
+                ..Default::default()
+            }],
+            app_domain_rules: vec![
+                AppDomainRule {
+                    uid: 10123,
+                    domain: "denied.example".into(),
+                    action: DomainAction::Allow,
+                },
+                AppDomainRule {
+                    uid: 10200,
+                    domain: "shop.example".into(),
+                    action: DomainAction::Block,
+                },
+            ],
+            ..Default::default()
+        });
+        let ask = |name: &'static str, uid: u32| {
+            let shared = shared.clone();
+            async move {
+                let q = dns::build_query(9, name, dns::TYPE_A);
+                let r = answer(&shared, &q, Some(uid), None, "udp").await.unwrap();
+                let p = dns::parse(&r).unwrap();
+                let ev = shared
+                    .events
+                    .poll(100, Duration::ZERO)
+                    .into_iter()
+                    .find_map(|e| match e {
+                        Event::Dns(d) => Some(d),
+                        _ => None,
+                    })
+                    .unwrap();
+                (ev.verdict, ev.reason, p.answers[0].ttl)
+            }
+        };
+        // Global deny: sinkholed for other apps, with TTL 0 because one app
+        // has an allow rule for the name (a cached sinkhole would reach it)...
+        let (v, reason, ttl) = ask("denied.example", 10200).await;
+        assert_eq!(
+            (v, reason.as_deref(), ttl),
+            (Verdict::Block, Some("custom (denied.example)"), 0)
+        );
+        // ...and that app gets the real answer, uncached too.
+        let (v, _, ttl) = ask("denied.example", 10123).await;
+        assert_eq!((v, ttl), (Verdict::Allow, 0));
+        // Per-app block rule.
+        let (v, reason, ttl) = ask("www.shop.example", 10200).await;
+        assert_eq!(
+            (v, reason.as_deref(), ttl),
+            (Verdict::Block, Some("app domain rule (shop.example)"), 0)
+        );
+        let (v, _, ttl) = ask("www.shop.example", 10123).await;
+        assert_eq!((v, ttl), (Verdict::Allow, 0));
+        // Names without per-app rules keep their TTLs.
+        let (v, _, ttl) = ask("news.example", 10123).await;
+        assert_eq!((v, ttl), (Verdict::Allow, 5));
+        // App blocks: always and by a condition, TTL 0.
+        let (v, reason, ttl) = ask("news.example", 10999).await;
+        assert_eq!(
+            (v, reason.as_deref(), ttl),
+            (Verdict::Block, Some("app"), 0)
+        );
+        let (v, _, _) = ask("news.example", 10300).await;
+        assert_eq!(v, Verdict::Allow);
+        shared.policy.write().set_state(&DeviceState {
+            screen_on: false,
+            ..Default::default()
+        });
+        let (v, reason, ttl) = ask("news.example", 10300).await;
+        assert_eq!(
+            (v, reason.as_deref(), ttl),
+            (Verdict::Block, Some("app rule: screen off"), 0)
+        );
+        // Unlisted sinkholes keep the configured TTL.
+        let cfg = Config {
+            upstream_dns: vec![server],
+            deny_domains: vec!["denied.example".into()],
+            ..Default::default()
+        };
+        shared.policy.write().apply_config(&cfg);
+        let (_, _, ttl) = ask("denied.example", 10200).await;
+        assert_eq!(ttl, 60);
     }
 
     #[tokio::test]

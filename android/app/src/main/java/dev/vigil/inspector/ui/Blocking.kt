@@ -121,9 +121,28 @@ object DomainNames {
 
 /** Plain-words explanations of the engine's block `reason` strings (see policy.rs `BlockReason::describe`). */
 object BlockReasons {
+    /** Reason prefix of the per-app conditions (`app rule: wifi`, …). */
+    const val APP_RULE = "app rule: "
+
+    /** Reason code of a per-app domain rule (`app domain rule (<rule>)`). */
+    const val APP_DOMAIN_RULE = "app domain rule"
+
+    /** A decision about one app (all access, a condition or its own domain rule), not about the name for everyone. */
+    fun isPerApp(reason: String?): Boolean = reason != null &&
+        (reason == "app" || reason.startsWith(APP_RULE) || reason.startsWith(APP_DOMAIN_RULE))
+
+    private fun condition(c: String) = when (c) {
+        "wifi" -> "while the device is on Wi-Fi"
+        "cellular" -> "while the device is on mobile data"
+        "background" -> "while it is in the background"
+        "screen off" -> "while the screen is off"
+        else -> "($c)"
+    }
+
     /**
-     * [reason] is `feed:<id> (<rule>)`, `custom (<rule>)`, `app`, `ja4:<feed> (<rule>)`,
-     * optionally with ` via CNAME <name>` inside the rule.
+     * [reason] is `feed:<id> (<rule>)`, `custom (<rule>)`, `app`, `app rule: <condition>`,
+     * `app domain rule (<rule>)`, `ja4:<feed> (<rule>)`, optionally with ` via CNAME <name>`
+     * inside the rule.
      */
     fun explain(reason: String?, feeds: List<FeedEntity>, appLabel: String? = null): String {
         if (reason.isNullOrBlank()) return "Blocked (no reason recorded)."
@@ -132,8 +151,13 @@ object BlockReasons {
         val cname = rule?.substringAfter(" via CNAME ", "")?.ifBlank { null }
         val listed = rule?.substringBefore(" via CNAME ")?.ifBlank { null }
         val via = cname?.let { " The name is an alias (CNAME) of $it, which is listed." }.orEmpty()
+        val app = appLabel ?: "this app"
         return when {
-            code == "app" -> "All network access is blocked for ${appLabel ?: "this app"} (Apps → block all network access)."
+            reason.startsWith(APP_RULE) ->
+                "Network access of $app is blocked ${condition(reason.removePrefix(APP_RULE))} (Apps → $app → Network access)."
+            reason.startsWith(APP_DOMAIN_RULE) ->
+                "Your rule for $app${listed?.let { " blocks $it" } ?: " blocks this name"} (for this app only).$via"
+            code == "app" -> "All network access is blocked for $app (Apps → block all network access)."
             code == "custom" -> "Your block rule${listed?.let { " for $it" }.orEmpty()} (Settings → Custom rules).$via"
             code.startsWith("feed:") -> {
                 val id = code.removePrefix("feed:")

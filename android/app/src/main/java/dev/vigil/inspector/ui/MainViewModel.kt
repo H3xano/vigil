@@ -7,6 +7,9 @@ import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.data.AlertEntity
 import dev.vigil.inspector.data.AlertMute
 import dev.vigil.inspector.data.AlertMutes
+import dev.vigil.inspector.data.AppDomainRule
+import dev.vigil.inspector.data.AppRule
+import dev.vigil.inspector.data.AppRules
 import dev.vigil.inspector.data.AppUsage
 import dev.vigil.inspector.data.DestinationUsage
 import dev.vigil.inspector.data.DnsEntity
@@ -336,6 +339,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val before = settings.value
         removeRule(domain)
         showMessage("Removed the rule for $domain", "Undo") { restoreRule(domain, before) }
+    }
+
+    /** Sets the conditions under which [pkg] is blocked (Wi-Fi, mobile data, background, screen off). */
+    fun setAppRule(pkg: String, rule: AppRule) = updateSettings { AppRules.setRule(it, pkg, rule) }
+
+    /** Restores [pkg]'s rule for [domain] as it was in [before]. */
+    private fun restoreAppDomainRule(pkg: String, domain: String, before: Settings) = updateSettings { s ->
+        val old = before.appDomainRules.firstOrNull { it.app == pkg && it.domain == domain }
+        if (old == null) AppRules.removeDomainRule(s, pkg, domain) else AppRules.setDomainRule(s, pkg, domain, old.action)
+    }
+
+    /**
+     * Allows or blocks [domain] (and its subdomains) for [pkg] only, with Undo.
+     * [action] is [AppDomainRule.ALLOW] or [AppDomainRule.BLOCK].
+     */
+    fun setAppDomainRule(pkg: String, label: String, domain: String, action: String) {
+        val name = AppRules.normalize(domain)
+        val before = settings.value
+        updateSettings { AppRules.setDomainRule(it, pkg, name, action) }
+        val verb = if (action == AppDomainRule.BLOCK) "Blocked" else "Allowed"
+        showMessage("$verb $name for $label only", "Undo") { restoreAppDomainRule(pkg, name, before) }
+    }
+
+    fun removeAppDomainRule(pkg: String, domain: String) {
+        val before = settings.value
+        updateSettings { AppRules.removeDomainRule(it, pkg, domain) }
+        showMessage("Removed the rule for $domain", "Undo") { restoreAppDomainRule(pkg, domain, before) }
     }
 
     /** The recorded block reason (engine `reason`) of the newest blocked lookup of [qname], or null. */

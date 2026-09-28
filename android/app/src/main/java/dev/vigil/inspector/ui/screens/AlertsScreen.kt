@@ -210,7 +210,7 @@ private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: 
         Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val domain = dest?.domain
             when {
-                domain != null -> BlockDomainButtons(domain, settings, vm)
+                domain != null -> BlockDomainButtons(domain, settings, vm, pkg = a.pkg, appLabel = label)
                 dest?.ip != null -> {
                     val alreadyBlocked = a.kind == "threat_ip"
                     Text(

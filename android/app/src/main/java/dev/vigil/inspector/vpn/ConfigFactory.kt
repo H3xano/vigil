@@ -1,10 +1,12 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.data.AppRules
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.BeaconConfig
+import dev.vigil.inspector.engine.DeviceState
 import dev.vigil.inspector.engine.EngineConfig
 import dev.vigil.inspector.engine.FeedFileConfig
 import dev.vigil.inspector.engine.Socks5Config
@@ -23,6 +25,8 @@ object ConfigFactory {
         blockedUids: List<Int>,
         nat64Prefixes: List<String> = emptyList(),
         networkId: String = "",
+        /** Resolves an app key (package or `uid:<n>`) to its UID; null if not installed. */
+        uidOf: (String) -> Int? = { null },
     ): EngineConfig {
         // DNS precedence when several settings apply:
         // 1. Encrypted DNS (mode dot/doh) answers the virtual resolver's lookups,
@@ -57,6 +61,8 @@ object ConfigFactory {
             blockedUids = blockedUids,
             allowDomains = s.allowDomains.sorted(),
             denyDomains = s.denyDomains.sorted(),
+            appRules = AppRules.engineRules(s, uidOf),
+            appDomainRules = AppRules.engineDomainRules(s, uidOf),
             beacon = beacon,
             nat64Prefixes = nat64Prefixes.mapNotNull(::normalizeNat64Prefix).distinct(),
             // Invalid settings (which the DNS screen does not save) become "off".
@@ -81,11 +87,18 @@ object ConfigFactory {
     /**
      * [base] as a start config: [feeds] (already filtered by [loadableFeeds])
      * are loaded by the engine before it processes the first packet, so
-     * blocking and threat alerts apply from the first connection.
+     * blocking and threat alerts apply from the first connection. With
+     * [deviceState], the per-app conditions apply from the first packet too.
      */
-    fun startConfig(base: EngineConfig, feeds: List<FeedEntity>, pathFor: (String) -> String): EngineConfig = base.copy(
+    fun startConfig(
+        base: EngineConfig,
+        feeds: List<FeedEntity>,
+        deviceState: DeviceState? = null,
+        pathFor: (String) -> String,
+    ): EngineConfig = base.copy(
         feeds = feeds.map { FeedFileConfig(id = it.id, category = it.category, path = pathFor(it.id)) },
         feedsPreloadTimeoutMs = EngineConfig.FEEDS_PRELOAD_TIMEOUT_MS,
+        deviceState = deviceState,
     )
 
     /** Engine worker threads: 1 by default (battery), 2 with "Maximum throughput". */

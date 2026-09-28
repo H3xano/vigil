@@ -11,7 +11,8 @@
 # servers and public presets) and the upstream paths: a local SOCKS5 proxy
 # (scripts/e2e/upstream-socks5.sh) and a kernel WireGuard peer in a nested
 # namespace (scripts/e2e/upstream-wireguard.sh). E2E_STAGES selects stages
-# (default "direct beacon edns socks5 wireguard").
+# (default "direct beacon apprules edns socks5 wireguard"). The apprules stage
+# checks per-app conditions and domain rules with a switched device state.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
@@ -19,7 +20,7 @@ trap 'kill ${cli_pid:-} ${beacon_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-
 export PATH="$HOME/.cargo/bin:$PATH"
 (cd "$root/core" && cargo build -q -p vigil-cli)
 cli="$root/core/target/debug/vigil-cli"
-stages="${E2E_STAGES:-direct beacon edns socks5 wireguard}"
+stages="${E2E_STAGES:-direct beacon apprules edns socks5 wireguard}"
 results="$work/results.txt"; : > "$results"
 
 cat > "$work/feed.txt" <<'FEED'
@@ -101,6 +102,30 @@ kill -INT $cli_pid; wait $cli_pid || true
 kill $beacon_pid 2>/dev/null || true
 unset cli_pid beacon_pid
 python3 "$root/scripts/e2e/check_beacon.py" "$work/beacon-events.jsonl" "$beacon_port" | tee -a "$results"
+fi
+
+if [[ " $stages " == *" apprules "* ]]; then
+echo "--- per-app rules and device state"
+# Every connection is attributed to UID 10123 (--uid), which is blocked on
+# Wi-Fi and has one domain rule. The inside script switches the device
+# state (state file + SIGUSR1) and checks open connections are cut.
+export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+apprules_port=18780
+python3 "$root/scripts/e2e/beacon_server.py" "$VIGIL_HOST_IP" "$((apprules_port - 1))" &
+beacon_pid=$!
+echo '{"app_rules":[{"uid":10123,"block_wifi":true}],
+  "app_domain_rules":[{"uid":10123,"domain":"perapp.vigil-test.example","action":"block"}]}' > "$work/apprules.json"
+echo '{"network":"cellular","screen_on":true,"foreground_uids":null}' > "$work/state.json"
+rm -f "$sock"
+"$cli" run --fd-socket "$sock" --config "$work/apprules.json" --uid 10123 --state "$work/state.json" --no-stats \
+  > "$work/apprules-events.jsonl" 2> "$work/apprules-cli.log" &
+cli_pid=$!
+VIGIL_CLI_PID=$cli_pid unshare -rnm bash "$root/scripts/e2e/inside-apprules.sh" "$sock" "$results" "$work/state.json" "$apprules_port" || true
+sleep 1
+kill -INT $cli_pid; wait $cli_pid || true
+kill $beacon_pid 2>/dev/null || true
+unset cli_pid beacon_pid
+python3 "$root/scripts/e2e/check_apprules.py" "$work/apprules-events.jsonl" "$apprules_port" | tee -a "$results"
 fi
 
 if [[ " $stages " == *" edns "* ]]; then

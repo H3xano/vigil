@@ -1,5 +1,7 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.data.AppDomainRule
+import dev.vigil.inspector.data.AppRule
 import dev.vigil.inspector.data.EncryptedDnsSettings
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.FeedKinds
@@ -7,6 +9,7 @@ import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.Socks5Settings
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.data.WireGuardSettings
+import dev.vigil.inspector.engine.DeviceState
 import dev.vigil.inspector.engine.EngineConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -209,7 +212,46 @@ class ConfigFactoryTest {
         assertTrue(ConfigFactory.startConfig(base, emptyList()) { it }.toJson().contains("\"feeds\":[]"))
     }
 
+    @Test
+    fun perAppRulesResolvedToUids() {
+        val uids = mapOf("com.chat" to 10123, "com.shop" to 10124)
+        val s = Settings(
+            appRules = mapOf(
+                "com.chat" to AppRule(blockWifi = true, blockBackground = true),
+                "com.shop" to AppRule(blockCellular = true, blockScreenOff = true),
+                "not.installed" to AppRule(blockWifi = true),
+            ),
+            appDomainRules = listOf(
+                AppDomainRule("com.shop", "tracker.example", AppDomainRule.ALLOW),
+                AppDomainRule("com.chat", "ads.example.com", AppDomainRule.BLOCK),
+            ),
+        )
+        val cfg = ConfigFactory.build(s, emptyList(), emptyList(), uidOf = { uids[it] })
+        val json = cfg.toJson()
+        assertTrue(json, json.contains(APP_RULES_JSON))
+        // Without resolvable apps: empty lists (and old engines ignore nothing new).
+        val none = ConfigFactory.build(s, emptyList(), emptyList()).toJson()
+        assertTrue(none, none.contains("\"app_rules\":[],\"app_domain_rules\":[]"))
+        // The device state goes into the start config only.
+        assertFalse(json, json.contains("device_state"))
+        val state = DeviceState(DeviceState.NETWORK_WIFI, screenOn = false, foregroundUids = listOf(10123, 10200))
+        assertEquals(DEVICE_STATE_JSON, state.toJson())
+        assertEquals(DEVICE_STATE_UNKNOWN_FG_JSON, DeviceState(DeviceState.NETWORK_CELLULAR).toJson())
+        val start = ConfigFactory.startConfig(cfg, emptyList(), state) { it }.toJson()
+        assertTrue(start, start.contains("\"device_state\":$DEVICE_STATE_JSON"))
+    }
+
     private companion object {
+        /** `"{" + APP_RULES_JSON + "}"` is parsed by the Rust test `app_rules_json_contract`. */
+        const val APP_RULES_JSON = "\"app_rules\":[{\"uid\":10123,\"block_wifi\":true,\"block_cellular\":false,\"block_background\":true,\"block_screen_off\":false}," +
+            "{\"uid\":10124,\"block_wifi\":false,\"block_cellular\":true,\"block_background\":false,\"block_screen_off\":true}]," +
+            "\"app_domain_rules\":[{\"uid\":10123,\"domain\":\"ads.example.com\",\"action\":\"block\"}," +
+            "{\"uid\":10124,\"domain\":\"tracker.example\",\"action\":\"allow\"}]"
+
+        /** nativeSetDeviceState payloads, also parsed by `app_rules_json_contract`. */
+        const val DEVICE_STATE_JSON = "{\"network\":\"wifi\",\"screen_on\":false,\"foreground_uids\":[10123,10200]}"
+        const val DEVICE_STATE_UNKNOWN_FG_JSON = "{\"network\":\"cellular\",\"screen_on\":true}"
+
         /** Start-config feed list (engine `feeds`; see docs/EVENTS.md). */
         /** Also parsed by the Rust test `feeds_json_contract`. */
         const val FEEDS_JSON = "\"feeds\":[{\"id\":\"urlhaus\",\"category\":\"malware\",\"path\":\"/data/feeds/urlhaus.txt\"}," +

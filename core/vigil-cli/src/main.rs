@@ -13,8 +13,9 @@ use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use vigil_core::config::DeviceState;
 use vigil_core::proto::{quic, tls};
-use vigil_core::{Config, Engine, Event, FeedCategory, NullPlatform};
+use vigil_core::{Config, Engine, Event, FeedCategory, NullPlatform, Platform};
 
 const USAGE: &str = "\
 usage:
@@ -24,6 +25,9 @@ usage:
       --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom|ja4|asn)
       --upstream IP:PORT     upstream resolver (repeatable; overrides config)
       --no-stats             suppress periodic stats events
+      --uid UID              attribute every connection to this UID (tests of per-app rules)
+      --state FILE           device state for per-app conditions (JSON, as nativeSetDeviceState);
+                             re-read on SIGUSR1
   vigil-cli parse-feed FILE   parse a blocklist and print a summary
   vigil-cli asn FILE [IP...]  load an IP-to-ASN table (iptoasn TSV), print its size, memory
                              and the process RSS, then look up the addresses
@@ -36,6 +40,7 @@ usage:
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static RELOAD: AtomicBool = AtomicBool::new(false);
+static RELOAD_STATE: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
@@ -43,6 +48,28 @@ extern "C" fn on_signal(_: libc::c_int) {
 
 extern "C" fn on_hup(_: libc::c_int) {
     RELOAD.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn on_usr1(_: libc::c_int) {
+    RELOAD_STATE.store(true, Ordering::SeqCst);
+}
+
+/// Like [`NullPlatform`], but every connection belongs to one UID.
+struct FixedUid(u32);
+
+impl Platform for FixedUid {
+    fn owner_uid(&self, _proto: u8, _src: SocketAddr, _dst: SocketAddr) -> Option<u32> {
+        Some(self.0)
+    }
+
+    fn protect(&self, _fd: RawFd) -> bool {
+        true
+    }
+}
+
+fn read_state(path: &str) -> io::Result<DeviceState> {
+    DeviceState::from_json(&std::fs::read_to_string(path)?)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 fn wg_keypair() -> io::Result<()> {
@@ -94,6 +121,8 @@ fn run(args: &[String]) -> io::Result<()> {
     let mut upstreams = Vec::new();
     let mut stats = true;
     let mut config_path = None;
+    let mut uid = None;
+    let mut state_path = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || {
@@ -116,6 +145,12 @@ fn run(args: &[String]) -> io::Result<()> {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
             ),
             "--no-stats" => stats = false,
+            "--uid" => {
+                uid = Some(val()?.parse::<u32>().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, format!("--uid: {e}"))
+                })?)
+            }
+            "--state" => state_path = Some(val()?),
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -141,9 +176,16 @@ fn run(args: &[String]) -> io::Result<()> {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGHUP, on_hup as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGUSR1, on_usr1 as *const () as libc::sighandler_t);
     }
-
-    let engine = Engine::start(tun.as_raw_fd(), config, Arc::new(NullPlatform))?;
+    if let Some(path) = &state_path {
+        config.device_state = Some(read_state(path)?);
+    }
+    let platform: Arc<dyn Platform> = match uid {
+        Some(u) => Arc::new(FixedUid(u)),
+        None => Arc::new(NullPlatform),
+    };
+    let engine = Engine::start(tun.as_raw_fd(), config, platform)?;
     drop(tun); // the engine holds its own duplicate
     for spec in feeds {
         let mut parts = spec.splitn(3, ':');
@@ -177,6 +219,17 @@ fn run(args: &[String]) -> io::Result<()> {
                 match result {
                     Ok(()) => eprintln!("vigil-cli: config reloaded"),
                     Err(e) => eprintln!("vigil-cli: config not reloaded: {e}"),
+                }
+            }
+        }
+        if RELOAD_STATE.swap(false, Ordering::SeqCst) {
+            if let Some(path) = &state_path {
+                match read_state(path) {
+                    Ok(st) => {
+                        engine.set_device_state(st);
+                        eprintln!("vigil-cli: device state applied");
+                    }
+                    Err(e) => eprintln!("vigil-cli: device state not applied: {e}"),
                 }
             }
         }

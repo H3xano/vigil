@@ -77,6 +77,24 @@ class BlockingTest {
         assertTrue(BlockReasons.explain(null, feeds).startsWith("Blocked"))
     }
 
+    @Test
+    fun perAppReasons() {
+        val feeds = emptyList<FeedEntity>()
+        assertEquals(
+            "Network access of Chrome is blocked while it is in the background (Apps → Chrome → Network access).",
+            BlockReasons.explain("app rule: background", feeds, "Chrome"),
+        )
+        assertTrue(BlockReasons.explain("app rule: wifi", feeds, "Chrome").contains("on Wi-Fi"))
+        assertTrue(BlockReasons.explain("app rule: cellular", feeds).contains("mobile data"))
+        assertTrue(BlockReasons.explain("app rule: screen off", feeds).contains("screen is off"))
+        assertEquals(
+            "Your rule for Chrome blocks ads.example.com (for this app only).",
+            BlockReasons.explain("app domain rule (ads.example.com)", feeds, "Chrome"),
+        )
+        for (r in listOf("app", "app rule: wifi", "app domain rule (x.example)")) assertTrue(r, BlockReasons.isPerApp(r))
+        for (r in listOf(null, "custom (x.example)", "feed:urlhaus (x.example)", "encrypted_dns")) assertFalse("$r", BlockReasons.isPerApp(r))
+    }
+
     private fun alert(id: Long, kind: String, pkg: String, target: String, severity: String = "medium") =
         AlertEntity(id = id, ts = id, kind = kind, severity = severity, uid = null, pkg = pkg, target = target, message = "m", detail = "{}")
 

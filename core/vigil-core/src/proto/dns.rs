@@ -342,6 +342,48 @@ pub fn sinkhole_response(query: &[u8], mode: SinkholeMode, ttl: u32) -> Option<V
     Some(out)
 }
 
+/// Sets the TTL of every resource record of a response to 0 (except OPT
+/// pseudo-records, whose TTL field carries EDNS flags), so resolver caches
+/// do not keep the answer. Returns false, leaving the rest untouched, if
+/// the message cannot be walked to its end.
+pub fn zero_ttls(msg: &mut [u8]) -> bool {
+    const TYPE_OPT: u16 = 41;
+    let mut ttl_offsets = Vec::new();
+    {
+        let m: &[u8] = msg;
+        let mut r = Reader::new(m);
+        let Some(()) = r.skip(4) else { return false };
+        let (Some(qd), Some(an), Some(ns), Some(ar)) = (r.u16(), r.u16(), r.u16(), r.u16()) else {
+            return false;
+        };
+        for _ in 0..qd {
+            if read_name(m, &mut r).is_none() || r.skip(4).is_none() {
+                return false;
+            }
+        }
+        for _ in 0..(an as usize + ns as usize + ar as usize) {
+            if read_name(m, &mut r).is_none() {
+                return false;
+            }
+            let Some(rtype) = r.u16() else { return false };
+            let ttl_at = r.pos() + 2;
+            let (Some(()), Some(rdlen)) = (r.skip(6), r.u16()) else {
+                return false;
+            };
+            if r.skip(rdlen as usize).is_none() {
+                return false;
+            }
+            if rtype != TYPE_OPT {
+                ttl_offsets.push(ttl_at);
+            }
+        }
+    }
+    for at in ttl_offsets {
+        msg[at..at + 4].fill(0);
+    }
+    true
+}
+
 /// Builds a SERVFAIL answer, used when every upstream resolver failed.
 pub fn servfail_response(query: &[u8]) -> Option<Vec<u8>> {
     let (qend, _) = first_question_span(query)?;
@@ -414,6 +456,48 @@ mod tests {
         assert!(!m.is_response);
         assert_eq!(m.questions[0].name, "tracker.example.com");
         assert_eq!(m.questions[0].qtype, TYPE_AAAA);
+    }
+
+    #[test]
+    fn zero_ttls_clears_every_record_but_opt() {
+        let mut m = build_query(7, "www.example.com", TYPE_A);
+        m[2] = 0x81;
+        m[3] = 0x80;
+        m[7] = 2; // ancount
+        m[11] = 1; // arcount
+        m.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60]);
+        let cname: Vec<u8> = [&[4u8][..], b"edge", &[7], b"example", &[3], b"net", &[0]].concat();
+        m.extend_from_slice(&(cname.len() as u16).to_be_bytes());
+        let edge = m.len();
+        m.extend_from_slice(&cname);
+        m.extend_from_slice(&[
+            0xc0 | (edge >> 8) as u8,
+            edge as u8,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            1,
+            44,
+            0,
+            4,
+        ]);
+        m.extend_from_slice(&[93, 184, 216, 34]);
+        // OPT: root name, type 41, UDP size 1232, flags DO (0x8000).
+        m.extend_from_slice(&[0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 0, 0]);
+        assert_eq!(parse(&m).unwrap().min_ttl(), Some(300));
+        assert!(zero_ttls(&mut m));
+        let p = parse(&m).unwrap();
+        assert!(p.answers.iter().all(|a| a.ttl == 0));
+        assert_eq!(p.answers.len(), 2);
+        assert_eq!(&m[m.len() - 4..m.len() - 2], &[0x80, 0], "OPT flags kept");
+        // Truncated messages are left alone.
+        let mut short = m[..m.len() - 3].to_vec();
+        let before = short.clone();
+        assert!(!zero_ttls(&mut short));
+        assert_eq!(short, before);
     }
 
     #[test]

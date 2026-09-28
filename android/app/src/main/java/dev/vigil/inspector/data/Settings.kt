@@ -51,7 +51,12 @@ data class Settings(
     val customUpstreams: List<String> = listOf("1.1.1.1", "9.9.9.9"),
     /** DNS over TLS / HTTPS to the upstream resolver (off: plain DNS to the resolvers above). */
     val encryptedDns: EncryptedDnsSettings = EncryptedDnsSettings(),
+    /** Apps (package or `uid:<n>` key) blocked at all times. */
     val blockedPackages: Set<String> = emptySet(),
+    /** Conditional blocking per app key: on Wi-Fi, on mobile data, in the background, screen off. */
+    val appRules: Map<String, AppRule> = emptyMap(),
+    /** Domains allowed or blocked for one app only. */
+    val appDomainRules: List<AppDomainRule> = emptyList(),
     val allowDomains: Set<String> = emptySet(),
     val denyDomains: Set<String> = emptySet(),
     val beaconEnabled: Boolean = true,
