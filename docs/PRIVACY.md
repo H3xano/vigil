@@ -22,7 +22,8 @@ Feed downloads and export use vigil's own sockets, which bypass its tunnel.
 ## What vigil downloads
 
 vigil downloads its enabled threat feeds once a day, directly from their
-publishers. Four built-in feeds are on by default: HaGeZi Threat Intelligence
+publishers. Four built-in threat feeds are on by default (plus the spyware
+packs below): HaGeZi Threat Intelligence
 (from `raw.githubusercontent.com`) and abuse.ch URLhaus, ThreatFox and Feodo
 Tracker. Each download is a plain HTTPS GET with the User-Agent
 `vigil/<version> (+feed updater)`, so the publisher (and GitHub) sees your
@@ -37,6 +38,28 @@ another host is followed without them, a redirect from HTTPS to plain HTTP is
 refused, and with credentials a TAXII discovery document's API roots on other
 hosts (or over plain HTTP) are not used. JA4 fingerprints of your connections are matched on the device
 and never sent anywhere.
+
+The spyware and stalkerware packs are on by default too, all from
+`raw.githubusercontent.com` with the same kind of plain GET (User-Agent
+`vigil/<version> (+feed updater)`), so GitHub sees your IP address and the
+time: daily, Echap's `generated/network.csv`, `ioc.yaml` and
+`watchware.yaml` (github.com/AssoEchap/stalkerware-indicators, CC BY 4.0,
+about 150 KB in total) and MVT's `indicators.yaml` index
+(github.com/mvt-project/mvt-indicators, MIT, 8 KB); every three days, each
+pack the index lists that you leave on (STIX bundles from the MVT project,
+MIT, and Amnesty International's Security Lab, CC BY 2.0; about 5 MB in
+total, the largest 2.2 MB). vigil only follows index entries hosted by
+those publishers. Each pack can be turned off under Settings → Threat
+intelligence feeds → Spyware & stalkerware.
+
+The **health check** runs entirely on the device. It reads the list of
+installed apps with their signing certificates (vigil declares
+`QUERY_ALL_PACKAGES` for per-app attribution anyway) and the stored
+history, and compares them with the downloaded packs. Nothing about your
+apps, the history or the result is sent anywhere, and the report is kept in
+memory only: it is gone when you leave the app, unless you share or save it
+yourself (the report names apps and sites from the phone, so share it only
+with someone you trust).
 
 The IP-to-ASN database is also on by default: once a week vigil downloads
 iptoasn.com's `ip2asn-combined.tsv.gz` (about 9 MB, public domain under the

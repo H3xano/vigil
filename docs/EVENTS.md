@@ -219,6 +219,19 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `exfil_volume` | medium (low when the foreground state is unknown) | (app-side) an app uploads an unusual volume while not in the foreground (see "Upload volume" below) |
 | `new_asn` | low, medium | (opt-in, app-side, needs an ASN table) after a learning period (7 days by default, from the first network recorded for the app), an app contacts an autonomous system it never used before. `target` is `AS<number>`; `detail`: `asn`, `as_name`, `as_country`, `destination`, `dst_ip`, `known_networks`. Medium when the app had used at most 3 networks. At most 5 per app and 30 in total per hour; networks over the limit are learned without an alert |
 
+#### Spyware labels (app-side)
+
+The engine's `threat_domain` and `threat_ip` alerts name the feed and the
+listed entry (`… listed by feed:<id> (<entry>)`) but carry no label for
+domain and IP feeds. When the entry is in a downloaded spyware pack (see
+[HEALTH_CHECK.md](HEALTH_CHECK.md)), the app adds the spyware before storing,
+notifying and exporting the alert: the `message` gets the suffix
+`. Spyware indicator: <label> (<pack>)`, and `detail.spyware` is
+`{"label": "Pegasus", "pack": "NSO Group Pegasus", "feed": "mvt-2021-07-18-nso-pegasus"}`
+(`feed` is the pack's feed id, which may differ from the feed that matched
+when several feeds list the entry). Monitoring-app (watchware) entries
+never add a label; they are not loaded by the engine.
+
 #### Beaconing
 
 `beacon` alerts come from two detectors that share the thresholds of the

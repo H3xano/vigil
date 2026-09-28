@@ -54,6 +54,7 @@ import dev.vigil.inspector.ui.screens.DashboardScreen
 import dev.vigil.inspector.ui.screens.ExportScreen
 import dev.vigil.inspector.ui.screens.FeedsScreen
 import dev.vigil.inspector.ui.screens.FlowDetailScreen
+import dev.vigil.inspector.ui.screens.HealthCheckScreen
 import dev.vigil.inspector.ui.screens.OnboardingScreen
 import dev.vigil.inspector.ui.screens.RulesScreen
 import dev.vigil.inspector.ui.screens.SettingsScreen
@@ -237,6 +238,7 @@ class MainActivity : ComponentActivity() {
                 composable("rules") { RulesScreen(vm, nav) }
                 composable("dns") { DnsScreen(vm, nav) }
                 composable("upstream") { UpstreamScreen(vm, nav) }
+                composable("health") { HealthCheckScreen(vm, nav) }
                 composable("app/{pkg}", arguments = listOf(navArgument("pkg") { type = NavType.StringType })) {
                     AppDetailScreen(vm, nav, it.arguments?.getString("pkg").orEmpty())
                 }

@@ -220,7 +220,8 @@ class TaxiiState(var fullSyncAt: Long = 0) {
         file.bufferedWriter().use { w ->
             w.write("$HEADER\t$fullSyncAt\n")
             for ((id, e) in entries) {
-                val values = e.values.domains.map { "d:$it" } + e.values.ips.map { "i:$it" } + e.values.ja4.map { "j:$it" }
+                val values = e.values.domains.map { "d:$it" } + e.values.ips.map { "i:$it" } + e.values.ja4.map { "j:$it" } +
+                    e.values.apps.map { "a:$it" } + e.values.certs.map { "c:$it" }
                 w.write("${id.replace('\t', ' ')}\t${e.version}\t${e.validUntil ?: -1}\t${e.label.orEmpty()}\t${values.joinToString(" ")}\n")
             }
         }
@@ -243,12 +244,18 @@ class TaxiiState(var fullSyncAt: Long = 0) {
                     val d = ArrayList<String>()
                     val i = ArrayList<String>()
                     val j = ArrayList<String>()
+                    val a = ArrayList<String>()
+                    val c = ArrayList<String>()
                     for (v in f[4].split(' ')) when {
                         v.startsWith("d:") -> d += v.substring(2)
                         v.startsWith("i:") -> i += v.substring(2)
                         v.startsWith("j:") -> j += v.substring(2)
+                        v.startsWith("a:") -> a += v.substring(2)
+                        v.startsWith("c:") -> c += v.substring(2)
                     }
-                    s.entries[f[0]] = Entry(f[1].toLongOrNull() ?: 0, f[2].toLongOrNull()?.takeIf { it >= 0 }, f[3].ifEmpty { null }, IndicatorValues(d, i, j))
+                    s.entries[f[0]] = Entry(
+                        f[1].toLongOrNull() ?: 0, f[2].toLongOrNull()?.takeIf { it >= 0 }, f[3].ifEmpty { null }, IndicatorValues(d, i, j, a, c),
+                    )
                 }
                 return s
             }

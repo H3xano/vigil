@@ -51,6 +51,7 @@ import dev.vigil.inspector.data.FeedCatalog
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.FeedKinds
+import dev.vigil.inspector.data.MvtIndex
 import dev.vigil.inspector.data.TrackerDatabase
 import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.ui.FeedWork
@@ -119,7 +120,8 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                 Ja4Settings(settings.blockJa4Matches, onBlock = vm::setBlockJa4Matches)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
-            val (taxii, lists) = feeds.partition { it.isTaxii }
+            val (spyware, others) = feeds.partition { it.kind in FeedKinds.SPYWARE_KINDS }
+            val (taxii, lists) = others.partition { it.isTaxii }
             val groups = lists.groupBy { it.category }
             for (category in FeedCatalog.categories.filter { it in groups }) {
                 item {
@@ -135,6 +137,26 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                 }
                 items(groups.getValue(category), key = { it.id }) { f ->
                     FeedRow(f, active = f.id in loaded || (f.kind == FeedKinds.TRACKERS && f.enabled && trackersLoaded), onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDeleteId = f.id })
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+            if (spyware.isNotEmpty()) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionTitle("Spyware & stalkerware")
+                        HelpIcon("Spyware packs", Glossary.SPYWARE_PACKS)
+                    }
+                }
+                item {
+                    TextButton(onClick = { nav.navigate("health") }, Modifier.padding(horizontal = 8.dp)) { Text("Open the health check") }
+                }
+                // The index first, then Echap's lists, then the packs it lists.
+                val ordered = spyware.sortedWith(
+                    compareBy<FeedEntity> { if (it.kind == FeedKinds.SPYWARE_INDEX) 0 else if (it.id.startsWith(MvtIndex.ID_PREFIX)) 2 else 1 }
+                        .thenBy { it.name.lowercase() },
+                )
+                items(ordered, key = { it.id }) { f ->
+                    FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDeleteId = f.id })
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
@@ -391,7 +413,13 @@ private fun FeedRow(f: FeedEntity, active: Boolean, onToggle: (Boolean) -> Unit,
                                 f.domains.takeIf { it > 0 }?.let { "${formatCount(it.toLong())} domains" },
                                 f.ipRanges.takeIf { it > 0 }?.let { "${formatCount(it.toLong())} ranges" },
                                 f.ja4.takeIf { it > 0 }?.let { "${formatCount(it.toLong())} JA4" },
-                            ).joinToString(" · ").ifEmpty { "empty" },
+                            ).joinToString(" · ").ifEmpty {
+                                when (f.kind) {
+                                    FeedKinds.SPYWARE_INDEX -> "pack list"
+                                    FeedKinds.SPYWARE_APPS, FeedKinds.SPYWARE -> "for the health check"
+                                    else -> "empty"
+                                }
+                            },
                         )
                         Tag("updated ${formatRelative(f.lastUpdated)}")
                     } else if (f.enabled) {

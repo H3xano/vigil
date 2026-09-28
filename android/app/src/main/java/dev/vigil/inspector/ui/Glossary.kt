@@ -74,6 +74,11 @@ object Glossary {
     const val DNS_UPSTREAM =
         "How vigil forwarded the lookup to the resolver: UDP or TCP (plain DNS, readable by the network), DoT (DNS over " +
             "TLS) or DoH (DNS over HTTPS)."
+    const val SPYWARE_PACKS =
+        "Indicators of mercenary spyware (such as Pegasus or Predator) and stalkerware published by Amnesty " +
+            "International, Citizen Lab, Echap and others for the Mobile Verification Toolkit. Their servers are " +
+            "blocked and raise alerts naming the spyware; app names and signing certificates are compared with the " +
+            "installed apps by the health check. Each pack is downloaded from its publisher, under its own licence."
     const val ECS =
         "Elastic Common Schema: standard field names (event.*, source.*, destination.*, dns.*) that Elastic, Splunk " +
             "and Sentinel map without custom parsing."

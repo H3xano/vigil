@@ -10,6 +10,7 @@ import dev.vigil.inspector.data.DestinationEntity
 import dev.vigil.inspector.data.DnsEntity
 import dev.vigil.inspector.data.FlowEntity
 import dev.vigil.inspector.data.SettingsStore
+import dev.vigil.inspector.data.SpywareLabels
 import dev.vigil.inspector.data.VigilDatabase
 import dev.vigil.inspector.engine.AlertEvent
 import dev.vigil.inspector.engine.DnsEvent
@@ -45,6 +46,8 @@ class EventProcessor(
     private val session: Long,
     /** Upload-volume alerts; fed from each batch (see [ExfilDetector]). */
     private val exfil: ExfilDetector? = null,
+    /** Names the spyware behind threat alerts from spyware packs (see [SpywareLabels]). */
+    private val spywareLabels: SpywareLabels? = null,
     /** Called (on the processing coroutine) when the engine reports a fatal error. */
     private val onEngineError: (String) -> Unit = {},
 ) {
@@ -102,11 +105,12 @@ class EventProcessor(
                 }
                 is AlertEvent -> {
                     val app = apps.resolve(e.uid)
+                    val a = spywareLabels?.let { labels -> runCatching { labels.enrich(e) }.getOrNull() } ?: e
                     alerts += AlertEntity(
-                        ts = e.ts, kind = e.kind, severity = e.severity, uid = e.uid, pkg = app.key, target = e.target,
-                        message = e.message, detail = e.detail?.toString() ?: "{}",
+                        ts = a.ts, kind = a.kind, severity = a.severity, uid = a.uid, pkg = app.key, target = a.target,
+                        message = a.message, detail = a.detail?.toString() ?: "{}",
                     )
-                    exporter.offer("alert", ExportRecords.alert(e, app))
+                    exporter.offer("alert", ExportRecords.alert(a, app))
                 }
                 is StatsEvent -> ServiceState.stats.value = e
                 is EngineStateEvent -> {

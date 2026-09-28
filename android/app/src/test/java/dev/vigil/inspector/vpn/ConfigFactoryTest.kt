@@ -181,6 +181,16 @@ class ConfigFactoryTest {
             feed("iptoasn", "asn", kind = FeedKinds.ASN),
             feed("ja4-foxio", "ja4", kind = FeedKinds.JA4),
         )
+        val spyware = listOf(
+            feed("echap-stalkerware-network", "malware", kind = FeedKinds.SPYWARE),
+            feed("echap-stalkerware-apps", "malware", kind = FeedKinds.SPYWARE_APPS),
+            feed("mvt-index", "malware", kind = FeedKinds.SPYWARE_INDEX),
+        )
+        // Spyware app indicators and the pack index are for the app only, never loaded by the engine.
+        assertEquals(
+            listOf("echap-stalkerware-network"),
+            ConfigFactory.loadableFeeds(spyware) { true }.map { it.id },
+        )
         val onDisk = setOf("urlhaus", "ads", "iptoasn", "ja4-foxio")
         val loadable = ConfigFactory.loadableFeeds(all) { it in onDisk }
         // Enabled and downloaded, the ASN table included: what syncFeeds would load.

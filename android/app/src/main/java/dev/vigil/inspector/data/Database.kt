@@ -180,6 +180,25 @@ object FeedKinds {
 
     /** The tracker-company database ([TrackerDatabase]): labels destinations, never blocks, not loaded by the engine. */
     const val TRACKERS = "trackers"
+
+    /**
+     * A spyware indicator pack: its domains and IPs are loaded like a threat
+     * list, and its labels, apps and certificates are kept for alert labels
+     * and the health check (see [SpywarePack]).
+     */
+    const val SPYWARE = "spyware"
+
+    /** Spyware app indicators (packages, certificates) for the health check only; not loaded by the engine. */
+    const val SPYWARE_APPS = "spyware_apps"
+
+    /** An index of spyware packs (MVT's `indicators.yaml`): adds one [SPYWARE] feed per pack; not loaded by the engine. */
+    const val SPYWARE_INDEX = "spyware_index"
+
+    /** Kinds of the "Spyware & stalkerware" group. */
+    val SPYWARE_KINDS = setOf(SPYWARE, SPYWARE_APPS, SPYWARE_INDEX)
+
+    /** Whether the engine loads feeds of [kind] (the others are used by the app only). */
+    fun loadsIntoEngine(kind: String) = kind != SPYWARE_APPS && kind != SPYWARE_INDEX && kind != TRACKERS
 }
 
 data class AppUsage(
@@ -207,6 +226,16 @@ data class DestinationUsage(
 )
 
 data class NameCount(val name: String, val hits: Long)
+
+/** A destination (domain or IP address) an app used, aggregated for the health check. */
+data class ObservedName(
+    val name: String,
+    val pkg: String,
+    val firstSeen: Long,
+    val lastSeen: Long,
+    val count: Long,
+    val blocked: Long,
+)
 
 data class Totals(
     val flows: Long,
@@ -290,6 +319,23 @@ interface FlowDao {
 
     @Query("DELETE FROM flows")
     suspend fun clear()
+
+    /** Every (domain, app) pair in the history, for the health check. */
+    @Query(
+        """SELECT domain AS name, pkg, MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, COUNT(*) AS count, SUM(verdict = 'block') AS blocked
+           FROM flows WHERE domain IS NOT NULL GROUP BY domain, pkg""",
+    )
+    suspend fun observedDomains(): List<ObservedName>
+
+    /** Every (address, app) pair in the history, for the health check. */
+    @Query(
+        """SELECT dstIp AS name, pkg, MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, COUNT(*) AS count, SUM(verdict = 'block') AS blocked
+           FROM flows GROUP BY dstIp, pkg""",
+    )
+    suspend fun observedIps(): List<ObservedName>
+
+    @Query("SELECT MIN(ts) FROM flows")
+    suspend fun oldest(): Long?
 }
 
 @Dao
@@ -331,6 +377,16 @@ interface DnsDao {
 
     @Query("DELETE FROM dns_queries")
     suspend fun clear()
+
+    /** Every (name, app) pair looked up in the history, blocked lookups included, for the health check. */
+    @Query(
+        """SELECT qname AS name, pkg, MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, COUNT(*) AS count, SUM(verdict = 'block') AS blocked
+           FROM dns_queries GROUP BY qname, pkg""",
+    )
+    suspend fun observedNames(): List<ObservedName>
+
+    @Query("SELECT MIN(ts) FROM dns_queries")
+    suspend fun oldest(): Long?
 }
 
 @Dao
@@ -380,6 +436,10 @@ interface DestinationDao {
 
     @Query("DELETE FROM destinations")
     suspend fun clear()
+
+    /** The learned (app, destination) pairs (kept at least 90 days), for the health check. */
+    @Query("SELECT destination AS name, pkg, firstSeen, lastSeen, flows AS count, 0 AS blocked FROM destinations")
+    suspend fun observed(): List<ObservedName>
 }
 
 @Dao
@@ -444,6 +504,14 @@ interface FeedDao {
 
     @Query("DELETE FROM feeds WHERE id = :id AND builtin = 0")
     suspend fun deleteCustom(id: String)
+
+    /** Name, URL and description of a feed listed by a spyware index; leaves the user's switch alone. */
+    @Query("UPDATE feeds SET name = :name, url = :url, description = :description WHERE id = :id")
+    suspend fun updateListing(id: String, name: String, url: String, description: String): Int
+
+    /** Removes a feed whatever its origin (a spyware pack no longer listed by its index). */
+    @Query("DELETE FROM feeds WHERE id = :id")
+    suspend fun deleteAny(id: String)
 }
 
 @Database(

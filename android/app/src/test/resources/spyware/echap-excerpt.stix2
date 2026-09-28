@@ -1,0 +1,204 @@
+{
+ "type": "bundle",
+ "id": "bundle--c3f805be-948e-476e-bcef-5ea91b4a5f8b",
+ "objects": [
+  {
+   "type": "malware",
+   "spec_version": "2.1",
+   "id": "malware--a126c522-cc9f-4bce-8c9c-ae0d8ddc8ee6",
+   "created": "2026-06-21T20:40:18.048615Z",
+   "modified": "2026-06-21T20:40:18.048615Z",
+   "name": "TheTruthSpy",
+   "description": "Stalkerware application",
+   "is_family": false
+  },
+  {
+   "type": "malware",
+   "spec_version": "2.1",
+   "id": "malware--b8b84f05-fe69-4486-ba27-28fab0853e6d",
+   "created": "2026-06-21T20:40:20.027217Z",
+   "modified": "2026-06-21T20:40:20.027217Z",
+   "name": "mSpy",
+   "description": "Stalkerware application",
+   "is_family": false
+  },
+  {
+   "type": "malware",
+   "spec_version": "2.1",
+   "id": "malware--93dd47e8-7d91-4e00-8100-c9416f17fecc",
+   "created": "2026-06-21T20:40:23.913337Z",
+   "modified": "2026-06-21T20:40:23.913337Z",
+   "name": "Buhsam",
+   "description": "Stalkerware application",
+   "is_family": false
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--ba494478-9260-48b4-bd25-4175418b1965",
+   "created": "2026-06-21T20:40:18.048897Z",
+   "modified": "2026-06-21T20:40:18.048897Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[domain-name:value='1ca43.appspot.com']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:18.048897Z"
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--68248829-3cb1-42f8-8617-3b4c2c923956",
+   "created": "2026-06-21T20:40:18.056603Z",
+   "modified": "2026-06-21T20:40:18.056603Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[domain-name:value='copy9.com']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:18.056603Z"
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--3263c32f-3e26-415b-a0bc-7d7035c24735",
+   "created": "2026-06-21T20:40:18.853085Z",
+   "modified": "2026-06-21T20:40:18.853085Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[app:id='com.apspy.app']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:18.853085Z"
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--3f74ad86-1078-4a56-beed-d09cf8113b94",
+   "created": "2026-06-21T20:40:18.862103Z",
+   "modified": "2026-06-21T20:40:18.862103Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[app:cert.sha1='31A6ECECD97CF39BC4126B8745CD94A7C30BF81C']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:18.862103Z"
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--58f5775b-01f7-4270-be26-5c09c96cf291",
+   "created": "2026-06-21T20:40:20.027387Z",
+   "modified": "2026-06-21T20:40:20.027387Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[domain-name:value='a-qa3.thd.cc']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:20.027387Z"
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--32dd0d88-64dd-42e9-ab52-e8a2394c2f12",
+   "created": "2026-06-21T20:40:23.913515Z",
+   "modified": "2026-06-21T20:40:23.913515Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[url:value='https://github.com/earthshakira/android_hack']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:23.913515Z"
+  },
+  {
+   "type": "indicator",
+   "spec_version": "2.1",
+   "id": "indicator--fe75653b-3254-4888-b275-9b44b8be977f",
+   "created": "2026-06-21T20:40:20.115449Z",
+   "modified": "2026-06-21T20:40:20.115449Z",
+   "indicator_types": [
+    "malicious-activity"
+   ],
+   "pattern": "[file:hashes.sha256='9db57d7c719721d797f37a8e7fc31cfbfb2399edff6283610ae84e32cb7e7a6f']",
+   "pattern_type": "stix",
+   "pattern_version": "2.1",
+   "valid_from": "2026-06-21T20:40:20.115449Z"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--1a33c457-b0c5-48d5-be81-3fff9cf188a6",
+   "created": "2026-06-21T20:40:18.055981Z",
+   "modified": "2026-06-21T20:40:18.055981Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--ba494478-9260-48b4-bd25-4175418b1965",
+   "target_ref": "malware--a126c522-cc9f-4bce-8c9c-ae0d8ddc8ee6"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--577105ad-894a-436c-9d7c-dc6b48befb4d",
+   "created": "2026-06-21T20:40:18.057575Z",
+   "modified": "2026-06-21T20:40:18.057575Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--68248829-3cb1-42f8-8617-3b4c2c923956",
+   "target_ref": "malware--a126c522-cc9f-4bce-8c9c-ae0d8ddc8ee6"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--8db3f60c-7dfd-4c65-8453-e935f7f54015",
+   "created": "2026-06-21T20:40:18.854211Z",
+   "modified": "2026-06-21T20:40:18.854211Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--3263c32f-3e26-415b-a0bc-7d7035c24735",
+   "target_ref": "malware--a126c522-cc9f-4bce-8c9c-ae0d8ddc8ee6"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--5a7db4ec-d467-4b61-8789-7ea7b4dfe871",
+   "created": "2026-06-21T20:40:18.863664Z",
+   "modified": "2026-06-21T20:40:18.863664Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--3f74ad86-1078-4a56-beed-d09cf8113b94",
+   "target_ref": "malware--a126c522-cc9f-4bce-8c9c-ae0d8ddc8ee6"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--c1b90923-8d1b-4b3b-ade5-d555f947b5ab",
+   "created": "2026-06-21T20:40:20.028063Z",
+   "modified": "2026-06-21T20:40:20.028063Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--58f5775b-01f7-4270-be26-5c09c96cf291",
+   "target_ref": "malware--b8b84f05-fe69-4486-ba27-28fab0853e6d"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--de5992d2-5d73-4742-bda1-9504cbbd3f54",
+   "created": "2026-06-21T20:40:23.914637Z",
+   "modified": "2026-06-21T20:40:23.914637Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--32dd0d88-64dd-42e9-ab52-e8a2394c2f12",
+   "target_ref": "malware--93dd47e8-7d91-4e00-8100-c9416f17fecc"
+  },
+  {
+   "type": "relationship",
+   "spec_version": "2.1",
+   "id": "relationship--e185e9d3-aa03-4f3e-b7ed-aa44d226e82c",
+   "created": "2026-06-21T20:40:20.116287Z",
+   "modified": "2026-06-21T20:40:20.116287Z",
+   "relationship_type": "indicates",
+   "source_ref": "indicator--fe75653b-3254-4888-b275-9b44b8be977f",
+   "target_ref": "malware--b8b84f05-fe69-4486-ba27-28fab0853e6d"
+  }
+ ]
+}

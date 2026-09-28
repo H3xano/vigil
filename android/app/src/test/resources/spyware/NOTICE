@@ -1,0 +1,18 @@
+Test fixtures: small unmodified excerpts of published indicator files, used
+only by the unit tests (they are not packaged in the app).
+
+indicators-excerpt.yaml
+    From https://github.com/mvt-project/mvt-indicators (indicators.yaml).
+    MVT project, MIT licence.
+
+novispy-excerpt.stix2
+    From https://github.com/AmnestyTech/investigations
+    (2024-12-16_serbia_novispy/novispy.stix2), a subset of its objects.
+    Amnesty International Security Lab, CC BY 2.0
+    (https://creativecommons.org/licenses/by/2.0/).
+
+echap-excerpt.stix2, ioc-excerpt.yaml, watchware-excerpt.yaml, network-excerpt.csv
+    From https://github.com/AssoEchap/stalkerware-indicators
+    (generated/stalkerware.stix2, ioc.yaml, watchware.yaml,
+    generated/network.csv), a subset of their entries.
+    Echap, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).

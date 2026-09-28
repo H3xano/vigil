@@ -13,6 +13,7 @@ import androidx.work.WorkerParameters
 import dev.vigil.inspector.data.AppResolver
 import dev.vigil.inspector.data.FeedRepository
 import dev.vigil.inspector.data.SettingsStore
+import dev.vigil.inspector.data.SpywareLabels
 import dev.vigil.inspector.data.TrackerLabels
 import dev.vigil.inspector.data.VigilDatabase
 import dev.vigil.inspector.export.SiemExporter
@@ -40,6 +41,8 @@ class VigilApp : Application() {
     val settings by lazy { SettingsStore(this) }
     val apps by lazy { AppResolver(this) }
     val feeds by lazy { FeedRepository(this, db.feeds()) }
+    /** Spyware names for threat alerts, from the downloaded packs. */
+    val spywareLabels by lazy { SpywareLabels { feeds.packFiles() } }
     val foreground by lazy { ForegroundTracker(this) }
     val notifier by lazy { AlertNotifier(this, apps) }
     val exporter by lazy { SiemExporter(this, settings, scope, trackerLabel = trackers::match).also { it.start() } }
