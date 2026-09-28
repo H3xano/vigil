@@ -70,7 +70,7 @@ class EventProcessor(
     suspend fun process(batch: List<EngineEvent>) {
         if (batch.isEmpty()) return
         foreground.refresh()
-        val events = exfil?.let { batch + it.process(session, batch, settings.value.exfil, apps::resolve, foreground::isBackground) } ?: batch
+        val events = exfil?.let { batch + it.process(session, batch, settings.value.exfil, apps::resolve, foreground::isBackgroundForExfil) } ?: batch
         val flows = ArrayList<FlowEntity>()
         val dns = ArrayList<DnsEntity>()
         val alerts = ArrayList<AlertEntity>()

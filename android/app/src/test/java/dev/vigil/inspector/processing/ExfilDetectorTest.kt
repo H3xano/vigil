@@ -131,6 +131,21 @@ class ExfilDetectorTest {
     }
 
     @Test
+    fun appOnScreenBeforeTrackingStartedIsNotBackground() {
+        // Usage access granted, but the app on screen resumed before the
+        // tracker's first query: its uploads must not alert (they did, when
+        // "not the current app" counted as background).
+        val fg = ForegroundState()
+        val s = Sim()
+        s.flow(t0, 10 * 60_000, 500 * mb, background = fg.isBackgroundForExfil("com.example.app", permitted = true, interactive = true))
+        assertTrue(s.alerts.toString(), s.alerts.isEmpty())
+        // Once another app is known to be on screen, the same upload alerts.
+        fg.resumed("com.example.chat")
+        s.flow(t0 + 20 * 60_000, 10 * 60_000, 500 * mb, background = fg.isBackgroundForExfil("com.example.app", true, true))
+        assertEquals(1, s.alerts.size)
+    }
+
+    @Test
     fun unknownForegroundStateAlertsAtLowSeverity() {
         val s = Sim()
         s.flow(t0, 10 * 60_000, 100 * mb, background = null)
