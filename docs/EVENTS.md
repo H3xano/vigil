@@ -310,7 +310,7 @@ added after 0.1.0:
 | field | type | default | meaning |
 |---|---|---|---|
 | `nat64_prefixes` | list of CIDR strings | `[]` | NAT64 prefixes of the current network, e.g. `"64:ff9b::/96"` or the carrier's own prefix. IPv6 destinations inside one are matched against IP feeds by their embedded IPv4 address (last 32 bits). `64:ff9b::/96` always applies, even if absent. Only /96 prefixes are supported; other lengths and unparseable entries are logged and ignored (they do not reject the config). |
-| `max_udp_flows` | integer > 0 | 2048 | UDP NAT entries. When full, the flow idle for longest is evicted (`flow_end.error` = `evicted: …`). |
+| `max_udp_flows` | integer > 0 | 2048 | UDP NAT entries. When full, the flows idle for longest (1/32 of the table, at least one) are evicted: an open one ends with `flow_end.error` = `evicted: …`, one still being set up is dropped without events. |
 | `max_tcp_flows` | integer > 0 | 4096 | TCP connections admitted or relaying. Further SYNs are answered with a RST. |
 | `max_pending_connects` | integer > 0 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
 | `max_dns_inflight` | integer > 0 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |

@@ -122,6 +122,8 @@ pub(crate) struct Limits {
     /// DNS queries being answered.
     pub dns: Arc<Semaphore>,
     pub udp_flows: usize,
+    /// UDP flows looking up their UID or creating their socket.
+    pub udp_setup: Semaphore,
 }
 
 impl Limits {
@@ -131,6 +133,7 @@ impl Limits {
             tcp: Arc::new(Semaphore::new(cfg.max_tcp_flows)),
             dns: Arc::new(Semaphore::new(cfg.max_dns_inflight)),
             udp_flows: cfg.max_udp_flows,
+            udp_setup: Semaphore::new(udp::UDP_SETUP_CONCURRENCY),
         }
     }
 }
