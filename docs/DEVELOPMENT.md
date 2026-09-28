@@ -43,7 +43,7 @@ app. Every one was green at the 0.1.0 commit.
 
 ```sh
 cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-scripts/e2e-netns.sh          # 49 checks, needs internet, no root
+scripts/e2e-netns.sh          # 89 checks: direct, SOCKS5 and WireGuard stages (E2E_STAGES=...), needs internet, no root
 scripts/jni-smoke.sh          # 26 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
@@ -159,6 +159,18 @@ would make the second build trivially identical.
   `[patch.crates-io]`) to add `TcpStream::abort` and report peer resets as
   `ConnectionReset`. Changes are marked `vigil patch`; re-apply them when
   upgrading the crate.
+- **boringtun is vendored too** (`core/vendor/boringtun`, unmodified source)
+  because its manifest also builds a `staticlib` and a `cdylib`, which
+  cargo-ndk copied into `jniLibs` as a stray `libboringtun-*.so`. Keep
+  `crate-type = ["rlib"]` when upgrading.
+- **tokio's `try_send` on a fresh UDP socket returns WouldBlock** until the
+  reactor has seen it writable. The WireGuard driver sends with a direct
+  `send(2)` (socket2) so the first handshake is not silently dropped.
+- **The e2e WireGuard stage needs kernel WireGuard links in an unprivileged
+  namespace** (`ip link add … type wireguard`); `scripts/e2e/wgconf.py`
+  configures them over generic netlink, so wireguard-tools are not needed.
+  Without the module the stage prints SKIP. `E2E_STAGES="wireguard"` (or
+  `socks5`, `direct`) runs single stages.
 - **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
   queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
   then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
@@ -179,26 +191,30 @@ core/vigil-core/src/
   engine/udp.rs     UDP NAT, QUIC sniff window
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
   engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
+  engine/upstream/  the dialer for every upstream socket: direct, wireguard.rs (boringtun + client smoltcp), socks5.rs
   proto/{dns,tls,quic,http}.rs   parsers (pure)
   intel.rs          DomainSet / IpSet / feed parsing
   policy.rs         Policy, feed categories, DoH host list
   detect.rs         beacon detector, alert limiter
   event.rs          event types + bounded queue
-  config.rs         Config (JSON contract with the app)
+  config.rs         Config (JSON contract with the app); config/upstream.rs the upstream section
 core/vigil-jni/src/lib.rs     JNI surface (mirrors engine/VigilNative.kt)
 core/vendor/netstack-smoltcp  patched netstack (TCP abort / reset reporting)
+core/vendor/boringtun         boringtun 0.7.1 built as an rlib only
 android/app/src/main/java/dev/vigil/inspector/
   vpn/              VigilVpnService, routes, config factory, tile, ServiceState
   engine/           VigilNative, PlatformBridge, EngineHandle, event/config models
   processing/       EventProcessor, ForegroundTracker, AlertNotifier
-  data/             Room DB, settings, app resolver, feed catalog/repository
+  data/             Room DB, settings (UpstreamSettings, WgQuick parser), app resolver, feed catalog/repository
   export/           ECS records, syslog/HTTP formats, ExportPipeline (retry), ElasticBulk, SiemExporter
   ui/               MainActivity, ViewModel, theme, components, screens/
 ```
 
 **Contracts to keep in sync when changing them:**
 
-- `core/vigil-core/src/config.rs` ↔ `engine/EngineConfig.kt`
+- `core/vigil-core/src/config.rs` (+ `config/upstream.rs`) ↔
+  `engine/EngineConfig.kt` ↔ `vpn/ConfigFactory.kt` (the Rust test
+  `upstream_json_contract` parses the JSON asserted in `ConfigFactoryTest`)
 - `core/vigil-core/src/event.rs` ↔ `engine/EngineEvent.kt` ↔ `docs/EVENTS.md`
 - JNI signatures in `vigil-jni/src/lib.rs` ↔ `engine/VigilNative.kt` ↔
   `scripts/jni-smoke/…/VigilNative.java`

@@ -7,12 +7,12 @@ prints them as JSON lines; the app polls them in batches (JSON arrays).
 
 | type | fields |
 |---|---|
-| `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`) |
+| `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`), `via` (`direct`, `wireguard`, `socks5`) |
 | `flow_update` | `id`, `ts`, `tx`, `rx` (running totals of long-lived flows) |
 | `flow_end` | `id`, `ts`, `tx` (bytes sent by the app), `rx`, `duration_ms`, `error` |
 | `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` |
 | `alert` | `ts`, `kind`, `severity` (`info`, `low`, `medium`, `high`), `uid`, `target`, `message`, `detail` |
-| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size |
+| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size, `upstream` (see below) |
 | `engine` | `state` (`started`, `stopped`, `error`), `message` |
 
 The engine emits exactly one `flow_end` for every `flow`, with the same
@@ -27,7 +27,13 @@ oldest event of any type. **Consumers must therefore tolerate orphans**: a
 `flow_end.error` is null for an orderly close. Otherwise it describes the
 end, for example `Connection reset by peer (os error 104)` (either side
 reset; vigil resets the other side too), `idle timeout`, `connect: …`,
-`socket: …`, `evicted: UDP flow limit reached`, or `engine stopped`. A flow
+`socket: …`, `evicted: UDP flow limit reached`, or `engine stopped`.
+Upstream paths add, for example, `connect: Connection refused (through
+WireGuard)`, `connect: socks5 proxy 127.0.0.1:9050: Connection refused (os
+error 111)` (proxy unreachable, fail closed), `connect: socks5: host
+unreachable (reply 4)` (the proxy's answer about the destination) and
+`socket: the SOCKS5 proxy does not relay UDP` (such UDP flows are then
+absorbed until idle, like blocked ones). A flow
 that the server resets before the app has sent anything is still reported
 (`flow` with `verdict: allow`, then `flow_end` with the error).
 
@@ -45,6 +51,29 @@ and `threat_ip` alerts name that IPv4 address as `target`.
 are what the app itself sent. `dns` is a reverse lookup of the address in
 recent DNS answers, which is ambiguous for shared CDN addresses, so it is
 never used for blocking.
+
+`via` is the upstream path of the flow's own connection (see `upstream`
+below): `direct`, `wireguard` or `socks5`. It is `direct` in the tunnel and
+proxy modes too for destinations outside the WireGuard peer's AllowedIPs,
+and when the path is down with `fail_closed: false`. It is null when no
+upstream connection was attempted (flows blocked before connecting). For a
+failed connect it names the path that was tried.
+
+### Upstream status (`stats.upstream`)
+
+| field | meaning |
+|---|---|
+| `mode` | `direct`, `wireguard` or `socks5` |
+| `state` | `up`; `connecting` (WireGuard handshake in progress); `idle` (no session or proxy contact yet and nothing pending: the tunnel connects on first use); `down` (WireGuard handshakes failing for 10 s or more, even if an older session has not expired; the endpoint cannot be resolved or reached; the SOCKS5 proxy could not be reached or refused the credentials) |
+| `fail_closed` | as configured |
+| `endpoint` | WireGuard: the peer address in use; SOCKS5: the server as configured |
+| `handshake_age_s` | seconds since the last completed WireGuard handshake |
+| `tx_bytes`, `rx_bytes` | WireGuard payload bytes through the tunnel (session totals) |
+| `last_error` | last tunnel or proxy error, e.g. `socks5 proxy 127.0.0.1:9050: Connection refused (os error 111)` |
+| `udp` | SOCKS5 only: `unknown` (not tried yet), `supported`, `unsupported` (the proxy refused UDP ASSOCIATE), `blocked` (configured) |
+
+In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
+(other fields null).
 
 ### Alert kinds
 
@@ -84,6 +113,53 @@ added after 0.1.0:
 The four caps are read when the engine starts; a later config update does
 not resize them.
 
+### Upstream path (`upstream`)
+
+Where vigil's own upstream sockets go: TCP relay connections, UDP flows and
+plain DNS to the configured (or app-chosen) resolvers. Inspection is the
+same in every mode.
+
+```json
+"upstream": {
+  "mode": "wireguard",
+  "fail_closed": true,
+  "network_id": "432902426637",
+  "wireguard": {
+    "private_key": "<base64>", "peer_public_key": "<base64>", "preshared_key": "<base64, optional>",
+    "endpoint": "vpn.example.com:51820",
+    "addresses": ["10.64.0.2/32", "fd00::2/128"],
+    "allowed_ips": ["0.0.0.0/0", "::/0"],
+    "mtu": 1280, "persistent_keepalive": 25
+  },
+  "socks5": {
+    "server": "127.0.0.1:9050", "username": "", "password": "",
+    "send_domain": true, "udp": "auto"
+  }
+}
+```
+
+| field | default | meaning |
+|---|---|---|
+| `mode` | `direct` | `direct`: protected sockets on the underlying network (as before). `wireguard`: a user-space WireGuard tunnel (boringtun) with a client TCP/IP stack; one protected UDP socket to the peer. `socks5`: a SOCKS5 proxy. |
+| `fail_closed` | `true` | While the tunnel or proxy is down, connections fail (the app gets a RST, DNS gets SERVFAIL). With `false` they go direct instead (see `stats.upstream.state` for "down"). |
+| `network_id` | `""` | Opaque id of the underlying network (the app sends the network handle). When only this changes, WireGuard re-creates its socket and re-resolves the endpoint, keeping the session (roaming). |
+| `wireguard.private_key`, `peer_public_key`, `preshared_key` | | base64 X25519 keys (32 bytes); the pre-shared key is optional (null, absent or empty). |
+| `wireguard.endpoint` | | `host:port` or `[v6]:port`. Host names are resolved when the tunnel starts, on roaming and every 30 s while handshakes fail. IPv4 answers are preferred. |
+| `wireguard.addresses` | | Tunnel addresses (CIDR; a bare address is a host route). At most one IPv4 and one IPv6. Destinations of a family without an address fail (apps fall back to the other family). |
+| `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct. Inner packets from other sources are dropped. |
+| `wireguard.mtu` | 1420 | Tunnel MTU, 576..=65535 (the app sends 1280 unless the `.conf` sets one). |
+| `wireguard.persistent_keepalive` | 0 | Seconds between keepalives (0 = off). |
+| `socks5.server` | | `host:port` of the proxy (loopback works, e.g. Orbot's `127.0.0.1:9050`). |
+| `socks5.username`, `password` | `""` | RFC 1929 credentials, at most 255 bytes each; a password needs a username. |
+| `socks5.send_domain` | `false` | CONNECT by the TLS SNI or HTTP Host the app sent (the proxy resolves it; useful for Tor) instead of by address. The upstream connection is then made when the app's first bytes arrive (or after 3.5 s by address, for server-speaks-first protocols), so a failure resets an already accepted connection instead of refusing it. |
+| `socks5.udp` | `auto` | `auto`: UDP flows use UDP ASSOCIATE (one association per flow); once the proxy refuses it, UDP is blocked. `block`: UDP is never relayed. Plain DNS always goes to the proxy as DNS over TCP. |
+
+Changing `upstream` with `nativeUpdateConfig` takes effect at once for new
+connections, UDP flows and DNS queries; open ones keep the path they were
+opened on until they end (a replaced WireGuard tunnel lives until its last
+connection closes). The app restarts the session only when the excluded
+proxy app changes (that needs a new VPN interface).
+
 **Validation.** `nativeStart` returns 0 and `nativeUpdateConfig` returns
 false (and the running config is kept) when the JSON does not parse or:
 
@@ -92,7 +168,12 @@ false (and the running config is kept) when the JSON does not parse or:
 - `mtu` is outside 576..=65535;
 - `tcp_connect_timeout_ms` or `udp_idle_timeout_s` is 0;
 - `upstream_dns` is empty;
-- any of the four caps above is 0.
+- any of the four caps above is 0;
+- `upstream.mode` is `wireguard` or `socks5` without its section, a key is
+  not base64 of 32 bytes, an endpoint or server is not `host:port`, an
+  address or AllowedIPs entry is not a CIDR, there is no tunnel address or
+  more than one per family, the WireGuard MTU is outside 576..=65535, or
+  SOCKS5 credentials are too long or a password has no username.
 
 UDP flows end `udp_idle_timeout_s` after the last datagram *received from
 the server*; outbound datagrams alone do not keep a flow alive. A flow
