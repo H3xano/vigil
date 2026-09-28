@@ -42,10 +42,10 @@ Run all of these before committing anything that touches the engine or the
 app. Every one was green at the 0.1.0 commit.
 
 ```sh
-cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # UNIT_COUNT unit tests
-scripts/e2e-netns.sh          # E2E_COUNT checks: direct, beacon (in-flow beaconing), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 130 unit tests
+scripts/e2e-netns.sh          # 171 checks: direct, beacon (in-flow beaconing), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
 scripts/jni-smoke.sh          # 28 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest   # 101 JVM tests (1 skipped: TaxiiLiveTest)
+cd android && ./gradlew lintDebug testDebugUnitTest   # 116 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 scripts/android-features.sh   # 12 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed
