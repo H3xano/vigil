@@ -207,29 +207,29 @@ impl Capture {
     fn record_slow(&self, pkt: &[u8], dir: Dir) {
         let snaplen = self.snaplen.load(Relaxed) as usize;
         let data = &pkt[..pkt.len().min(snaplen).min(u16::MAX as usize)];
-        let ts_us = now_us();
+        // The clock is read and the stream fed under the ring's lock, so
+        // the ring and the stream are in time order across threads.
+        let mut ring = self.ring.lock();
+        let Some(r) = ring.as_mut() else {
+            return;
+        };
         let h = RecordHeader {
-            ts_us,
+            ts_us: now_us(),
             orig_len: pkt.len() as u32,
             cap_len: data.len() as u16,
             dir,
         };
-        {
-            let mut ring = self.ring.lock();
-            let Some(r) = ring.as_mut() else {
-                return;
-            };
-            if r.push(h, data).is_none() {
-                return;
-            }
+        if r.push(h, data).is_none() {
+            return;
         }
-        self.packets.fetch_add(1, Relaxed);
-        self.bytes.fetch_add(pkt.len() as u64, Relaxed);
         if self.stream.has_clients() {
             self.stream.send(bytes::Bytes::from(pcap::pcap_record(
-                ts_us, h.orig_len, data,
+                h.ts_us, h.orig_len, data,
             )));
         }
+        drop(ring);
+        self.packets.fetch_add(1, Relaxed);
+        self.bytes.fetch_add(pkt.len() as u64, Relaxed);
     }
 
     /// Notes that the socket `app → remote` belongs to `uid` (called at
