@@ -36,6 +36,9 @@ object AsnDatabase {
     /** Upper bound of the decompressed file (the full table is ≈ 46 MB). */
     const val MAX_TSV_BYTES = 256L * 1024 * 1024
 
+    /** Longest accepted row (real rows are under 200 bytes; AS descriptions are short). */
+    const val MAX_LINE_BYTES = 4096
+
     data class Stats(
         /** Rows mapping a range to an AS (AS number > 0). */
         val routed: Int,
@@ -91,14 +94,13 @@ object AsnDatabase {
         var routed = 0
         var unrouted = 0
         var rejected = 0
-        var bytes = 0L
         val asns = HashSet<Long>()
-        source.bufferedReader(Charsets.UTF_8).use { reader ->
+        // Sizes are counted on the decompressed bytes as they are read, and
+        // lines are capped, so a gzip bomb fails before it fills the heap.
+        BoundedLineReader(source, MAX_LINE_BYTES, MAX_TSV_BYTES, "ASN table").use { reader ->
             output.bufferedWriter(Charsets.UTF_8).use { w ->
                 while (true) {
                     val line = reader.readLine() ?: break
-                    bytes += line.length + 1
-                    if (bytes > MAX_TSV_BYTES) throw IOException("ASN table larger than ${MAX_TSV_BYTES / 1_000_000} MB")
                     if (isComment(line)) continue
                     val asn = parseRow(line)
                     when {
