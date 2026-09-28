@@ -89,7 +89,7 @@ dns_a = [k for k in keys if k[0] and k[0][0] == "udp" and k[0][1] == "10.111.222
 flag = lambda k: struct.unpack("<I", k[2].get(2, b"\0\0\0\0"))[0] & 3
 check("export-dns-query-outbound", any(b"capture-probe" in k[0][6] and flag(k) == 2 for k in dns_q), len(dns_q))
 check("export-dns-answer-inbound", dns_a and all(flag(k) == 1 for k in dns_a), len(dns_a))
-http = [f for f in flows if f["dst_port"] == 80 and f.get("http_method") == "GET"]
+http = [f for f in flows if f.get("http_method") == "GET"]
 check("http-flow-event", len(http) == 1, http)
 if http:
     fid = http[0]["id"]

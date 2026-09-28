@@ -16,7 +16,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
-trap 'kill ${cli_pid:-} ${beacon_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} ${stream_pid:-} 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'kill ${cli_pid:-} ${beacon_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} ${stream_pid:-} ${http_pid:-} 2>/dev/null || true; [ -n "${E2E_KEEP:-}" ] || rm -rf "$work"' EXIT
 export PATH="$HOME/.cargo/bin:$PATH"
 (cd "$root/core" && cargo build -q -p vigil-cli)
 cli="$root/core/target/debug/vigil-cli"
@@ -111,6 +111,12 @@ echo "--- packet capture (PCAPng export, PCAP-over-IP)"
 # PCAPng when it stops. Both must hold the namespace's DNS and HTTP
 # packets, the export with flow and direction annotations.
 stream_port=18790
+export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+export VIGIL_CAPTURE_HTTP_PORT=18791
+mkdir -p "$work/www" && echo "capture e2e" > "$work/www/index.html"
+python3 -m http.server --bind "$VIGIL_HOST_IP" --directory "$work/www" "$VIGIL_CAPTURE_HTTP_PORT" >/dev/null 2>&1 &
+http_pid=$!
+for _ in $(seq 50); do (exec 3<>"/dev/tcp/$VIGIL_HOST_IP/$VIGIL_CAPTURE_HTTP_PORT") 2>/dev/null && break; sleep 0.1; done
 echo "{\"stats_interval_ms\": 500, \"capture\": {\"enabled\": true, \"buffer_bytes\": 4194304,
   \"stream\": {\"enabled\": true, \"port\": $stream_port, \"bind\": \"127.0.0.1\", \"allow\": [\"127.0.0.1\"]}}}" > "$work/capture.json"
 rm -f "$sock" "$work/stream.ready"
@@ -123,7 +129,8 @@ unshare -rnm bash "$root/scripts/e2e/inside-capture.sh" "$sock" "$results" "$wor
 sleep 1
 kill -INT $cli_pid; wait $cli_pid || true
 wait $stream_pid || true
-unset cli_pid stream_pid
+kill $http_pid 2>/dev/null || true
+unset cli_pid stream_pid http_pid
 python3 "$root/scripts/e2e/check_pcap.py" "$work/capture.pcapng" "$work/stream.pcap" "$work/capture-events.jsonl" \
   "$work/capture-cli.log" "$stream_port" | tee -a "$results"
 fi

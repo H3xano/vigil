@@ -21,7 +21,9 @@ check() { # name, command...
   if out="$("$@" 2>&1)"; then echo "PASS $name" | tee -a "$results"
   else echo "FAIL $name :: $(echo "$out" | tail -n 3 | tr '\n' ' ')" | tee -a "$results"; fi
 }
-check "capture-dns-lookup" bash -c 'dig +short +time=3 +tries=1 capture-probe.example.com A @10.111.222.2 >/dev/null; dig +short +time=3 +tries=1 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
-ip=$(dig +short +time=3 +tries=1 example.com A @10.111.222.2 | head -n1)
-check "capture-http-request" curl -sS -o /dev/null --max-time 15 -H "Host: example.com" -A vigil-capture-e2e "http://$ip/"
+# Only local servers: the DNS query needs an answer of any kind (the
+# virtual resolver answers even when the upstream fails), the HTTP request
+# goes to a server on the host.
+check "capture-dns-lookup" bash -c 'dig +time=3 +tries=1 capture-probe.example.com A @10.111.222.2 | grep -q "status:"'
+check "capture-http-request" curl -sS -o /dev/null --max-time 15 -A vigil-capture-e2e "http://$VIGIL_HOST_IP:$VIGIL_CAPTURE_HTTP_PORT/"
 sleep 1
