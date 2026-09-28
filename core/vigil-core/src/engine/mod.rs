@@ -194,6 +194,10 @@ pub(crate) struct Shared {
     pub upstream: upstream::Upstream,
     open_flows: Mutex<OpenFlows>,
     shut_down: AtomicBool,
+    /// Per feed id, how many loads or removals have begun. The start-time
+    /// preload installs a feed only if nothing touched its id meanwhile, so
+    /// it never undoes a later `load_feed_file`/`remove_feed` from the app.
+    feed_loads: Mutex<HashMap<String, u64>>,
 }
 
 impl Shared {
@@ -221,6 +225,66 @@ impl Shared {
             upstream: upstream::Upstream::default(),
             open_flows: Mutex::new(OpenFlows::default()),
             shut_down: AtomicBool::new(false),
+            feed_loads: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registers the start of a load or removal of feed `id`; returns its
+    /// ticket.
+    fn begin_feed_change(&self, id: &str) -> u64 {
+        let mut loads = self.feed_loads.lock();
+        let n = loads.entry(id.to_string()).or_insert(0);
+        *n += 1;
+        *n
+    }
+
+    /// Parses a feed file and installs it, unconditionally (`ticket` None,
+    /// an explicit load) or only if no other change of the id began since
+    /// `ticket` (the preload). Returns the summary and whether it was
+    /// installed.
+    fn load_feed_file(
+        &self,
+        id: &str,
+        category: FeedCategory,
+        path: &std::path::Path,
+        ticket: Option<u64>,
+    ) -> io::Result<(FeedSummary, bool)> {
+        let file = std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
+        let feed = parse_feed_reader_kind(file, category.feed_kind())?;
+        let Some(ticket) = ticket else {
+            return Ok((install_feed(&self.policy, id, category, feed), true));
+        };
+        // Held while installing, so no explicit load can slip in between.
+        let loads = self.feed_loads.lock();
+        if loads.get(id).copied().unwrap_or(0) != ticket {
+            return Ok((summarize(id, &feed), false));
+        }
+        let summary = install_feed(&self.policy, id, category, feed);
+        drop(loads);
+        Ok((summary, true))
+    }
+
+    /// Loads the start configuration's `feeds` (on a blocking thread).
+    /// Errors are logged, as for `nativeLoadFeedFile`.
+    fn preload_feeds(&self, feeds: &[crate::config::FeedFile], tickets: &[u64]) {
+        for (f, &ticket) in feeds.iter().zip(tickets) {
+            let path = std::path::Path::new(&f.path);
+            if f.id.is_empty() || !path.is_absolute() {
+                log::warn!("feed {:?}: needs an id and an absolute path", f.id);
+                continue;
+            }
+            match self.load_feed_file(&f.id, f.category(), path, Some(ticket)) {
+                Ok((sum, true)) => log::info!(
+                    "feed {} preloaded: {} domains, {} ranges, {} ja4, {} rejected",
+                    f.id,
+                    sum.domains,
+                    sum.ip_ranges,
+                    sum.ja4,
+                    sum.rejected_lines
+                ),
+                Ok((_, false)) => log::info!("feed {}: loaded by the app meanwhile", f.id),
+                Err(err) => log::warn!("feed {}: {err}", f.id),
+            }
         }
     }
 
@@ -640,28 +704,28 @@ impl Engine {
     /// Parses and installs (or replaces) a feed. CPU-heavy for large lists;
     /// call from a background thread.
     pub fn load_feed(&self, id: &str, category: FeedCategory, text: &str) -> FeedSummary {
+        self.shared.begin_feed_change(id);
         let feed = parse_feed_reader_kind(text.as_bytes(), category.feed_kind())
             .expect("reading from memory cannot fail");
         install_feed(&self.shared.policy, id, category, feed)
     }
 
-    /// Streams a feed from a file (bounded memory for multi-million entry lists).
+    /// Streams a feed from a file (bounded memory for multi-million entry
+    /// lists). Replaces a feed with the same id, including one from the
+    /// start configuration's `feeds` (whose preload, if still running, then
+    /// leaves this one in place).
     pub fn load_feed_file(
         &self,
         id: &str,
         category: FeedCategory,
         path: &std::path::Path,
     ) -> io::Result<FeedSummary> {
-        let file = std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
-        Ok(install_feed(
-            &self.shared.policy,
-            id,
-            category,
-            parse_feed_reader_kind(file, category.feed_kind())?,
-        ))
+        self.shared.begin_feed_change(id);
+        Ok(self.shared.load_feed_file(id, category, path, None)?.0)
     }
 
     pub fn remove_feed(&self, id: &str) -> bool {
+        self.shared.begin_feed_change(id);
         self.shared.policy.write().remove_feed(id)
     }
 
@@ -713,22 +777,58 @@ impl Drop for Engine {
     }
 }
 
-fn install_feed(
-    policy: &RwLock<Policy>,
-    id: &str,
-    category: FeedCategory,
-    feed: crate::intel::Feed,
-) -> FeedSummary {
-    let summary = FeedSummary {
+fn summarize(id: &str, feed: &crate::intel::Feed) -> FeedSummary {
+    FeedSummary {
         id: id.to_string(),
         domains: feed.domains.len(),
         ip_ranges: feed.ip_range_count(),
         ja4: feed.ja4.len(),
         rejected_lines: feed.rejected,
         memory_bytes: feed.memory_bytes(),
-    };
+    }
+}
+
+fn install_feed(
+    policy: &RwLock<Policy>,
+    id: &str,
+    category: FeedCategory,
+    feed: crate::intel::Feed,
+) -> FeedSummary {
+    let summary = summarize(id, &feed);
     policy.write().set_feed(id, LoadedFeed { category, feed });
     summary
+}
+
+/// Loads the start configuration's feeds, waiting up to
+/// `feeds_preload_timeout_ms` before packets are processed; the rest keeps
+/// loading in the background.
+async fn preload_feeds(shared: &Arc<Shared>) {
+    let cfg = shared.config();
+    if cfg.feeds.is_empty() {
+        return;
+    }
+    // Tickets are taken now, so an app load issued after start wins even
+    // if the preload reaches that feed later.
+    let tickets: Vec<u64> = cfg
+        .feeds
+        .iter()
+        .map(|f| shared.begin_feed_change(&f.id))
+        .collect();
+    let s = shared.clone();
+    let c = cfg.clone();
+    let started = Instant::now();
+    let load = tokio::task::spawn_blocking(move || s.preload_feeds(&c.feeds, &tickets));
+    let limit = cfg
+        .feeds_preload_timeout_ms
+        .min(crate::config::MAX_FEEDS_PRELOAD_TIMEOUT_MS);
+    match tokio::time::timeout(Duration::from_millis(limit), load).await {
+        Ok(_) => log::info!(
+            "{} feeds preloaded in {:?}",
+            cfg.feeds.len(),
+            started.elapsed()
+        ),
+        Err(_) => log::warn!("feeds still loading after {limit} ms; processing traffic meanwhile"),
+    }
 }
 
 async fn run(
@@ -806,7 +906,12 @@ async fn run(
     });
 
     tokio::select! {
-        r = read_tun(&shared, &tun, &stack_in) => r,
+        r = async {
+            // Blocklists first: no packet is processed before the feeds of
+            // the start configuration are in place (or their time is up).
+            preload_feeds(&shared).await;
+            read_tun(&shared, &tun, &stack_in).await
+        } => r,
         e = tasks.first_exit() => Err(e),
     }
 }
@@ -1371,6 +1476,157 @@ mod tests {
         use std::os::fd::AsRawFd;
         let n = unsafe { libc::write(fd.as_raw_fd(), pkt.as_ptr().cast(), pkt.len()) };
         assert_eq!(n as usize, pkt.len());
+    }
+
+    /// Reads one packet from the host end of a fake TUN, waiting up to 5 s.
+    fn read_packet(fd: &std::os::fd::OwnedFd) -> Option<Vec<u8>> {
+        use std::os::fd::AsRawFd;
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut pfd, 1, 5000) } != 1 {
+            return None;
+        }
+        let mut buf = vec![0u8; 65536];
+        let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+        (n > 0).then(|| {
+            buf.truncate(n as usize);
+            buf
+        })
+    }
+
+    fn temp_feed(name: &str, content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "vigil-test-{}-{name}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn start_feeds_apply_to_the_first_packet() {
+        use crate::proto::dns;
+        use std::os::fd::AsRawFd;
+        // Big enough that loading is not instant.
+        let mut list = String::new();
+        for i in 0..200_000 {
+            list.push_str(&format!("filler{i}.example\n"));
+        }
+        list.push_str("evil.example\n");
+        let path = temp_feed("malware", &list);
+        let (engine_end, host_end) = fake_tun();
+        let config = Config {
+            feeds: vec![crate::config::FeedFile {
+                id: "urlhaus".into(),
+                category: "malware".into(),
+                path: path.to_string_lossy().into_owned(),
+            }],
+            ..Default::default()
+        };
+        let engine = Engine::start(engine_end.as_raw_fd(), config, Arc::new(NullPlatform)).unwrap();
+        drop(engine_end);
+        // Sent at once: must already be answered from the loaded feed.
+        let app: SocketAddr = "10.111.222.1:40000".parse().unwrap();
+        let resolver: SocketAddr = "10.111.222.2:53".parse().unwrap();
+        let q = dns::build_query(9, "evil.example", dns::TYPE_A);
+        write_packet(&host_end, &packet::build_udp(app, resolver, &q).unwrap());
+        let reply = read_packet(&host_end).expect("DNS answer");
+        let ip = packet::parse_ip(&reply).unwrap();
+        let u = packet::parse_udp(&reply, &ip).unwrap();
+        let answer = dns::parse(&reply[u.payload_offset..u.payload_end]).unwrap();
+        assert_eq!(
+            answer.answers[0].data,
+            dns::RData::A(std::net::Ipv4Addr::UNSPECIFIED),
+            "sinkholed by the preloaded feed"
+        );
+        engine.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn start_feeds_never_undo_later_loads_or_removals() {
+        let s = test_shared(Config::default());
+        let old = temp_feed("old", "old.example\n");
+        let new = temp_feed("new", "new.example\n");
+        let blocked = |name: &str| {
+            matches!(
+                s.policy.read().check_domain(None, name),
+                crate::policy::Decision::Block(_)
+            )
+        };
+        // The preload took its ticket at start; the app then loaded the id.
+        let ticket = s.begin_feed_change("f");
+        s.begin_feed_change("f");
+        s.load_feed_file("f", FeedCategory::Malware, &new, None)
+            .unwrap();
+        s.preload_feeds(
+            &[crate::config::FeedFile {
+                id: "f".into(),
+                category: "malware".into(),
+                path: old.to_string_lossy().into_owned(),
+            }],
+            &[ticket],
+        );
+        assert!(blocked("new.example") && !blocked("old.example"));
+        // Untouched ids are installed; one load per id, replacing.
+        let ticket = s.begin_feed_change("g");
+        let (_, installed) = s
+            .load_feed_file("g", FeedCategory::Malware, &old, Some(ticket))
+            .unwrap();
+        assert!(installed && blocked("old.example"));
+        assert_eq!(s.policy.read().feed_ids().len(), 2);
+        // Missing files and relative paths are skipped (logged).
+        let ticket = s.begin_feed_change("h");
+        s.preload_feeds(
+            &[crate::config::FeedFile {
+                id: "h".into(),
+                category: "c2".into(),
+                path: "relative/feed.txt".into(),
+            }],
+            &[ticket],
+        );
+        assert!(s
+            .load_feed_file(
+                "h",
+                FeedCategory::C2,
+                std::path::Path::new("/nonexistent/x"),
+                None
+            )
+            .is_err());
+        assert_eq!(s.policy.read().feed_ids().len(), 2);
+        let _ = std::fs::remove_file(old);
+        let _ = std::fs::remove_file(new);
+    }
+
+    #[test]
+    fn slow_start_feeds_finish_in_the_background() {
+        use std::os::fd::AsRawFd;
+        let path = temp_feed("bg", "late.example\n");
+        let (engine_end, _host_end) = fake_tun();
+        let config = Config {
+            feeds: vec![crate::config::FeedFile {
+                id: "bg".into(),
+                category: "ads".into(),
+                path: path.to_string_lossy().into_owned(),
+            }],
+            feeds_preload_timeout_ms: 0,
+            ..Default::default()
+        };
+        let engine = Engine::start(engine_end.as_raw_fd(), config, Arc::new(NullPlatform)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while engine.shared.policy.read().feed_ids().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            engine.shared.policy.read().feed_ids(),
+            vec!["bg".to_string()]
+        );
+        engine.shutdown();
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

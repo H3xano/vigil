@@ -317,9 +317,12 @@ added after 0.1.0:
 | `block_ja4_matches` | bool | `false` | Reset connections (drop QUIC flows) whose JA4 fingerprint is on a feed, instead of only alerting. Allowlisted names are exempt. See "JA4 matches". |
 | `encrypted_dns` | object | `{"mode":"off"}` | DoT/DoH for the virtual resolver's lookups. See "`encrypted_dns`" below. |
 | `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
+| `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; unknown names load as `tracking`) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
+| `feeds_preload_timeout_ms` | integer | 10000 | How long packet processing waits for `feeds` at start (at most 60000). Feeds not loaded by then finish loading in the background while traffic flows. |
 
-The four caps are read when the engine starts; a later config update does
-not resize them.
+The four caps, `feeds` and `feeds_preload_timeout_ms` are read when the
+engine starts; a later config update does not resize the caps or reload
+the feeds.
 
 ### `beacon`
 
