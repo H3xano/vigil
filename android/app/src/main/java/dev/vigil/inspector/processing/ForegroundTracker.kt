@@ -25,7 +25,7 @@ class ForegroundTracker(private val context: Context) {
 
     fun hasPermission(): Boolean {
         val ops = context.getSystemService(AppOpsManager::class.java)
-        return ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName) ==
+        return ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName) ==
             AppOpsManager.MODE_ALLOWED
     }
 

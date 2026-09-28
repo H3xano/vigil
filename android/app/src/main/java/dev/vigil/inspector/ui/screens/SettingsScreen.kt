@@ -1,7 +1,6 @@
 package dev.vigil.inspector.ui.screens
 
 import android.content.Intent
-import android.net.Uri
 import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
@@ -33,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.BuildConfig
@@ -207,7 +207,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SectionTitle("About")
             SettingRow("vigil ${BuildConfig.VERSION_NAME}", "Engine ${runCatching { VigilNative.nativeVersion() }.getOrDefault("?")} · Apache-2.0")
             SettingRow("Source code & documentation", "github.com/H3xano/vigil", onClick = {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/H3xano/vigil")))
+                context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/H3xano/vigil".toUri()))
             })
             Row(Modifier.padding(24.dp)) {}
         }

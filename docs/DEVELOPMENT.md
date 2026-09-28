@@ -8,12 +8,13 @@ already hit once. The project state and backlog are in [STATUS.md](STATUS.md).
 | Tool | Version used | Install |
 |---|---|---|
 | JDK | 17+ (21 works) | distro package |
-| Android SDK | platform 35, build-tools 35 | Android Studio or `cmdline-tools` |
+| Android SDK | platform 36, build-tools 36.0.0 | `sdkmanager "platforms;android-36" "build-tools;36.0.0"` |
 | Android NDK | **27.2.12479018** (pinned in `android/app/build.gradle.kts`) | `sdkmanager "ndk;27.2.12479018"` |
-| Rust | stable (1.80+) | `rustup` |
+| Rust | **1.98.1** (pinned in `core/rust-toolchain.toml`) | `rustup` |
 | Rust targets | `aarch64-linux-android armv7-linux-androideabi x86_64-linux-android` | `rustup target add …` |
-| cargo-ndk | 4.x | `cargo install cargo-ndk` |
-| Gradle | 8.11.1 via the wrapper | automatic |
+| cargo-ndk | 4.x (4.1.2 for release builds) | `cargo install cargo-ndk --version 4.1.2 --locked` |
+| Gradle | 9.8.0 via the wrapper | automatic |
+| AGP, Kotlin, KSP | 9.4.1, 2.4.20, 2.3.12 (`android/build.gradle.kts`) | automatic |
 
 Linux-only test extras: `python3`, `dig` (dnsutils), `curl`, `unshare`
 (util-linux), and unprivileged user namespaces enabled.

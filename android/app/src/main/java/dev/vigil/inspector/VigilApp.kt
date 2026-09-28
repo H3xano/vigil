@@ -2,6 +2,7 @@ package dev.vigil.inspector
 
 import android.app.Application
 import android.util.Log
+import androidx.core.content.edit
 import dev.vigil.inspector.data.AppResolver
 import dev.vigil.inspector.data.FeedRepository
 import dev.vigil.inspector.data.SettingsStore
@@ -85,7 +86,7 @@ class VigilApp : Application() {
         if (now - prefs.getLong("last_vacuum", 0L) < 7 * DAY_MS) return@withLock
         withContext(Dispatchers.IO) {
             runCatching { db.openHelper.writableDatabase.execSQL("VACUUM") }
-                .onSuccess { prefs.edit().putLong("last_vacuum", now).apply() }
+                .onSuccess { prefs.edit { putLong("last_vacuum", now) } }
                 .onFailure { Log.w(TAG, "VACUUM failed", it) }
         }
     }

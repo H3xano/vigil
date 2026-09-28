@@ -20,7 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -160,7 +160,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                 }
             }
             item {
-                TabRow(selectedTabIndex = tab) {
+                SecondaryTabRow(selectedTabIndex = tab) {
                     listOf("Hosts", "Flows", "DNS", "Alerts").forEachIndexed { i, t ->
                         Tab(tab == i, onClick = { tab = i }, text = { Text(t, maxLines = 1) })
                     }

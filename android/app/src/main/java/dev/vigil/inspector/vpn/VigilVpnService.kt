@@ -504,7 +504,7 @@ class VigilVpnService : android.net.VpnService() {
         val props = lp ?: network?.let { connectivity.getLinkProperties(it) }
         val virtual = setOf(EngineConfig.VIRTUAL_DNS_V4, EngineConfig.VIRTUAL_DNS_V6)
         val dns = props?.dnsServers.orEmpty()
-            .filter { !it.isLoopbackAddress && !it.isAnyLocalAddress && it.hostAddress !in virtual }
+            .filter { !it.isLoopbackAddress && !it.isAnyLocalAddress && it.hostAddress.orEmpty() !in virtual }
             .mapNotNull(ConfigFactory::formatResolver)
         val nat64 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             listOfNotNull(props?.nat64Prefix?.let { "${it.address.hostAddress}/${it.prefixLength}" })

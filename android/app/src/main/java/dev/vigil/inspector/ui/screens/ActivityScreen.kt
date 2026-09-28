@@ -22,7 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,7 +56,7 @@ fun ActivityScreen(vm: MainViewModel, nav: NavController) {
     val tab by vm.activityTab.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Activity")
-        TabRow(selectedTabIndex = tab) {
+        SecondaryTabRow(selectedTabIndex = tab) {
             Tab(tab == 0, onClick = { vm.activityTab.value = 0 }, text = { Text("Connections") })
             Tab(tab == 1, onClick = { vm.activityTab.value = 1 }, text = { Text("DNS") })
         }
