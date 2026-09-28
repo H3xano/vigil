@@ -13,15 +13,28 @@ use std::time::{Duration, Instant};
 const MIN_TTL: Duration = Duration::from_secs(300);
 const MAX_TTL: Duration = Duration::from_secs(6 * 3600);
 
+/// Minimum time between two expiry sweeps of a full cache. In between, a
+/// full cache drops half its entries instead, so a stream of new addresses
+/// cannot make every insert scan the whole map under the lock.
+const SWEEP_EVERY: Duration = Duration::from_secs(60);
+
+struct Inner {
+    map: HashMap<IpAddr, (String, Instant)>,
+    last_sweep: Option<Instant>,
+}
+
 pub struct DnsCache {
-    map: Mutex<HashMap<IpAddr, (String, Instant)>>,
+    inner: Mutex<Inner>,
     capacity: usize,
 }
 
 impl DnsCache {
     pub fn new(capacity: usize) -> Self {
         Self {
-            map: Mutex::new(HashMap::with_capacity(1024)),
+            inner: Mutex::new(Inner {
+                map: HashMap::with_capacity(1024),
+                last_sweep: None,
+            }),
             capacity,
         }
     }
@@ -31,11 +44,21 @@ impl DnsCache {
             return;
         }
         let ttl = Duration::from_secs(ttl_s as u64).clamp(MIN_TTL, MAX_TTL);
-        let mut m = self.map.lock();
+        let mut inner = self.inner.lock();
+        let inner = &mut *inner;
+        let m = &mut inner.map;
         if m.len() >= self.capacity && !m.contains_key(&ip) {
-            m.retain(|_, (_, exp)| *exp > now);
+            let due = inner
+                .last_sweep
+                .map_or(true, |t| now.saturating_duration_since(t) >= SWEEP_EVERY);
+            if due {
+                inner.last_sweep = Some(now);
+                m.retain(|_, (_, exp)| *exp > now);
+            }
             if m.len() >= self.capacity {
-                // Still full of live entries: drop an arbitrary half.
+                // Still full (of live entries, or no sweep was due): drop an
+                // arbitrary half. That makes room for capacity/2 inserts, so
+                // the scan costs O(1) per insert amortised.
                 let mut keep = false;
                 m.retain(|_, _| {
                     keep = !keep;
@@ -47,14 +70,16 @@ impl DnsCache {
     }
 
     pub fn lookup(&self, ip: IpAddr, now: Instant) -> Option<String> {
-        let m = self.map.lock();
-        m.get(&ip)
+        let inner = self.inner.lock();
+        inner
+            .map
+            .get(&ip)
             .filter(|(_, exp)| *exp > now)
             .map(|(n, _)| n.clone())
     }
 
     pub fn len(&self) -> usize {
-        self.map.lock().len()
+        self.inner.lock().map.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -83,5 +108,40 @@ mod tests {
         assert_eq!(c.lookup(ip(10), t0).as_deref(), Some("b.example"));
         c.insert(IpAddr::from([0, 0, 0, 0]), "sink", 60, t0);
         assert!(c.lookup(IpAddr::from([0, 0, 0, 0]), t0).is_none());
+    }
+
+    #[test]
+    fn expiry_sweeps_are_rate_limited() {
+        let c = DnsCache::new(100);
+        let t0 = Instant::now();
+        let ip = |n: u32| IpAddr::from((0x0a00_0000 + n).to_be_bytes());
+        for n in 0..100 {
+            c.insert(ip(n), "old.example", 0, t0);
+        }
+        // All expired: the first insert into the full cache sweeps them.
+        let t1 = t0 + MIN_TTL + Duration::from_secs(1);
+        c.insert(ip(1000), "new.example", 3600, t1);
+        assert_eq!(c.len(), 1);
+        for n in 0..99 {
+            c.insert(ip(2000 + n), "live.example", 3600, t1);
+        }
+        assert_eq!(c.len(), 100);
+        // Full of live entries: halved, with no sweep due for a minute.
+        c.insert(ip(5000), "x.example", 3600, t1);
+        assert_eq!(c.len(), 51);
+        assert!(c.inner.lock().last_sweep == Some(t1));
+        // Each overflowing insert costs one halving, so the table stays
+        // bounded and most inserts do no scan at all.
+        for n in 0..1000 {
+            c.insert(
+                ip(10_000 + n),
+                "y.example",
+                3600,
+                t1 + Duration::from_secs(1),
+            );
+            assert!(c.len() <= 100);
+        }
+        assert_eq!(c.inner.lock().last_sweep, Some(t1));
+        assert_eq!(c.lookup(ip(10_999), t1).as_deref(), Some("y.example"));
     }
 }
