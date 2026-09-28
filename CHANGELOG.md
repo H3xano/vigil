@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (after 0.4.0)
+## 0.5.0 (2026-09-28): GitHub pre-release
 
 New features:
 

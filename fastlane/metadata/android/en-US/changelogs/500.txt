@@ -1,0 +1,6 @@
+New in 0.5.0:
+• Packet capture: export connections, alerts or apps as PCAPng, or stream to Wireshark.
+• Per-app rules: block on Wi-Fi, mobile data, in the background or with the screen off; per-app domain rules.
+• Spyware and stalkerware indicators (MVT, Echap) and an offline health check.
+• Tracker company labels (AdGuard companiesdb).
+• Many fixes from a full review; SIEM field changes (see the changelog).

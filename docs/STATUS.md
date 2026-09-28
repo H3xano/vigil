@@ -1,9 +1,9 @@
 # Project status and handoff
 
-Last updated: 2026-09-28. Latest release 0.4.0 (GitHub pre-release); `main`
-is ahead of it with unreleased work: a second full review with every
-finding fixed, and four features (packet capture, per-app firewall
-conditions, spyware/stalkerware packs with a health check, tracker labels).
+Last updated: 2026-09-28, version 0.5.0 (a second full review with every
+finding fixed; packet capture, per-app firewall conditions,
+spyware/stalkerware packs with a health check, tracker labels), GitHub
+pre-release.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -12,12 +12,10 @@ to rebuild the toolchain, run the tests and cut a release.
 
 ## Resume here (handoff of 2026-09-28)
 
-State: local `main` is tag `v0.4.0` plus the post-0.4.0 work ("Unreleased"
-in CHANGELOG.md, section "After 0.4.0" below). **Not pushed, not tagged,
-not released**: the owner decides when (the next version would be 0.5.0,
-versionCode 500; follow the release checklist in DEVELOPMENT.md and update
-the F-Droid recipe). Every host suite and every emulator suite passes (see
-the table). No worktrees or feature branches are left.
+State: `main` = tag `v0.5.0` plus the release docs commit, pushed; CI
+green; v0.5.0 published as a GitHub pre-release (release-signed,
+reproducible). Every host suite and every emulator suite passes (see the
+table). No worktrees or feature branches are left.
 
 **Waiting on the owner** (ask about these first; none can be done without them):
 
@@ -38,7 +36,7 @@ the table). No worktrees or feature branches are left.
 2. **F-Droid:** open a merge request adding
    `packaging/fdroid/dev.vigil.inspector.yml` to gitlab.com/fdroid/fdroiddata
    as `metadata/dev.vigil.inspector.yml` (needs the owner's GitLab account).
-   The recipe points at v0.4.0 (versionCode 400). Offer to draft the MR text
+   The recipe points at v0.5.0 (versionCode 500). Offer to draft the MR text
    and run `fdroid lint` on the recipe first.
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
@@ -65,8 +63,8 @@ the main session, then an integration pass and the full test matrix
 
 ## Where things stand
 
-vigil is **feature-complete for its scope and verified on Android 15 and
-Android 16 emulators** (all suites below, on the unreleased `main`). The
+vigil 0.5.0 is **feature-complete for its scope and verified on Android 15
+and Android 16 emulators** (all suites below). The
 owner installed v0.1.0 on their own phone (2026-09-27) and reports that it
 works; that was an informal check, and the systematic device testing in
 backlog item 1 is still to do.
@@ -78,7 +76,7 @@ backlog item 1 is still to do.
 | Android app (`android/`) | done | 212 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
 | Release APK (R8-minified) | builds, runs | reproducible at v0.4.0 (two clean builds identical; not yet re-checked for the unreleased work); the unreleased `main` built as a signed R8 release and installed over the published v0.4.0 on Android 16: schema 4 kept, rows kept, traffic flows, feed preload works, every screen opens, no JNI/serialization errors or crashes in logcat |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
-| CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.4.0; the unreleased work has not been pushed, so CI has not run on it | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
+| CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.5.0 | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, HEALTH_CHECK, this file; all brought up to date after the post-0.4.0 work | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
 | Release | [v0.4.0](https://github.com/H3xano/vigil/releases/tag/v0.4.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
@@ -193,13 +191,13 @@ tree. Every suite passes (numbers in DEVELOPMENT.md).
   the lint `GradleDependency` check is enabled again. Reproducible builds
   still verified (two clean builds, identical APKs).
 
-## After 0.4.0 (unreleased, on `main`)
+## New in 0.5.0 (released 2026-09-28 as a pre-release)
 
 A second full review (engine, upstream chaining, service/data, UI/export,
 competitive landscape) by parallel reviewers, with every verified finding
 fixed, then four features. Fixes and features were built by agents in
 worktrees and merged; the full matrix (host and both emulators) passes on
-the merged tree. CHANGELOG.md "Unreleased" lists everything; the highlights:
+the merged tree. CHANGELOG.md (0.5.0) lists everything; the highlights:
 
 - **Most important fixes:** netstack sockets reset by the app during the
   handshake went back to LISTEN and leaked their relay (and could capture a
