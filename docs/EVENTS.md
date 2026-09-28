@@ -87,10 +87,12 @@ and when the path is down with `fail_closed: false`. It is null when no
 upstream connection was attempted (TCP flows blocked at the SYN gate, UDP
 and QUIC flows blocked by policy or JA4). TCP flows blocked after the sniff
 (by SNI, Host or JA4) name the path of the connection made at the SYN gate,
-to which nothing of the app's was sent; with SOCKS5 `send_domain` that
-connection is made lazily, so a blocked flow never contacts the proxy
-(`via` is still `socks5`). For a failed connect it names the path that was
-tried.
+to which nothing of the app's was sent; with SOCKS5 `send_domain` only the
+connection to the proxy is made at the SYN gate and the CONNECT waits for
+the app's first bytes, so a blocked flow never names its destination to
+the proxy (`via` is still `socks5`). Such a flow is `direct` only if the
+proxy was unusable at the SYN gate with `fail_closed: false`; a lazy CONNECT
+never falls back. For a failed connect it names the path that was tried.
 
 `asn` is the autonomous system announcing `dst_ip`, from a loaded ASN
 table (feed category `asn`, see "Feed files"):
@@ -192,7 +194,7 @@ address wins.
 | field | meaning |
 |---|---|
 | `mode` | `direct`, `wireguard` or `socks5` |
-| `state` | `up`; `connecting` (WireGuard handshake in progress); `idle` (no session or proxy contact yet and nothing pending: the tunnel connects on first use); `down` (WireGuard handshakes failing for 10 s or more, even if an older session has not expired; the endpoint cannot be resolved or reached; the SOCKS5 proxy could not be reached or refused the credentials) |
+| `state` | `up`; `connecting` (WireGuard handshake in progress); `idle` (no session or proxy contact yet and nothing pending: the tunnel connects on first use); `down` (WireGuard handshakes failing for 10 s or more, even if an older session has not expired; the endpoint cannot be resolved or reached; the SOCKS5 proxy could not be reached, refused the credentials, stopped answering (7 s to connect and authenticate, 30 s for a reply) or dropped the connection mid-negotiation) |
 | `fail_closed` | as configured |
 | `endpoint` | WireGuard: the peer address in use; SOCKS5: the server as configured |
 | `handshake_age_s` | seconds since the last completed WireGuard handshake |
@@ -425,17 +427,17 @@ connections of `encrypted_dns`. Inspection is the same in every mode.
 |---|---|---|
 | `mode` | `direct` | `direct`: protected sockets on the underlying network (as before). `wireguard`: a user-space WireGuard tunnel (boringtun) with a client TCP/IP stack; one protected UDP socket to the peer. `socks5`: a SOCKS5 proxy. |
 | `fail_closed` | `true` | While the tunnel or proxy is down, connections fail (the app gets a RST, DNS gets SERVFAIL). With `false` they go direct instead (see `stats.upstream.state` for "down"). |
-| `network_id` | `""` | Opaque id of the underlying network (the app sends the network handle). When only this changes, WireGuard re-creates its socket and re-resolves the endpoint, keeping the session (roaming). |
+| `network_id` | `""` | Opaque id of the underlying network (the app sends the network handle). When only this changes, WireGuard re-creates its socket and re-resolves the endpoint, keeping the session (roaming); the tunnel does not count as down while it does (with `fail_closed: false` connections keep using the tunnel), only if the socket cannot be opened. |
 | `wireguard.private_key`, `peer_public_key`, `preshared_key` | | base64 X25519 keys (32 bytes); the pre-shared key is optional (null, absent or empty). |
-| `wireguard.endpoint` | | `host:port` or `[v6]:port`. Host names are resolved when the tunnel starts, on roaming and every 30 s while handshakes fail. IPv4 answers are preferred. |
+| `wireguard.endpoint` | | `host:port` or `[v6]:port`. Host names are resolved when the tunnel starts, on roaming and every 30 s while handshakes fail. IPv4 answers are preferred. A lookup has 5 s; when it fails the last address is kept. |
 | `wireguard.addresses` | | Tunnel addresses (CIDR; a bare address is a host route). At most one IPv4 and one IPv6. Destinations of a family without an address fail (apps fall back to the other family). |
 | `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct. Inner packets from other sources are dropped. |
 | `wireguard.mtu` | 1420 | Tunnel MTU, 576..=65535 (the app sends 1280 unless the `.conf` sets one). |
 | `wireguard.persistent_keepalive` | 0 | Seconds between keepalives (0 = off). |
-| `socks5.server` | | `host:port` of the proxy (loopback works, e.g. Orbot's `127.0.0.1:9050`). |
+| `socks5.server` | | `host:port` of the proxy (loopback works, e.g. Orbot's `127.0.0.1:9050`). A host name is looked up with a 3 s timeout and the address reused for 5 min, or until connecting to it fails; when a lookup fails the last address is used. |
 | `socks5.username`, `password` | `""` | RFC 1929 credentials, at most 255 bytes each; a password needs a username. |
-| `socks5.send_domain` | `false` | CONNECT by the TLS SNI or HTTP Host the app sent (the proxy resolves it; useful for Tor) instead of by address. The upstream connection is then made when the app's first bytes arrive (or after 3.5 s by address, for server-speaks-first protocols), so a failure resets an already accepted connection instead of refusing it. |
-| `socks5.udp` | `auto` | `auto`: UDP flows use UDP ASSOCIATE (one association per flow); once the proxy refuses it, UDP is blocked. `block`: UDP is never relayed. Plain DNS always goes to the proxy as DNS over TCP. |
+| `socks5.send_domain` | `false` | CONNECT by the TLS SNI or HTTP Host the app sent (the proxy resolves it; useful for Tor) instead of by address. The connection to the proxy (and authentication) is still made at the SYN, so an unusable proxy refuses the app's connection (or, with `fail_closed: false`, sends it direct); the CONNECT is sent when the app's first bytes arrive (or after 3.5 s by address, for server-speaks-first protocols), so a refused CONNECT resets an already accepted connection. |
+| `socks5.udp` | `auto` | `auto`: UDP flows use UDP ASSOCIATE (one association per flow); once the proxy refuses it (a SOCKS reply code; not a timeout or a dropped connection), UDP is blocked. `block`: UDP is never relayed. Plain DNS always goes to the proxy as DNS over TCP. |
 
 Changing `upstream` with `nativeUpdateConfig` takes effect at once for new
 connections, UDP flows and DNS queries; open ones keep the path they were
@@ -454,6 +456,9 @@ proxy app changes (that needs a new VPN interface).
   any connection: with the path down they fail (SERVFAIL unless
   `fallback_plain`), never going direct. When the path changes, open
   encrypted DNS connections are dropped and new ones use the new path.
+  With WireGuard and `fail_closed: false` this also happens whenever the
+  tunnel goes down or comes back, so connections (and pooled plain DNS
+  sockets) opened direct during an outage are not kept once it is back.
 - **Plain DNS** (encrypted DNS off, `fallback_plain`, bootstrap lookups of
   server names, hard-coded resolvers) goes to `upstream_dns` or the
   app's resolver over the same path; with SOCKS5 always as DNS over TCP

@@ -136,26 +136,44 @@ receive-with-callback), and says which path it took (`via`).
 - **direct**: the protected sockets of `sock.rs`, unchanged. The relay
   splits them into tokio's owned halves as before, so this mode costs one
   enum match per read/write.
-- **wireguard**: `wireguard.rs` keeps boringtun's `Tunn`, a smoltcp
-  `Interface` (medium IP, the tunnel addresses) and its sockets behind one
-  lock. A driver task owns the protected UDP socket to the endpoint: it
-  decrypts datagrams into smoltcp, polls smoltcp, encrypts what it emits and
-  runs the WireGuard timers (handshake retries, keepalive, rekey) every
-  250 ms. TCP connects complete the tunnelled handshake before the SYN gate
-  admits the app's SYN, so refusals stay faithful; resets map to smoltcp
-  aborts both ways. Handshakes failing for 10 s mark the tunnel down (an
-  idle tunnel is not down); while down it retries every 15 s and re-creates
-  the socket / re-resolves the endpoint every 30 s. A `network_id` change
-  (the app sends the network handle) re-creates the socket at once; the
-  session survives and the peer learns the new address from the next
-  packet. A replaced tunnel's driver ends when its last connection does.
+- **wireguard**: `wireguard.rs` keeps a smoltcp `Interface` (medium IP,
+  the tunnel addresses) and its sockets behind one lock, and boringtun's
+  `Tunn` behind another. A driver task owns the protected UDP socket to the
+  endpoint: it decrypts datagrams (under the Noise lock) and queues the
+  inner packets for smoltcp, polls smoltcp, takes what it emitted out of
+  the stack lock and encrypts it under the Noise lock, and runs the
+  WireGuard timers (handshake retries, keepalive, rekey) every 250 ms.
+  Streams only copy bytes under the stack lock and wake the driver, so
+  they do not wait behind encryption. TCP connects complete the tunnelled
+  handshake before the SYN gate admits the app's SYN, so refusals stay
+  faithful; resets map to smoltcp aborts both ways. Handshakes failing for
+  10 s mark the tunnel down (an idle tunnel is not down), as does a failed
+  attempt to open the socket; while down it retries every 15 s and
+  re-creates the socket / re-resolves the endpoint every 30 s. A
+  `network_id` change (the app sends the network handle) re-creates the
+  socket at once; the session survives, the tunnel does not count as down
+  meanwhile (packets wait in the queues), and the peer learns the new
+  address from the next packet. The endpoint lookup has a 5 s timeout and
+  keeps the last address if it fails. With `fail_closed: false`, the
+  dialer generation that keys the pooled DNS sockets and encrypted DNS
+  sessions changes whenever the tunnel goes down or comes back, so
+  connections opened direct during an outage are not reused afterwards. A
+  replaced tunnel's driver ends when its last connection does; dropping
+  the tunnel runs a final pump so that connection's FIN or RST still
+  reaches the peer.
 - **socks5**: `socks5.rs` speaks CONNECT (by address, or by the sniffed
-  SNI/Host with `send_domain`, which defers the connect to the app's first
-  bytes) and UDP ASSOCIATE (one association per UDP flow; the proxy's
-  refusal is remembered and UDP is blocked from then on). Plain DNS goes to
-  the proxy as DNS over TCP. Only failures to use the proxy itself (connect,
-  handshake, authentication) count as "down"; a CONNECT refused by the
-  destination is reported to the app like a direct refusal.
+  SNI/Host with `send_domain`: the connection to the proxy and the
+  authentication are made at the SYN gate, only the CONNECT waits for the
+  app's first bytes) and UDP ASSOCIATE (one association per UDP flow; a
+  refusal by reply code is remembered and UDP is blocked from then on).
+  Plain DNS goes to the proxy as DNS over TCP. Only failures to use the
+  proxy itself count as "down": lookup, connect, method selection or
+  authentication failing or taking more than 7 s together, a reply taking
+  more than 30 s, or an I/O error mid-negotiation (Tor restarting). A
+  CONNECT refused by the destination (a reply code) is reported to the app
+  like a direct refusal. A proxy host name is looked up with a 3 s timeout
+  and cached for 5 minutes (re-resolved after a failed connect; the last
+  address is kept if the lookup fails).
 - **fail closed** (default): errors are returned, never replaced by a direct
   connection. With `fail_closed: false` the dialer goes direct while the path
   is down. WireGuard destinations outside AllowedIPs always go direct, as

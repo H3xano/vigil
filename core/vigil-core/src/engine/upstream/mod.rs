@@ -30,15 +30,17 @@
 //! A config update that changes the path builds a new dialer; connections
 //! and UDP flows already open keep the path they were opened on until they
 //! end (a replaced WireGuard tunnel lives on until its last connection
-//! closes). Pooled DNS sockets from the old path are not reused. A change
-//! of `network_id` alone makes WireGuard re-create its socket and
-//! re-resolve the endpoint, keeping the session (roaming).
+//! closes). Pooled DNS sockets from the old path are not reused (nor, with
+//! WireGuard and `fail_closed: false`, ones from before the tunnel went
+//! down or came back: see [`Upstream::generation`]). A change of
+//! `network_id` alone makes WireGuard re-create its socket and re-resolve
+//! the endpoint, keeping the session (roaming).
 
 mod socks5;
 mod wireguard;
 
 use super::sock;
-use crate::config::upstream::{UpstreamConfig, UpstreamMode};
+use crate::config::upstream::{literal_socket_addr, split_host_port, UpstreamConfig, UpstreamMode};
 use crate::event::UpstreamStatus;
 use crate::platform::Platform;
 use parking_lot::RwLock;
@@ -141,9 +143,19 @@ impl Upstream {
         self.state.read().dialer.clone()
     }
 
-    /// Identifies the current dialer; changes whenever the path does.
+    /// Identifies the current dialer; changes whenever the path does, and
+    /// in fail-open WireGuard mode whenever the tunnel goes down or comes
+    /// back (pooled DNS connections opened direct while it was down are
+    /// then not reused through the tunnel's recovery, nor tunnelled ones
+    /// while it is down).
     pub fn generation(&self) -> u64 {
-        self.state.read().dialer.generation
+        let st = self.state.read();
+        let d = &st.dialer;
+        let epoch = match &d.path {
+            Path::Wireguard(t) if !d.fail_closed => t.health_epoch(),
+            _ => 0,
+        };
+        (d.generation << 32) | (epoch & 0xffff_ffff)
     }
 
     /// Installs `cfg` (validated). Must run inside the engine's runtime:
@@ -239,6 +251,32 @@ impl Upstream {
     }
 }
 
+/// Looks up `host:port` (no lookup for an IP literal) within `timeout`.
+/// The result is never empty.
+async fn resolve(spec: &str, timeout: Duration) -> io::Result<Vec<SocketAddr>> {
+    if let Some(a) = literal_socket_addr(spec) {
+        return Ok(vec![a]);
+    }
+    let (host, port) = split_host_port(spec).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("bad address {spec}"))
+    })?;
+    let addrs: Vec<SocketAddr> =
+        tokio::time::timeout(timeout, tokio::net::lookup_host((host.as_str(), port)))
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("resolve {host}: timed out"),
+                )
+            })?
+            .map_err(|e| io::Error::new(e.kind(), format!("resolve {host}: {e}")))?
+            .collect();
+    if addrs.is_empty() {
+        return Err(io::Error::other(format!("resolve {host}: no address")));
+    }
+    Ok(addrs)
+}
+
 async fn direct_tcp(platform: &Arc<dyn Platform>, dst: SocketAddr) -> io::Result<UpstreamTcp> {
     sock::connect_tcp(platform.clone(), dst)
         .await
@@ -281,12 +319,19 @@ impl Dialer {
             )),
             Path::Socks5(s) => {
                 if relay && s.send_domain() {
-                    return Ok(UpstreamTcp::Lazy(Box::new(LazySocks::new(
-                        s.clone(),
-                        platform.clone(),
-                        dst,
-                        self.fail_closed,
-                    ))));
+                    // Reach the proxy now; only the CONNECT waits for the
+                    // name in the app's first bytes.
+                    return match s.handshake(platform).await {
+                        Ok(conn) => Ok(UpstreamTcp::Lazy(Box::new(LazySocks::new(
+                            s.clone(),
+                            conn,
+                            dst,
+                        )))),
+                        Err(e) if !self.fail_closed && is_proxy_unavailable(&e) => {
+                            direct_tcp(platform, dst).await
+                        }
+                        Err(e) => Err(e),
+                    };
                 }
                 match s.connect(platform, &Target::Ip(dst)).await {
                     Ok(t) => Ok(UpstreamTcp::Socks5(t)),
@@ -546,13 +591,17 @@ enum LazyState {
     Failed(io::ErrorKind, String),
 }
 
-/// A SOCKS5 connection made on the first write, by the name in the written
-/// bytes (TLS SNI or HTTP Host), or by address after [`LAZY_WAIT`].
+/// A SOCKS5 connection whose CONNECT is sent on the first write, by the
+/// name in the written bytes (TLS SNI or HTTP Host), or by address after
+/// [`LAZY_WAIT`]. The connection to the proxy (with its authentication) is
+/// made beforehand, at the SYN gate: an unusable proxy is refused there, or
+/// bypassed there with `fail_closed: false`. So a lazy connection never
+/// goes direct, and its `via` is always `socks5`.
 pub(crate) struct LazySocks {
     dialer: Arc<Socks5Dialer>,
-    platform: Arc<dyn Platform>,
     dst: SocketAddr,
-    fail_closed: bool,
+    /// The negotiated connection to the proxy, until the CONNECT is sent.
+    conn: Option<TcpStream>,
     state: LazyState,
     deadline: Pin<Box<tokio::time::Sleep>>,
     read_waker: Option<Waker>,
@@ -560,17 +609,11 @@ pub(crate) struct LazySocks {
 }
 
 impl LazySocks {
-    fn new(
-        dialer: Arc<Socks5Dialer>,
-        platform: Arc<dyn Platform>,
-        dst: SocketAddr,
-        fail_closed: bool,
-    ) -> Self {
+    fn new(dialer: Arc<Socks5Dialer>, conn: TcpStream, dst: SocketAddr) -> Self {
         Self {
             dialer,
-            platform,
             dst,
-            fail_closed,
+            conn: Some(conn),
             state: LazyState::Waiting,
             deadline: Box::pin(tokio::time::sleep(LAZY_WAIT)),
             read_waker: None,
@@ -580,27 +623,24 @@ impl LazySocks {
 
     fn set_reset_on_close(&mut self) {
         self.reset_on_close = true;
+        if let Some(s) = &self.conn {
+            sock::set_reset_on_close(s);
+        }
         if let LazyState::Ready(s) = &self.state {
             sock::set_reset_on_close(s);
         }
     }
 
     fn start(&mut self, target: Target) {
-        let (d, p, dst, fail_closed) = (
-            self.dialer.clone(),
-            self.platform.clone(),
-            self.dst,
-            self.fail_closed,
-        );
-        log::debug!("socks5: connecting to {target:?} for {dst}");
-        self.state = LazyState::Connecting(Box::pin(async move {
-            match d.connect(&p, &target).await {
-                Err(e) if !fail_closed && is_proxy_unavailable(&e) => {
-                    sock::connect_tcp(p, dst).await
-                }
-                r => r,
-            }
-        }));
+        log::debug!("socks5: connecting to {target:?} for {}", self.dst);
+        let d = self.dialer.clone();
+        self.state = match self.conn.take() {
+            Some(mut s) => LazyState::Connecting(Box::pin(async move {
+                d.request_on(&mut s, socks5::CMD_CONNECT, &target).await?;
+                Ok(s)
+            })),
+            None => LazyState::Failed(io::ErrorKind::NotConnected, "socks5: no connection".into()),
+        };
         if let Some(w) = self.read_waker.take() {
             w.wake();
         }
