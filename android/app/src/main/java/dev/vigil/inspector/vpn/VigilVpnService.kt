@@ -377,7 +377,7 @@ class VigilVpnService : android.net.VpnService() {
             runCatching { pfd.close() }
             return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
         }
-        val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil) { message ->
+        val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil, app.spywareLabels) { message ->
             commands.trySend(Command.EngineError(id, message))
         }
         val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }

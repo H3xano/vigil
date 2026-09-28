@@ -44,6 +44,24 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
     /** Indicator state of a TAXII source, kept between incremental polls. */
     private fun stateFor(id: String) = File(dir, "$id.taxii")
 
+    /** The [SpywarePack] of a spyware feed (labels, apps, certificates), next to its feed file. */
+    fun packFileFor(id: String) = File(dir, "$id$PACK_SUFFIX")
+
+    /** Every downloaded pack file, for alert labels ([SpywareLabels]); a disabled feed's file is deleted. */
+    fun packFiles(): List<File> = dir.listFiles { f -> f.name.endsWith(PACK_SUFFIX) }.orEmpty().toList()
+
+    /**
+     * The spyware feeds, each with its downloaded pack if it is enabled, for
+     * the health check.
+     */
+    suspend fun spywarePacks(): List<Pair<FeedEntity, SpywarePack?>> = withContext(Dispatchers.IO) {
+        dao.list().filter { it.kind == FeedKinds.SPYWARE || it.kind == FeedKinds.SPYWARE_APPS }
+            .map { f -> f to (if (f.enabled) SpywareStore.read(packFileFor(f.id)) else null) }
+    }
+
+    /** One feed row, or null. */
+    suspend fun feed(id: String): FeedEntity? = dao.get(id)
+
     suspend fun seedBuiltins() = dao.insertIfAbsent(FeedCatalog.builtin)
 
     /**
@@ -57,6 +75,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         } else {
             fileFor(id).delete()
             stateFor(id).delete()
+            packFileFor(id).delete()
             dao.clearDownload(id)
         }
     }
@@ -128,6 +147,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         dao.deleteCustom(id)
         fileFor(id).delete()
         stateFor(id).delete()
+        packFileFor(id).delete()
     }
 
     /** Downloads one feed; the previous copy is kept if anything fails. */
@@ -141,7 +161,11 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         val target = fileFor(feed.id)
         var nextAddedAfter: String? = null
         val result = try {
-            val summary = if (feed.isTaxii) {
+            val summary = if (feed.kind == FeedKinds.SPYWARE_INDEX) {
+                refreshSpywareIndex(feed, tmp, converted)
+            } else if (feed.kind == FeedKinds.SPYWARE || feed.kind == FeedKinds.SPYWARE_APPS) {
+                refreshSpywarePack(feed, tmp, converted, stateTmp)
+            } else if (feed.isTaxii) {
                 val (s, after) = pollTaxii(feed, tmp, stateTmp)
                 nextAddedAfter = after
                 s
@@ -191,6 +215,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             if (current == null || !current.enabled) {
                 target.delete()
                 stateFor(feed.id).delete()
+                packFileFor(feed.id).delete()
                 if (current != null) dao.clearDownload(feed.id)
                 return@withContext Result.failure(IOException("feed was removed or disabled during the download"))
             }
@@ -218,7 +243,8 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         dir.listFiles { f -> f.name.endsWith(".tmp") }?.forEach { it.delete() }
         val now = System.currentTimeMillis()
         var failures = 0
-        for (f in dao.list().filter { it.enabled }) {
+        // Indexes first: they add the feeds of new packs, which the second pass then downloads.
+        for (pass in listOf(true, false)) for (f in dao.list().filter { it.enabled && (it.kind == FeedKinds.SPYWARE_INDEX) == pass }) {
             coroutineContext.ensureActive()
             val fresh = f.lastUpdated != null && now - f.lastUpdated < maxAgeFor(f, maxAgeMs, force) && fileFor(f.id).exists()
             if (!fresh && refreshLocked(f).isFailure) failures++
@@ -306,8 +332,82 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
     private fun credentialOf(feed: FeedEntity): FeedCredential? =
         feed.authHeader?.let { FeedCredential(feed.authHeaderName ?: "Authorization", it, feed.url) }
 
+    /**
+     * Downloads MVT's index, stores the accepted packs (see [MvtIndex]) as
+     * the feed file and syncs the pack feeds. An index listing less than half
+     * the packs of the previous one is refused.
+     */
+    private suspend fun refreshSpywareIndex(feed: FeedEntity, tmp: File, converted: File): FeedSummary {
+        download(feed, tmp, MAX_SPYWARE_INDEX_BYTES)
+        val packs = MvtIndex.parse(tmp.readText())
+        if (packs.isEmpty()) throw IOException("the index lists no packs vigil accepts")
+        val previous = MvtIndex.read(fileFor(feed.id))?.size
+        if (previous != null && packs.size < previous / 2) {
+            throw IOException("only ${packs.size} packs listed (previously $previous); keeping the previous list")
+        }
+        MvtIndex.write(packs, converted)
+        coroutineContext.ensureActive()
+        if (!converted.renameTo(fileFor(feed.id))) throw IOException("could not store feed")
+        syncMvtPacks(packs)
+        Log.i(TAG, "spyware index ${feed.id}: ${packs.size} packs")
+        return FeedSummary(id = feed.id)
+    }
+
+    /**
+     * Downloads a spyware pack and converts it: the pack file (labels, apps,
+     * certificates) and, for [FeedKinds.SPYWARE], a feed file with the
+     * network indicators for the engine. Both replace the previous copy only
+     * when the conversion succeeded and did not collapse.
+     */
+    private suspend fun refreshSpywarePack(feed: FeedEntity, tmp: File, converted: File, packTmp: File): FeedSummary {
+        download(feed, tmp, MAX_SPYWARE_BYTES)
+        val listing = MvtIndex.read(fileFor(FeedCatalog.MVT_INDEX_ID))?.firstOrNull { it.id == feed.id }
+        val source = FeedCatalog.spywareSources[feed.id]
+        val pack = SpywarePack(
+            feedId = feed.id, name = feed.name, source = feed.url,
+            reference = source?.second ?: listing?.references?.firstOrNull(),
+            license = source?.first ?: listing?.license ?: "see the publisher",
+            downloadedAt = System.currentTimeMillis(),
+            groups = SpywareConverters.convert(feed.format, tmp, feed.name),
+        )
+        if (pack.total == 0) throw IOException("the pack contained no indicators vigil can use")
+        val previous = SpywareStore.read(packFileFor(feed.id))?.total
+        if (previous != null && previous > 0 && pack.total < previous * FeedValidation.MIN_SHRINK_RATIO) {
+            throw IOException("only ${pack.total} indicators (previously $previous); keeping the previous copy")
+        }
+        val lines = if (feed.kind == FeedKinds.SPYWARE) pack.engineLines() else emptyList()
+        converted.bufferedWriter().use { w ->
+            w.write("# ${feed.name}: converted by vigil from ${feed.url}\n")
+            for (l in lines) w.write(l + "\n")
+        }
+        SpywareStore.write(pack, packTmp)
+        coroutineContext.ensureActive()
+        if (!packTmp.renameTo(packFileFor(feed.id)) || !converted.renameTo(fileFor(feed.id))) throw IOException("could not store feed")
+        Log.i(TAG, "spyware ${feed.id}: ${pack.domainCount} domains, ${pack.ipCount} IPs, ${pack.appCount} apps, ${pack.certCount} certificates")
+        val ips = lines.count { Indicators.ipOrCidr(it) != null }
+        return FeedSummary(id = feed.id, domains = lines.size - ips, ipRanges = ips)
+    }
+
+    /**
+     * Adds a feed for each pack of the MVT index (on or off as
+     * [MvtIndex.feedFor] says), updates the listing of known ones (keeping the
+     * user's switch), and removes packs the index no longer lists.
+     */
+    private suspend fun syncMvtPacks(packs: List<MvtPack>) {
+        val existing = dao.list().filter { it.kind == FeedKinds.SPYWARE && it.id.startsWith(MvtIndex.ID_PREFIX) }.associateBy { it.id }
+        for (p in packs) {
+            val feed = MvtIndex.feedFor(p)
+            if (p.id in existing) dao.updateListing(p.id, feed.name, feed.url, feed.description) else dao.insertIfAbsent(listOf(feed))
+        }
+        for (id in existing.keys - packs.map { it.id }.toSet()) {
+            dao.deleteAny(id)
+            fileFor(id).delete()
+            packFileFor(id).delete()
+        }
+    }
+
     /** Blocking download that still honours cancellation (WorkManager stop, REPLACE). */
-    private suspend fun download(feed: FeedEntity, dest: File) = coroutineScope {
+    private suspend fun download(feed: FeedEntity, dest: File, maxBytes: Long = MAX_FEED_BYTES) = coroutineScope {
         // Disconnecting from another thread unblocks a read stuck in the socket.
         val current = AtomicReference<HttpURLConnection?>()
         val watchdog = launch(Dispatchers.IO) {
@@ -333,7 +433,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                         val n = input.read(buf)
                         if (n < 0) break
                         total += n
-                        if (total > MAX_FEED_BYTES) throw IOException("feed larger than ${MAX_FEED_BYTES / 1_000_000} MB")
+                        if (total > maxBytes) throw IOException("feed larger than ${maxBytes / 1_000_000} MB")
                         out.write(buf, 0, n)
                     }
                 }
@@ -377,12 +477,19 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         fun maxAgeFor(feed: FeedEntity, maxAgeMs: Long, force: Boolean): Long = when {
             feed.kind == FeedKinds.ASN -> if (force) ASN_FORCED_MIN_AGE_MS else maxOf(maxAgeMs, AsnDatabase.MAX_AGE_MS)
             force -> 0L
+            // MVT's STIX packs (up to a few MB each) change rarely.
+            feed.kind == FeedKinds.SPYWARE && feed.format == SpywareConverters.FORMAT_STIX2 -> maxOf(maxAgeMs, SPYWARE_PACK_MAX_AGE_MS)
             else -> maxAgeMs
         }
 
         private const val ASN_FORCED_MIN_AGE_MS = 20L * 3600 * 1000
         private const val TAG = "vigil.feeds"
         private const val MAX_FEED_BYTES = 150L * 1024 * 1024
+        private const val MAX_SPYWARE_BYTES = 32L * 1024 * 1024
+        private const val MAX_SPYWARE_INDEX_BYTES = 1L * 1024 * 1024
+        /** MVT's STIX packs are fetched every three days (a forced refresh fetches them at once). */
+        const val SPYWARE_PACK_MAX_AGE_MS = 3L * 24 * 3600 * 1000
+        const val PACK_SUFFIX = ".spy.json"
         const val MAX_AGE_MS = 20L * 3600 * 1000
         /** One page of up to [TaxiiClient.PAGE_LIMIT] objects is a few MB at most. */
         private const val MAX_TAXII_PAGE_BYTES = 8L * 1024 * 1024

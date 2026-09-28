@@ -63,9 +63,53 @@ object FeedCatalog {
                 "enables new-network alerts. Downloaded weekly (≈ 9 MB, ≈ 10 MB of memory while inspecting). " +
                 "Data: iptoasn.com, public domain (PDDL 1.0).",
         ),
+    ) + spyware()
+
+    // --- Spyware & stalkerware (FeedKinds.SPYWARE*) -----------------------------------------------
+    // Downloaded by the device from the publishers, never redistributed. The MVT index adds one feed
+    // per listed pack when it is downloaded (MvtIndex). Network indicators load as `malware`, so hits
+    // raise threat alerts and are blocked; app packages and certificates are for the health check.
+    const val ECHAP_REPO = "https://github.com/AssoEchap/stalkerware-indicators"
+    private const val ECHAP_RAW = "https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master"
+    const val ECHAP_LICENSE = "CC BY 4.0 (Echap)"
+    const val MVT_INDEX_ID = "mvt-index"
+
+    /** Licence and reference of the fixed spyware feeds (the MVT packs carry theirs, see [MvtIndex]). */
+    val spywareSources: Map<String, Pair<String, String>> = mapOf(
+        "echap-stalkerware-network" to (ECHAP_LICENSE to ECHAP_REPO),
+        "echap-stalkerware-apps" to (ECHAP_LICENSE to ECHAP_REPO),
+        "echap-watchware" to (ECHAP_LICENSE to ECHAP_REPO),
+        MVT_INDEX_ID to ("MIT (MVT project)" to "https://github.com/mvt-project/mvt-indicators"),
     )
 
-    val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom", AsnDatabase.CATEGORY)
+    private fun spyware() = listOf(
+        FeedEntity(
+            id = "echap-stalkerware-network", name = "Stalkerware network indicators (Echap)", url = "$ECHAP_RAW/generated/network.csv",
+            category = "malware", enabled = true, builtin = true, kind = FeedKinds.SPYWARE, format = SpywareConverters.FORMAT_ECHAP_NETWORK_CSV,
+            description = "Servers and websites of about 150 stalkerware apps (≈ 1,000 domains and IPs), labelled per app. " +
+                "Data: Echap, CC BY 4.0.",
+        ),
+        FeedEntity(
+            id = "echap-stalkerware-apps", name = "Stalkerware apps (Echap)", url = "$ECHAP_RAW/ioc.yaml",
+            category = "malware", enabled = true, builtin = true, kind = FeedKinds.SPYWARE_APPS, format = SpywareConverters.FORMAT_ECHAP_IOC_YAML,
+            description = "Package names and signing certificates of stalkerware apps, for the health check (≈ 100 KB). " +
+                "Data: Echap, CC BY 4.0.",
+        ),
+        FeedEntity(
+            id = "echap-watchware", name = "Monitoring apps (Echap watchware)", url = "$ECHAP_RAW/watchware.yaml",
+            category = "malware", enabled = true, builtin = true, kind = FeedKinds.SPYWARE_APPS, format = SpywareConverters.FORMAT_ECHAP_WATCHWARE_YAML,
+            description = "Legitimate parental-control and monitoring apps that can also be misused. The health check reports " +
+                "them as warnings; they never raise alerts. Data: Echap, CC BY 4.0.",
+        ),
+        FeedEntity(
+            id = MVT_INDEX_ID, name = "MVT spyware indicator packs", url = MvtIndex.URL,
+            category = "malware", enabled = true, builtin = true, kind = FeedKinds.SPYWARE_INDEX, format = SpywareConverters.FORMAT_MVT_INDEX,
+            description = "The list of mercenary-spyware packs published for the Mobile Verification Toolkit (Pegasus, Predator " +
+                "and others, by Amnesty International, Citizen Lab and others). Adds one feed per pack below. Index: MIT.",
+        ),
+    )
+
+    val categories =listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom", AsnDatabase.CATEGORY)
 
     private fun feed(id: String, name: String, url: String, category: String, enabled: Boolean, description: String) =
         FeedEntity(id = id, name = name, url = url, category = category, enabled = enabled, builtin = true, description = description)
