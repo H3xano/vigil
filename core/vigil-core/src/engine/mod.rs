@@ -180,6 +180,10 @@ pub(crate) struct Shared {
     /// TCP connections the gate knows (deciding, parked or relaying).
     /// Retransmitted SYNs for these are dropped instead of re-gated.
     pub tcp_keys: Mutex<HashSet<FlowKey>>,
+    /// Relays whose app side has finished sending (FIN) while the server
+    /// side still runs. A new SYN on such a 4-tuple means the app has moved
+    /// on: the old relay is aborted so the retransmitted SYN gets through.
+    pub tcp_half_closed: Mutex<HashMap<FlowKey, netstack_smoltcp::TcpAbortHandle>>,
     pub udp_flows: Mutex<udp::FlowTable>,
     pub dns_upstreams: dns::UpstreamPool,
     pub encrypted_dns: dns_upstream::EncryptedUpstream,
@@ -207,6 +211,7 @@ impl Shared {
             tun_tx,
             tcp_meta: Mutex::new(HashMap::new()),
             tcp_keys: Mutex::new(HashSet::new()),
+            tcp_half_closed: Mutex::new(HashMap::new()),
             udp_flows: Mutex::new(udp::FlowTable::default()),
             dns_upstreams: dns::UpstreamPool::default(),
             encrypted_dns: dns_upstream::EncryptedUpstream::default(),
@@ -1205,7 +1210,7 @@ mod tests {
 
     /// The TCP half of the netstack as `run` builds it: its input, its
     /// output stream and the listener.
-    fn test_stack() -> (
+    pub(crate) fn test_stack() -> (
         mpsc::Sender<Vec<u8>>,
         netstack_smoltcp::Stack,
         netstack_smoltcp::TcpListener,
@@ -1221,7 +1226,10 @@ mod tests {
     }
 
     /// The next TCP segment the stack sends to `to`.
-    async fn next_segment(out: &mut netstack_smoltcp::Stack, to: SocketAddr) -> packet::TcpInfo {
+    pub(crate) async fn next_segment(
+        out: &mut netstack_smoltcp::Stack,
+        to: SocketAddr,
+    ) -> packet::TcpInfo {
         loop {
             let p = tokio::time::timeout(Duration::from_secs(2), out.next())
                 .await
