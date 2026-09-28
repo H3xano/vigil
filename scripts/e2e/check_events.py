@@ -17,6 +17,7 @@ check("every-flow-ends", set(flows) <= set(ends), sorted(set(flows) - set(ends))
 check("dns-logged", any(d["qname"] == "example.com" and d["verdict"] == "allow" and d["answers"] for d in dns))
 check("dns-sinkhole-logged", any(d["qname"] == "ads.vigil-test.example" and d["verdict"] == "block" for d in dns))
 check("dns-tcp-logged", any(d["transport"] == "tcp" for d in dns))
+check("dns-upstream-plain", {d.get("upstream") for d in dns if d["verdict"] == "allow"} <= {"udp", "tcp"} and any(d.get("upstream") == "udp" for d in dns), sorted({str(d.get("upstream")) for d in dns}))
 check("hardcoded-dns-seen", any(d["server"].startswith("9.9.9.9") for d in dns))
 check("hardcoded-dns-alert", any(a["kind"] == "hardcoded_dns" for a in alerts))
 quic = [f for f in flows.values() if f.get("domain_source") == "quic"]

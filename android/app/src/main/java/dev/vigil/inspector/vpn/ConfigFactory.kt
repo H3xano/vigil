@@ -30,6 +30,8 @@ object ConfigFactory {
             denyDomains = s.denyDomains.sorted(),
             beacon = beacon,
             nat64Prefixes = nat64Prefixes.mapNotNull(::normalizeNat64Prefix).distinct(),
+            // Invalid settings (which the DNS screen does not save) become "off".
+            encryptedDns = s.encryptedDns.toEngine(),
         )
     }
 

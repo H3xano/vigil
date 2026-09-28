@@ -43,7 +43,7 @@ app. Every one was green at the 0.1.0 commit.
 
 ```sh
 cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-scripts/e2e-netns.sh          # 49 checks, needs internet, no root
+scripts/e2e-netns.sh          # 91 checks (incl. encrypted upstream DNS phases), needs internet, no root
 scripts/jni-smoke.sh          # 26 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
@@ -184,8 +184,11 @@ core/vigil-core/src/
   engine/tcp.rs     SYN gate, relay, sniffing, policy decisions, alerts
   engine/udp.rs     UDP NAT, QUIC sniff window
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
+  engine/dns_upstream.rs  encrypted upstream DNS (DoT, DoH over HTTP/2 or 1.1), TLS config
   engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
   proto/{dns,tls,quic,http}.rs   parsers (pure)
+  proto/doh.rs      DoH HTTP/1.1 request encoding and response parsing (pure)
+  ../testdata/edns/ test-only CA and server certificate (dns.vigil.test, 127.0.0.1)
   intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
   policy.rs         Policy, feed categories, DoH host list
   detect.rs         beacon detector, alert limiter

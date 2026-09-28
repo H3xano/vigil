@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.transform
 
 /** Navigation routes that may be requested from outside (intent extra `destination`). */
 object Routes {
-    val TOP_LEVEL = setOf("dashboard", "activity", "apps", "alerts", "settings", "feeds", "export", "rules")
+    val TOP_LEVEL = setOf("dashboard", "activity", "apps", "alerts", "settings", "feeds", "export", "rules", "dns")
 
     /** App keys are package names, "uid:<n>" or "unknown". */
     private val APP_KEY = Regex("^[A-Za-z0-9_.:]{1,255}$")

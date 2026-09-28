@@ -101,6 +101,10 @@ pub struct DnsEvent {
     /// Resolver the app addressed (`virtual` for vigil's own resolver).
     pub server: String,
     pub transport: &'static str,
+    /// How vigil reached the upstream resolver: `udp`, `tcp`, `dot` or
+    /// `doh` (the one that answered, or the one that failed). `None` when
+    /// no upstream was asked (sinkholed, refused).
+    pub upstream: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -140,6 +144,17 @@ pub struct StatsEvent {
     pub dropped_packets: u64,
     pub dropped_events: u64,
     pub dns_cache_size: u64,
+    /// Queries answered over DoT/DoH.
+    pub encrypted_dns_ok: u64,
+    /// Queries for which every encrypted server failed.
+    pub encrypted_dns_failed: u64,
+    /// Of those, answered in cleartext (`fallback_plain`).
+    pub encrypted_dns_fallback: u64,
+    /// Time (ms) of the last encrypted answer, 0 if none.
+    pub encrypted_dns_last_ok_ts: u64,
+    /// Time (ms) and text of the last encrypted failure.
+    pub encrypted_dns_last_error_ts: u64,
+    pub encrypted_dns_last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

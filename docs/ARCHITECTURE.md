@@ -66,6 +66,20 @@
    and replies are matched on ID and question. At most `max_dns_inflight`
    queries run at once; others get SERVFAIL. A UDP/53 payload to another
    address that is not a DNS query is relayed as ordinary UDP (step 5).
+
+   With `encrypted_dns` on, the virtual resolver's queries leave over
+   DNS-over-TLS or DNS-over-HTTPS instead (`dns_upstream.rs`; only the
+   forwarding call in `dns.rs` changes, inspection stays the same). TLS is
+   rustls with the *ring* provider and the Mozilla roots. DoT pipelines
+   queries over up to two long-lived connections per server address,
+   rewriting IDs so concurrent clients cannot collide; DoH uses one
+   multiplexed HTTP/2 connection (the `h2` crate), or keep-alive HTTP/1.1
+   if the server does not offer `h2`. Without `fallback_plain` a failure is
+   SERVFAIL and nothing is sent in cleartext; bootstrap addresses are part
+   of the configuration. Every socket of that module is opened by
+   `connect_encrypted_upstream`, and the TLS/HTTP code is generic over the
+   stream type, so an upstream dialer (proxy, tunnel) plugs in at one
+   place.
 5. **Other UDP** (`udp.rs`). A NAT task runs per 5-tuple, up to
    `max_udp_flows` (then the flow idle for longest is evicted). For ports 443
    and 80 the first datagrams are held (for at most 250 ms) while

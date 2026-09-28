@@ -14,6 +14,7 @@
 //! ```
 
 mod dns;
+mod dns_upstream;
 mod sock;
 mod tcp;
 mod udp;
@@ -161,6 +162,7 @@ pub(crate) struct Shared {
     pub tcp_keys: Mutex<HashSet<FlowKey>>,
     pub udp_flows: Mutex<udp::FlowTable>,
     pub dns_upstreams: dns::UpstreamPool,
+    pub encrypted_dns: dns_upstream::EncryptedUpstream,
     open_flows: Mutex<OpenFlows>,
     shut_down: AtomicBool,
 }
@@ -184,6 +186,7 @@ impl Shared {
             tcp_keys: Mutex::new(HashSet::new()),
             udp_flows: Mutex::new(udp::FlowTable::default()),
             dns_upstreams: dns::UpstreamPool::default(),
+            encrypted_dns: dns_upstream::EncryptedUpstream::default(),
             open_flows: Mutex::new(OpenFlows::default()),
             shut_down: AtomicBool::new(false),
         }
@@ -331,6 +334,7 @@ impl Shared {
             dropped_packets: s.dropped_packets.load(Relaxed),
             dropped_events: self.events.dropped(),
             dns_cache_size: self.dns_cache.len() as u64,
+            ..self.encrypted_dns.stats.snapshot()
         }
     }
 }
@@ -680,6 +684,7 @@ async fn housekeeping(shared: Arc<Shared>) {
         };
         drop(stale);
         shared.dns_upstreams.expire();
+        shared.encrypted_dns.expire();
     }
 }
 

@@ -1,7 +1,7 @@
 //! DNS: inspection, sinkholing (including CNAME-cloaked trackers), upstream
 //! forwarding and IP→name learning.
 
-use super::{sock, Shared};
+use super::{dns_upstream, sock, Shared};
 use crate::event::{now_ms, DnsEvent, Event, Severity, Verdict};
 use crate::packet::PROTO_UDP;
 use crate::policy::{BlockReason, Decision};
@@ -130,7 +130,6 @@ async fn answer(
     upstream: Option<SocketAddr>,
     transport: &'static str,
 ) -> Option<Vec<u8>> {
-    let cfg = shared.config();
     let started = Instant::now();
     let Some(msg) = dns::parse(query).filter(|m| !m.is_response && m.opcode == 0) else {
         // Not a query we understand: relay it untouched to where it was going.
@@ -174,6 +173,7 @@ async fn answer(
         latency_ms: 0,
         server: server_label,
         transport,
+        upstream: None,
     };
 
     let decision = shared.policy.read().check_domain(uid, &q.name);
@@ -188,16 +188,27 @@ async fn answer(
         }
     }
 
-    let servers: Vec<SocketAddr> = match upstream {
-        Some(s) => vec![s],
-        None => cfg.upstream_dns.clone(),
+    // Hard-coded servers are asked the way the app asked them (plain); the
+    // virtual resolver's upstream may be encrypted (dns_upstream.rs).
+    let forwarded = match upstream {
+        Some(s) => forward(shared, query, &[s], transport)
+            .await
+            .ok_or(("udp", "upstream unreachable".to_string())),
+        None => dns_upstream::forward(shared, query, transport).await,
     };
-    let Some((resp, _server)) = forward(shared, query, &servers, transport).await else {
-        ev.rcode = "SERVFAIL".into();
-        ev.reason = Some("upstream unreachable".into());
-        ev.latency_ms = started.elapsed().as_millis() as u64;
-        shared.emit(Event::Dns(ev));
-        return dns::servfail_response(query);
+    let resp = match forwarded {
+        Ok((resp, via)) => {
+            ev.upstream = Some(via);
+            resp
+        }
+        Err((via, reason)) => {
+            ev.upstream = Some(via);
+            ev.rcode = "SERVFAIL".into();
+            ev.reason = Some(reason);
+            ev.latency_ms = started.elapsed().as_millis() as u64;
+            shared.emit(Event::Dns(ev));
+            return dns::servfail_response(query);
+        }
     };
     let Some(r) = dns::parse(&resp) else {
         ev.rcode = "unparsed".into();
@@ -369,15 +380,16 @@ async fn query_tcp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Res
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns tcp timeout"))?
 }
 
-/// Sends `query` to the first responsive server. A truncated UDP answer is
-/// returned as is to UDP clients (they retry over TCP themselves, within
-/// their own EDNS size) and retried over TCP for TCP clients.
-async fn forward(
+/// Sends `query` in cleartext to the first responsive server. A truncated
+/// UDP answer is returned as is to UDP clients (they retry over TCP
+/// themselves, within their own EDNS size) and retried over TCP for TCP
+/// clients. Returns the answer and how it was fetched (`udp` or `tcp`).
+pub(super) async fn forward(
     shared: &Shared,
     query: &[u8],
     servers: &[SocketAddr],
     transport: &'static str,
-) -> Option<(Vec<u8>, SocketAddr)> {
+) -> Option<(Vec<u8>, &'static str)> {
     if query.len() < 12 {
         return None;
     }
@@ -386,10 +398,10 @@ async fn forward(
             Ok(resp) => {
                 if transport == "tcp" && dns::is_truncated(&resp) {
                     if let Ok(full) = query_tcp(shared, query, server).await {
-                        return Some((full, server));
+                        return Some((full, "tcp"));
                     }
                 }
-                return Some((resp, server));
+                return Some((resp, "udp"));
             }
             Err(e) => log::debug!("dns upstream {server}: {e}"),
         }

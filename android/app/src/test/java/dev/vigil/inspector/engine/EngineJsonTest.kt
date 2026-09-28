@@ -56,6 +56,28 @@ class EngineJsonTest {
     }
 
     @Test
+    fun encryptedDnsFieldsAreOptional() {
+        val events = EngineJson.parseBatch(
+            """[{"type":"dns","ts":5,"uid":1,"qname":"a.example","qtype":"A","rcode":"NOERROR","answers":["192.0.2.1"],
+                 "verdict":"allow","reason":null,"latency_ms":20,"server":"virtual","transport":"udp","upstream":"doh"},
+                {"type":"dns","ts":6,"qname":"b.example","qtype":"A","rcode":"SERVFAIL","verdict":"allow","server":"virtual",
+                 "transport":"tcp","upstream":"dot","reason":"upstream unreachable (dot: timed out)"},
+                {"type":"stats","ts":7,"encrypted_dns_ok":12,"encrypted_dns_failed":1,"encrypted_dns_fallback":0,
+                 "encrypted_dns_last_ok_ts":1000,"encrypted_dns_last_error_ts":900,"encrypted_dns_last_error":"timed out"}]""",
+        )
+        assertEquals(3, events.size)
+        assertEquals("doh", (events[0] as DnsEvent).upstream)
+        assertEquals("dot", (events[1] as DnsEvent).upstream)
+        val stats = events[2] as StatsEvent
+        assertEquals(12L, stats.encryptedDnsOk)
+        assertEquals("timed out", stats.encryptedDnsLastError)
+        // Older engines omit the fields.
+        val old = EngineJson.parseBatch(batch)
+        assertEquals(null, (old[4] as DnsEvent).upstream)
+        assertEquals(0L, (old[6] as StatsEvent).encryptedDnsOk)
+    }
+
+    @Test
     fun garbageYieldsEmptyBatch() {
         assertTrue(EngineJson.parseBatch("not json").isEmpty())
         assertTrue(EngineJson.parseBatch("{}").isEmpty())

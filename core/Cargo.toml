@@ -26,6 +26,15 @@ aes = "0.8"
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# Encrypted upstream DNS (DoT/DoH). ring, not aws-lc-rs: no C/cmake cross
+# build for Android, and simpler reproducible builds.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+# DoH over HTTP/2 (Quad9 and Mullvad refuse HTTP/1.1).
+h2 = "0.4"
+http = "1"
+bytes = "1"
 
 # netstack-smoltcp has no way to abort a connection (so resets would reach
 # apps as FINs) and reports peer resets as EOF. vendor/netstack-smoltcp adds
@@ -39,3 +48,20 @@ codegen-units = 1
 opt-level = 3
 panic = "unwind"
 strip = "symbols"
+
+# TLS and HTTP/2 only carry DNS lookups: optimise them for size (saves
+# about 130 KB per ABI; the packet path keeps opt-level 3).
+[profile.release.package.rustls]
+opt-level = "s"
+[profile.release.package.ring]
+opt-level = "s"
+[profile.release.package.rustls-webpki]
+opt-level = "s"
+[profile.release.package.tokio-rustls]
+opt-level = "s"
+[profile.release.package.h2]
+opt-level = "s"
+[profile.release.package.http]
+opt-level = "s"
+[profile.release.package.indexmap]
+opt-level = "s"
