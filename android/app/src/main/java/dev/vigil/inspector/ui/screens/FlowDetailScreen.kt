@@ -1,5 +1,6 @@
 package dev.vigil.inspector.ui.screens
 
+import android.content.ClipData
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,10 +19,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,6 +33,7 @@ import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.EmptyState
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.Field
 import dev.vigil.inspector.ui.components.SectionTitle
@@ -44,7 +47,8 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
     // null while loading; Lookup(null) once the query says the row does not exist.
     val lookup by remember(id) { vm.flow(id).map { Lookup(it) } }.collectAsStateWithLifecycle(initialValue = null)
     val settings by vm.settings.collectAsStateWithLifecycle()
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Connection", nav)
         val loaded = lookup ?: return@Column
@@ -126,7 +130,8 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 }
                 OutlinedButton(onClick = { nav.navigate("app/${f.pkg}") }, Modifier.fillMaxWidth()) { Text("Open $label") }
                 OutlinedButton(onClick = {
-                    clipboard.setText(AnnotatedString(listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")))
+                    val text = listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")
+                    scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("indicators", text))) }
                 }, Modifier.fillMaxWidth()) { Text("Copy indicators") }
             }
             Spacer(Modifier.height(32.dp))

@@ -1,6 +1,7 @@
 package dev.vigil.inspector.data
 
 import android.content.Context
+import androidx.core.content.edit
 import dev.vigil.inspector.engine.EngineJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -78,7 +79,7 @@ class SettingsStore(context: Context) {
     }
 
     private fun save(s: Settings) {
-        prefs.edit().putString(KEY, EngineJson.json.encodeToString(Settings.serializer(), s)).apply()
+        prefs.edit { putString(KEY, EngineJson.json.encodeToString(Settings.serializer(), s)) }
     }
 
     fun update(transform: (Settings) -> Settings) {
