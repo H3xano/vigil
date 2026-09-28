@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-09-28): GitHub pre-release
 
 - Encrypted upstream DNS: DNS over TLS and DNS over HTTPS (HTTP/2), with
   Quad9, Cloudflare, Google and Mullvad presets or a custom server;

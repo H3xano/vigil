@@ -1,7 +1,7 @@
 # Project status and handoff
 
-Last updated: 2026-09-28, version 0.2.0 released; 0.3 features (encrypted DNS,
-JA4/TAXII, WireGuard/SOCKS5 chaining) merged on `main`, unreleased.
+Last updated: 2026-09-28, version 0.3.0 (encrypted DNS, JA4/TAXII,
+WireGuard/SOCKS5 chaining), GitHub pre-release.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -25,7 +25,7 @@ systematic device testing in backlog item 1 is still to do.
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, this file | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
-| Release | [v0.2.0](https://github.com/H3xano/vigil/releases/tag/v0.2.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
+| Release | [v0.3.0](https://github.com/H3xano/vigil/releases/tag/v0.3.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
 
 Measured numbers (see the README "Performance" section):
 
@@ -73,7 +73,7 @@ and Private DNS automatic and strict. Always-on VPN starts 2 s after a reboot
 with the service left `exported="false"`. A real TUN read error has still
 never been observed, so the injected error stands in for it.
 
-## New in 0.3 (unreleased, 2026-09-28)
+## New in 0.3.0 (released 2026-09-28 as a pre-release)
 
 Three features, built in parallel and integrated; every suite above passes
 on the merged tree, and direct-mode throughput is unchanged (1,296 Mbit/s).
@@ -87,8 +87,8 @@ on the merged tree, and direct-mode throughput is unchanged (1,296 Mbit/s).
   collections (domains, IPs, JA4) polled incrementally; Room schema v3.
   Tested against an OASIS medallion server. The only built-in JA4 source
   (FoxIO mapping, 4 malware fingerprints) is off by default; its licence
-  (FoxIO License 1.1, non-commercial) is downloaded-not-redistributed and
-  **awaits the owner's confirmation**.
+  (FoxIO License 1.1, non-commercial) is downloaded by the device, not
+  redistributed; the owner decided to keep it in the catalogue (2026-09-28).
 - **Upstream chaining:** all upstream sockets go through one dialer
   (`engine/upstream/`): direct, WireGuard (boringtun + a client smoltcp
   stack, wg-quick import) or SOCKS5 (CONNECT, UDP ASSOCIATE, auth,

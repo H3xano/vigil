@@ -1,0 +1,4 @@
+New in 0.3.0:
+• Encrypted DNS: DNS over TLS or HTTPS (Quad9, Cloudflare, Google, Mullvad or your own server); fails closed instead of leaking plain DNS.
+• JA4 threat matching: alerts (optional blocking) on TLS fingerprints of known malware; import indicators from STIX/TAXII 2.1 servers such as MISP or OpenCTI.
+• Route inspected traffic through WireGuard or a SOCKS5 proxy (e.g. Orbot), so vigil works alongside your VPN.
