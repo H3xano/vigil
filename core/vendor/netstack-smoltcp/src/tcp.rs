@@ -476,8 +476,11 @@ impl TcpListenerRunner {
             // cooperative `yield_now()` keeps the re-poll just as prompt while
             // letting `handle_packet` make progress. The timed-park path and the
             // 5 ms idle fallback are unchanged, so there is no missed-wake risk.
+            //
+            // vigil patch: yield with `yield_once` rather than tokio's
+            // `yield_now`, see there.
             if iface_ingress_tx_avail.load(Ordering::Acquire) {
-                tokio::task::yield_now().await;
+                yield_once().await;
             } else {
                 let mut next_duration = iface
                     .poll_delay(before_poll, &socket_set)
@@ -493,11 +496,30 @@ impl TcpListenerRunner {
                     )
                     .await;
                 } else {
-                    tokio::task::yield_now().await;
+                    yield_once().await;
                 }
             }
         }
     }
+}
+
+// vigil patch: returns to the executor once, rescheduling the task at once.
+// Tokio's `yield_now` defers the task until the worker has polled its I/O
+// driver and timers (an epoll_wait and several clock reads), and this loop
+// yields for about every packet under load, so that turn cost more than the
+// packet itself. A self-wake still lets the sibling `handle_packet` arm run
+// and other tasks too (tokio polls its driver every 61 scheduler ticks).
+async fn yield_once() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if yielded {
+            return Poll::Ready(());
+        }
+        yielded = true;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await
 }
 
 pub struct TcpListener {
