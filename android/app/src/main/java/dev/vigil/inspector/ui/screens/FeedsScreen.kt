@@ -45,6 +45,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.FeedCatalog
 import dev.vigil.inspector.data.FeedEntity
+import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.ui.FeedWork
@@ -112,7 +113,16 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             val (taxii, lists) = feeds.partition { it.isTaxii }
             val groups = lists.groupBy { it.category }
             for (category in FeedCatalog.categories.filter { it in groups }) {
-                item { SectionTitle(if (category == "ja4") "JA4 fingerprints" else category) }
+                item {
+                    when (category) {
+                        "ja4" -> SectionTitle("JA4 fingerprints")
+                        AsnDatabase.CATEGORY -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            SectionTitle("Network (ASN) data")
+                            HelpIcon("ASN", Glossary.ASN)
+                        }
+                        else -> SectionTitle(category)
+                    }
+                }
                 items(groups.getValue(category), key = { it.id }) { f ->
                     FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDelete = f })
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

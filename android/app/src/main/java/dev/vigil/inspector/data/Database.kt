@@ -57,6 +57,13 @@ data class FlowEntity(
     val ja4Feed: String? = null,
     /** That feed's label for the fingerprint, e.g. a malware family. */
     val ja4Label: String? = null,
+    /** Upstream path of the connection (engine `via`): "direct", "wireguard", "socks5"; null if none was made. */
+    val via: String? = null,
+    /** Autonomous system of [dstIp] (engine `asn`); null when unknown or no ASN table is loaded. */
+    val asn: Long? = null,
+    val asnName: String? = null,
+    /** Country code of the AS registration (not a geolocation of the address). */
+    val asnCountry: String? = null,
 ) {
     val destination: String get() = domain ?: dstIp
     val isBlocked: Boolean get() = verdict == "block"
@@ -79,6 +86,8 @@ data class DnsEntity(
     val latencyMs: Long,
     val server: String,
     val transport: String,
+    /** How vigil reached the resolver (engine `upstream`): "udp", "tcp", "dot", "doh"; null if none was asked. */
+    val upstream: String? = null,
 ) {
     val isBlocked: Boolean get() = verdict == "block"
 }
@@ -105,6 +114,19 @@ data class AlertEntity(
 data class DestinationEntity(
     val pkg: String,
     val destination: String,
+    val firstSeen: Long,
+    val lastSeen: Long,
+    val flows: Long,
+)
+
+/**
+ * (app, autonomous system) pairs observed, for "new network" alerts. Pruned
+ * like [DestinationEntity], so learning survives the history retention.
+ */
+@Entity(tableName = "app_asns", primaryKeys = ["pkg", "asn"])
+data class AppAsnEntity(
+    val pkg: String,
+    val asn: Long,
     val firstSeen: Long,
     val lastSeen: Long,
     val flows: Long,
@@ -152,6 +174,9 @@ object FeedKinds {
 
     /** A TAXII 2.1 collection polled incrementally; may hold domains, IPs and JA4. */
     const val TAXII = "taxii"
+
+    /** An IP-to-ASN table (engine category `asn`): enriches connections, never blocks. */
+    const val ASN = "asn"
 }
 
 data class AppUsage(
@@ -172,6 +197,10 @@ data class DestinationUsage(
     val blocked: Long,
     val firstSeen: Long,
     val lastSeen: Long,
+    /** Distinct AS numbers of the destination's addresses, comma-separated (null if none known). */
+    val asns: String? = null,
+    /** The AS name when all connections went to one AS. */
+    val asnName: String? = null,
 )
 
 data class NameCount(val name: String, val hits: Long)
@@ -200,10 +229,12 @@ interface FlowDao {
 
     @Query(
         """SELECT * FROM flows WHERE (:query = '' OR domain LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR dstIp LIKE $LIKE_ARG || '%' ESCAPE '\'
-             OR pkg LIKE '%' || $LIKE_ARG || '%' ESCAPE '\')
-           AND (:blockedOnly = 0 OR verdict = 'block') ORDER BY ts DESC LIMIT :limit""",
+             OR pkg LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR asnName LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR 'AS' || asn = upper(:query))
+           AND (:blockedOnly = 0 OR verdict = 'block')
+           AND (:path = '' OR (:path = 'direct' AND via = 'direct') OR (:path = 'tunnel' AND via IS NOT NULL AND via != 'direct'))
+           ORDER BY ts DESC LIMIT :limit""",
     )
-    fun recent(query: String, blockedOnly: Boolean, limit: Int = 500): Flow<List<FlowEntity>>
+    fun recent(query: String, blockedOnly: Boolean, limit: Int = 500, path: String = PathFilter.ALL): Flow<List<FlowEntity>>
 
     @Query("SELECT * FROM flows WHERE id = :id")
     fun byId(id: Long): Flow<FlowEntity?>
@@ -220,7 +251,8 @@ interface FlowDao {
 
     @Query(
         """SELECT COALESCE(domain, dstIp) AS destination, COUNT(*) AS flows, SUM(tx + rx) AS bytes, SUM(verdict = 'block') AS blocked,
-           MIN(ts) AS firstSeen, MAX(ts) AS lastSeen FROM flows WHERE pkg = :pkg AND ts >= :since
+           MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, GROUP_CONCAT(DISTINCT asn) AS asns,
+           CASE WHEN COUNT(DISTINCT asn) = 1 THEN MAX(asnName) END AS asnName FROM flows WHERE pkg = :pkg AND ts >= :since
            GROUP BY destination ORDER BY lastSeen DESC""",
     )
     fun destinationsFor(pkg: String, since: Long): Flow<List<DestinationUsage>>
@@ -323,6 +355,32 @@ interface DestinationDao {
 }
 
 @Dao
+interface AppAsnDao {
+    @Query("SELECT * FROM app_asns WHERE pkg = :pkg AND asn = :asn")
+    suspend fun get(pkg: String, asn: Long): AppAsnEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(rows: List<AppAsnEntity>)
+
+    /** Counts [flows] more connections; returns 0 if the pair is not (or no longer) stored. */
+    @Query("UPDATE app_asns SET flows = flows + :flows, lastSeen = MAX(lastSeen, :lastSeen) WHERE pkg = :pkg AND asn = :asn")
+    suspend fun touch(pkg: String, asn: Long, lastSeen: Long, flows: Long): Int
+
+    /** When vigil first recorded a network for [pkg]: the start of its learning period. */
+    @Query("SELECT MIN(firstSeen) FROM app_asns WHERE pkg = :pkg")
+    suspend fun firstSeenApp(pkg: String): Long?
+
+    @Query("SELECT COUNT(*) FROM app_asns WHERE pkg = :pkg")
+    suspend fun countFor(pkg: String): Int
+
+    @Query("DELETE FROM app_asns WHERE lastSeen < :before")
+    suspend fun deleteBefore(before: Long): Int
+
+    @Query("DELETE FROM app_asns")
+    suspend fun clear()
+}
+
+@Dao
 interface FeedDao {
     @Query("SELECT * FROM feeds ORDER BY builtin DESC, category, name")
     fun all(): Flow<List<FeedEntity>>
@@ -361,8 +419,8 @@ interface FeedDao {
 }
 
 @Database(
-    entities = [FlowEntity::class, DnsEntity::class, AlertEntity::class, DestinationEntity::class, FeedEntity::class],
-    version = 3,
+    entities = [FlowEntity::class, DnsEntity::class, AlertEntity::class, DestinationEntity::class, FeedEntity::class, AppAsnEntity::class],
+    version = 4,
     exportSchema = true,
 )
 abstract class VigilDatabase : RoomDatabase() {
@@ -371,12 +429,13 @@ abstract class VigilDatabase : RoomDatabase() {
     abstract fun alerts(): AlertDao
     abstract fun destinations(): DestinationDao
     abstract fun feeds(): FeedDao
+    abstract fun appAsns(): AppAsnDao
 
     companion object {
         fun create(context: Context): VigilDatabase =
             Room.databaseBuilder(context, VigilDatabase::class.java, "vigil.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
 
         /**
@@ -395,6 +454,23 @@ abstract class VigilDatabase : RoomDatabase() {
                 for (sql in MIGRATION_2_3_SQL) db.execSQL(sql)
             }
         }
+
+        /** Path and ASN columns on flows, the DNS upstream transport, and the app_asns table. */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (sql in MIGRATION_3_4_SQL) db.execSQL(sql)
+            }
+        }
+
+        val MIGRATION_3_4_SQL = listOf(
+            "ALTER TABLE `flows` ADD COLUMN `via` TEXT",
+            "ALTER TABLE `flows` ADD COLUMN `asn` INTEGER",
+            "ALTER TABLE `flows` ADD COLUMN `asnName` TEXT",
+            "ALTER TABLE `flows` ADD COLUMN `asnCountry` TEXT",
+            "ALTER TABLE `dns_queries` ADD COLUMN `upstream` TEXT",
+            "CREATE TABLE IF NOT EXISTS `app_asns` (`pkg` TEXT NOT NULL, `asn` INTEGER NOT NULL, `firstSeen` INTEGER NOT NULL, " +
+                "`lastSeen` INTEGER NOT NULL, `flows` INTEGER NOT NULL, PRIMARY KEY(`pkg`, `asn`))",
+        )
 
         val MIGRATION_2_3_SQL = listOf(
             "ALTER TABLE `flows` ADD COLUMN `ja4Feed` TEXT",
@@ -424,6 +500,15 @@ abstract class VigilDatabase : RoomDatabase() {
  * `ESCAPE '\'`), so typing `%` or `_` searches for those characters literally.
  */
 private const val LIKE_ARG = """replace(replace(replace(:query, '\', '\\'), '%', '\%'), '_', '\_')"""
+
+/** Values of the Activity "path" filter ([FlowDao.recent]). */
+object PathFilter {
+    const val ALL = ""
+    const val DIRECT = "direct"
+
+    /** Through the WireGuard tunnel or the SOCKS5 proxy. */
+    const val TUNNEL = "tunnel"
+}
 
 /** Column helper so string constants stay in one place. */
 object Verdicts {

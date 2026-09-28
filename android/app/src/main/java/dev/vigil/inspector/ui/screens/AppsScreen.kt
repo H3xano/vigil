@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.AppInfo
+import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.ui.MainViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -175,6 +176,10 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                                     color = if (d.blocked == d.flows) VigilColors.Block else MaterialTheme.colorScheme.onSurface)
                                 Text("${plural(d.flows, "connection")} · ${formatBytes(d.bytes)} · first ${formatRelative(d.firstSeen)}",
                                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                AsnDatabase.networksLabel(d.asns, d.asnName)?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                             if (d.blocked > 0) Tag("${d.blocked} blocked", VigilColors.Block, filled = true)
                         }

@@ -159,6 +159,17 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 "After a one-day learning period, alert when an app contacts a domain it has never used before.",
                 s.noveltyAlerts, onChecked = { v -> vm.updateSettings { it.copy(noveltyAlerts = v) } },
             )
+            SettingRow(
+                "New network alerts",
+                "Alert when an app contacts a network (autonomous system, e.g. AS13335 Cloudflare) it has never used before, " +
+                    "after a ${s.asnLearningDays}-day learning period per app. Needs the IP-to-ASN database (Threat intelligence feeds).",
+                s.newAsnAlerts, onChecked = { v -> vm.updateSettings { it.copy(newAsnAlerts = v) } },
+            )
+            if (s.newAsnAlerts) {
+                Text("Learning period", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
+                Segmented(listOf(1 to "1 day", 7 to "7 days", 14 to "14 days", 30 to "30 days"), s.asnLearningDays,
+                    { v -> vm.updateSettings { it.copy(asnLearningDays = v) } })
+            }
             SettingRow("Notify on alerts", "Post a notification for medium and high severity alerts.", s.notifyAlerts,
                 onChecked = { v -> vm.updateSettings { it.copy(notifyAlerts = v) } })
 
@@ -196,7 +207,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Clear history?") },
-            text = { Text("All recorded connections, DNS lookups, alerts and learned destinations will be deleted.") },
+            text = { Text("All recorded connections, DNS lookups, alerts, learned destinations and learned networks will be deleted.") },
             confirmButton = { TextButton(onClick = { vm.clearHistory(); confirmClear = false }) { Text("Clear") } },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
         )

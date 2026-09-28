@@ -37,8 +37,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.DnsEntity
 import dev.vigil.inspector.data.FlowEntity
+import dev.vigil.inspector.data.PathFilter
+import dev.vigil.inspector.data.PathLabels
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.BlockedTag
@@ -82,9 +85,19 @@ private fun FlowList(vm: MainViewModel, nav: NavController) {
     val flows by vm.flows.collectAsStateWithLifecycle()
     val query by vm.flowQuery.collectAsStateWithLifecycle()
     val blockedOnly by vm.flowBlockedOnly.collectAsStateWithLifecycle()
-    SearchBar(query, { vm.flowQuery.value = it }, blockedOnly, { vm.flowBlockedOnly.value = it }, "Domain, IP or app")
+    val path by vm.flowPath.collectAsStateWithLifecycle()
+    SearchBar(query, { vm.flowQuery.value = it }, blockedOnly, { vm.flowBlockedOnly.value = it }, "Domain, IP, network or app")
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for ((value, text) in listOf(PathFilter.TUNNEL to "Via tunnel/proxy", PathFilter.DIRECT to "Direct")) {
+            FilterChip(
+                selected = path == value,
+                onClick = { vm.flowPath.value = if (path == value) PathFilter.ALL else value },
+                label = { Text(text) },
+            )
+        }
+    }
     if (flows.isEmpty()) {
-        EmptyState("No connections", if (query.isNotEmpty() || blockedOnly) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
+        EmptyState("No connections", if (query.isNotEmpty() || blockedOnly || path != PathFilter.ALL) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
         return
     }
     val label = rememberAppLabels(vm, flows.map { it.pkg }.distinct())
@@ -118,7 +131,7 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
                 )
             }
             Text(
-                "$appLabel · ${formatTime(f.ts)}",
+                listOfNotNull(appLabel, formatTime(f.ts), AsnDatabase.label(f.asn, f.asnName)).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -128,6 +141,7 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
                 if (f.isBlocked) BlockedTag()
                 Tag((f.appProto ?: f.proto).uppercase())
                 if (f.dstPort != 443 && f.dstPort != 80) Tag(":${f.dstPort}")
+                if (PathLabels.isTunnelled(f.via)) PathLabels.via(f.via)?.let { Tag(it, VigilColors.Info, filled = true) }
                 if (f.background == true) Tag("background", VigilColors.Low, filled = true)
                 f.tagList.forEach { t ->
                     when (t) {
@@ -202,6 +216,10 @@ fun DnsRow(d: DnsEntity, appLabel: String) {
         Column(horizontalAlignment = Alignment.End) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (d.isBlocked) BlockedTag()
+                when (d.upstream) {
+                    "doh", "dot" -> Tag(PathLabels.dnsUpstream(d.upstream)!!, VigilColors.Allow, filled = true)
+                    "tcp" -> Tag("TCP")
+                }
                 Tag(d.qtype)
             }
             if (d.server != "virtual") Text("→ ${d.server}", style = MaterialTheme.typography.labelSmall, color = VigilColors.Medium)

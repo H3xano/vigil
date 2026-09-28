@@ -48,6 +48,10 @@ data class Settings(
     /** "low", "normal" or "high" sensitivity. */
     val beaconSensitivity: String = "normal",
     val noveltyAlerts: Boolean = false,
+    /** Alert when an app contacts an autonomous system (network) it never used before (needs the ASN database). */
+    val newAsnAlerts: Boolean = false,
+    /** Days after vigil first records an app's networks before new-network alerts start. */
+    val asnLearningDays: Int = 7,
     val notifyAlerts: Boolean = true,
     val retentionDays: Int = 7,
     val export: ExportSettings = ExportSettings(),
