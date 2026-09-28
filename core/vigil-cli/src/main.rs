@@ -20,11 +20,13 @@ const USAGE: &str = "\
 usage:
   vigil-cli run (--tun NAME | --fd-socket PATH) [options]
       --config FILE          engine configuration (JSON; missing fields use defaults)
-      --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom)
+      --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom|ja4)
       --upstream IP:PORT     upstream resolver (repeatable; overrides config)
       --no-stats             suppress periodic stats events
   vigil-cli parse-feed FILE   parse a blocklist and print a summary
   vigil-cli quic-probe IP:PORT SNI   send one QUIC Initial carrying SNI
+  vigil-cli ja4 FILE          print the JA4 of a captured TLS ClientHello (raw TLS records)
+  vigil-cli ja4 --quic-probe  print the JA4 of the ClientHello sent by quic-probe
   vigil-cli default-config    print the default configuration
 ";
 
@@ -40,6 +42,7 @@ fn main() {
         Some("run") => run(&args[1..]),
         Some("parse-feed") => parse_feed(&args[1..]),
         Some("quic-probe") => quic_probe(&args[1..]),
+        Some("ja4") => ja4(&args[1..]),
         Some("default-config") => {
             println!(
                 "{}",
@@ -221,11 +224,34 @@ fn parse_feed(args: &[String]) -> io::Result<()> {
         serde_json::json!({
             "domains": feed.domains.len(),
             "ip_ranges": feed.ips.len(),
+            "ja4": feed.ja4.len(),
             "rejected_lines": feed.rejected,
-            "memory_bytes": feed.domains.memory_bytes(),
+            "memory_bytes": feed.memory_bytes(),
             "parse_ms": started.elapsed().as_millis() as u64,
         })
     );
+    Ok(())
+}
+
+fn quic_probe_hello(sni: &str) -> Vec<u8> {
+    tls::build_client_hello(Some(sni), &["h3"], 0)
+}
+
+fn ja4(args: &[String]) -> io::Result<()> {
+    let invalid = |m: &str| io::Error::new(io::ErrorKind::InvalidInput, m.to_string());
+    let arg = args.first().ok_or_else(|| invalid(USAGE))?;
+    let ja4 = if arg == "--quic-probe" {
+        match tls::parse_handshake(&quic_probe_hello("probe.example")) {
+            tls::Sniff::Found(ch) => ch.ja4('q'),
+            _ => return Err(invalid("probe hello does not parse")),
+        }
+    } else {
+        match tls::parse_records(&std::fs::read(arg)?) {
+            tls::Sniff::Found(ch) => ch.ja4('t'),
+            _ => return Err(invalid("no complete TLS ClientHello in the file")),
+        }
+    };
+    println!("{ja4}");
     Ok(())
 }
 
@@ -236,7 +262,7 @@ fn quic_probe(args: &[String]) -> io::Result<()> {
     let dst: SocketAddr = dst
         .parse()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let hello = tls::build_client_hello(Some(sni), &["h3"], 0);
+    let hello = quic_probe_hello(sni);
     let dcid: [u8; 8] =
         std::array::from_fn(|i| (std::process::id() as u8).wrapping_add(i as u8 * 31));
     let pkt = quic::seal_initial(quic::VERSION_1, &dcid, 0, &[(0, &hello)]);

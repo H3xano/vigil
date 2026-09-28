@@ -311,7 +311,9 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStats<'
 }
 
 /// Parses a feed file without an engine (validates downloads). Returns a JSON
-/// summary `{domains, ip_ranges, rejected_lines}` or null.
+/// summary `{domains, ip_ranges, ja4, rejected_lines}` or null. Domains, IP
+/// ranges and JA4 fingerprints are all recognised (the file's category is
+/// not known here).
 #[no_mangle]
 pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeInspectFeedFile<'l>(
     mut env: JNIEnv<'l>,
@@ -326,6 +328,7 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeInspect
             serde_json::json!({
                 "domains": feed.domains.len(),
                 "ip_ranges": feed.ips.len(),
+                "ja4": feed.ja4.len(),
                 "rejected_lines": feed.rejected,
             })
             .to_string(),

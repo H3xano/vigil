@@ -1,6 +1,6 @@
 //! UDP: per-flow NAT over protected sockets, with QUIC SNI extraction.
 
-use super::tcp::{decide_named, emit_closed_flow, mark_blocked, observe_allowed};
+use super::tcp::{check_ja4, decide_named, emit_closed_flow, mark_blocked, observe_allowed};
 use super::{dns, sock, FlowCounters, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, FlowEvent, Verdict};
 use crate::intel::is_special;
@@ -218,8 +218,9 @@ async fn flow(
             decision = Decision::Block(Policy::encrypted_dns_block());
         }
     }
+    let ja4_block = check_ja4(shared, &mut ev);
     if decision == Decision::Allow {
-        if let Some(r) = decide_named(shared, &mut ev) {
+        if let Some(r) = decide_named(shared, &mut ev).or(ja4_block) {
             decision = Decision::Block(r);
         }
     }

@@ -2,7 +2,7 @@
 //! lists and encrypted-DNS handling.
 
 use crate::config::Config;
-use crate::intel::{nat64_embedded, DomainSet, Feed};
+use crate::intel::{nat64_embedded, DomainSet, Feed, FeedKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -18,6 +18,9 @@ pub enum FeedCategory {
     Phishing,
     C2,
     Custom,
+    /// JA4 fingerprints only (see [`crate::intel::FeedKind::Ja4`]). Matches
+    /// raise `threat_ja4` alerts; they block only with `block_ja4_matches`.
+    Ja4,
 }
 
 impl FeedCategory {
@@ -37,8 +40,28 @@ impl FeedCategory {
             FeedCategory::Phishing => "phishing",
             FeedCategory::C2 => "c2",
             FeedCategory::Custom => "custom",
+            FeedCategory::Ja4 => "ja4",
         }
     }
+
+    /// What a feed of this category may contain.
+    pub fn feed_kind(self) -> FeedKind {
+        match self {
+            FeedCategory::Ja4 => FeedKind::Ja4,
+            _ => FeedKind::Mixed,
+        }
+    }
+}
+
+/// A flow's JA4 fingerprint matched a feed entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Ja4Match {
+    /// Id of the feed that lists the fingerprint.
+    pub feed: String,
+    /// The listed entry (the fingerprint, or `a_b_*` for a wildcard entry).
+    pub rule: String,
+    /// The feed's label for the entry, e.g. a malware family.
+    pub label: Option<String>,
 }
 
 pub struct LoadedFeed {
@@ -141,6 +164,8 @@ pub struct Policy {
     doh: DomainSet,
     nat64: Vec<Ipv6Addr>,
     pub block_encrypted_dns: bool,
+    /// Block connections whose JA4 fingerprint is listed (otherwise alert only).
+    pub block_ja4: bool,
 }
 
 impl Policy {
@@ -153,6 +178,7 @@ impl Policy {
             doh: DomainSet::from_names(DOH_HOSTS),
             nat64: Vec::new(),
             block_encrypted_dns: false,
+            block_ja4: false,
         };
         p.apply_config(cfg);
         p
@@ -163,6 +189,7 @@ impl Policy {
         self.allow = DomainSet::from_names(&cfg.allow_domains);
         self.deny = DomainSet::from_names(&cfg.deny_domains);
         self.block_encrypted_dns = cfg.block_encrypted_dns;
+        self.block_ja4 = cfg.block_ja4_matches;
         self.nat64 = cfg.nat64_prefixes();
     }
 
@@ -251,6 +278,42 @@ impl Policy {
         match hit {
             Some(r) => Decision::Block(r),
             None => Decision::Allow,
+        }
+    }
+
+    /// Whether `domain` is on the user allowlist.
+    pub fn is_allowlisted(&self, domain: &str) -> bool {
+        self.allow.match_suffix(domain).is_some()
+    }
+
+    /// Looks up a JA4 fingerprint in every loaded feed. Labelled entries win
+    /// over unlabelled ones; otherwise feeds are searched in id order.
+    pub fn match_ja4(&self, ja4: &str) -> Option<Ja4Match> {
+        let mut found: Option<Ja4Match> = None;
+        for (id, lf) in &self.feeds {
+            let Some(hit) = lf.feed.ja4.lookup(ja4) else {
+                continue;
+            };
+            let m = Ja4Match {
+                feed: id.clone(),
+                rule: hit.rule.to_string(),
+                label: hit.label.map(str::to_string),
+            };
+            if m.label.is_some() {
+                return Some(m);
+            }
+            found.get_or_insert(m);
+        }
+        found
+    }
+
+    /// Block reason for a listed JA4 fingerprint (`block_ja4_matches`).
+    pub fn ja4_block(m: &Ja4Match) -> BlockReason {
+        BlockReason {
+            code: format!("ja4:{}", m.feed),
+            rule: Some(m.rule.clone()),
+            category: Some(FeedCategory::Ja4),
+            ip_match: false,
         }
     }
 
@@ -351,6 +414,53 @@ mod tests {
             p.check_ip(Some(1), "2001:db8::1".parse().unwrap()),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn ja4_matching() {
+        let mut p = policy();
+        assert_eq!(p.match_ja4("t13d190900_9dc949149365_97f8aa674fd9"), None);
+        let text = "t13d190900_9dc949149365_97f8aa674fd9\nq13d0312h3_55b375c5d22e_*\n";
+        p.set_feed(
+            "a-unlabelled",
+            LoadedFeed {
+                category: FeedCategory::Ja4,
+                feed: parse_feed(text),
+            },
+        );
+        p.set_feed(
+            "b-labelled",
+            LoadedFeed {
+                category: FeedCategory::C2,
+                feed: parse_feed("t13d190900_9dc949149365_97f8aa674fd9 Sliver\n"),
+            },
+        );
+        let m = p.match_ja4("t13d190900_9dc949149365_97f8aa674fd9").unwrap();
+        assert_eq!(m.feed, "b-labelled");
+        assert_eq!(m.label.as_deref(), Some("Sliver"));
+        let q = p.match_ja4("q13d0312h3_55b375c5d22e_06cda9e17597").unwrap();
+        assert_eq!(
+            (q.feed.as_str(), q.rule.as_str()),
+            ("a-unlabelled", "q13d0312h3_55b375c5d22e_*")
+        );
+        assert_eq!(q.label, None);
+        let r = Policy::ja4_block(&q);
+        assert_eq!(r.describe(), "ja4:a-unlabelled (q13d0312h3_55b375c5d22e_*)");
+        assert!(!r.is_threat(), "the JA4 alert is raised separately");
+        // JA4 entries never block by name or address.
+        assert_eq!(p.check_domain(Some(1), "news.example"), Decision::Allow);
+        assert!(!p.block_ja4);
+        p.apply_config(&Config {
+            block_ja4_matches: true,
+            allow_domains: vec!["trusted.example".into()],
+            ..Default::default()
+        });
+        assert!(p.block_ja4);
+        assert!(p.is_allowlisted("api.trusted.example"));
+        assert!(!p.is_allowlisted("news.example"));
+        assert_eq!(FeedCategory::Ja4.feed_kind(), FeedKind::Ja4);
+        let cat: FeedCategory = serde_json::from_str("\"ja4\"").unwrap();
+        assert_eq!(cat, FeedCategory::Ja4);
     }
 
     #[test]

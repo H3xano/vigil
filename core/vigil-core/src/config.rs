@@ -20,6 +20,10 @@ pub struct Config {
     /// Block DNS-over-TLS (port 853) and well-known DNS-over-HTTPS endpoints
     /// so that apps fall back to plain DNS, which vigil can inspect.
     pub block_encrypted_dns: bool,
+    /// Reset connections whose JA4 fingerprint is on a JA4 feed. Off by
+    /// default: benign clients can share a fingerprint with malware (JA4
+    /// identifies the TLS library, not the program), so matches only alert.
+    pub block_ja4_matches: bool,
     /// Linux UIDs whose traffic is blocked entirely.
     pub blocked_uids: Vec<u32>,
     /// User allowlist; overrides feeds and the custom denylist.
@@ -96,6 +100,7 @@ impl Default for Config {
             sinkhole: SinkholeMode::NullIp,
             sinkhole_ttl: 60,
             block_encrypted_dns: false,
+            block_ja4_matches: false,
             blocked_uids: Vec::new(),
             allow_domains: Vec::new(),
             deny_domains: Vec::new(),

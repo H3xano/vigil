@@ -25,7 +25,7 @@ use crate::event::{
     now_ms, AlertEvent, EngineEvent, Event, EventQueue, FlowEndEvent, FlowEvent, FlowUpdateEvent,
     Severity, StatsEvent,
 };
-use crate::intel::{parse_feed, parse_feed_reader};
+use crate::intel::parse_feed_reader_kind;
 use crate::packet::{self, PROTO_TCP, PROTO_UDP};
 use crate::platform::Platform;
 use crate::policy::{FeedCategory, LoadedFeed, Policy};
@@ -341,6 +341,8 @@ pub struct FeedSummary {
     pub id: String,
     pub domains: usize,
     pub ip_ranges: usize,
+    /// JA4 fingerprints (exact and wildcard entries).
+    pub ja4: usize,
     pub rejected_lines: usize,
     pub memory_bytes: usize,
 }
@@ -410,7 +412,9 @@ impl Engine {
     /// Parses and installs (or replaces) a feed. CPU-heavy for large lists;
     /// call from a background thread.
     pub fn load_feed(&self, id: &str, category: FeedCategory, text: &str) -> FeedSummary {
-        install_feed(&self.shared.policy, id, category, parse_feed(text))
+        let feed = parse_feed_reader_kind(text.as_bytes(), category.feed_kind())
+            .expect("reading from memory cannot fail");
+        install_feed(&self.shared.policy, id, category, feed)
     }
 
     /// Streams a feed from a file (bounded memory for multi-million entry lists).
@@ -425,7 +429,7 @@ impl Engine {
             &self.shared.policy,
             id,
             category,
-            parse_feed_reader(file)?,
+            parse_feed_reader_kind(file, category.feed_kind())?,
         ))
     }
 
@@ -486,8 +490,9 @@ fn install_feed(
         id: id.to_string(),
         domains: feed.domains.len(),
         ip_ranges: feed.ips.len(),
+        ja4: feed.ja4.len(),
         rejected_lines: feed.rejected,
-        memory_bytes: feed.domains.memory_bytes(),
+        memory_bytes: feed.memory_bytes(),
     };
     policy.write().set_feed(id, LoadedFeed { category, feed });
     summary

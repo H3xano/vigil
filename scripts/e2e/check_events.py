@@ -43,4 +43,12 @@ check("dns-tcp-hardcoded-inspected", any(d["server"].startswith("9.9.9.9") and d
 rst = [f for f in flows.values() if f["dst_port"] == 18765]
 check("upstream-reset-flow-reported", any("reset" in (ends.get(f["id"], {}).get("error") or "").lower() for f in rst), [(f["id"], ends.get(f["id"])) for f in rst])
 check("engine-stopped", any(e["type"] == "engine" and e["state"] == "stopped" for e in events))
+ja4_alerts = [a for a in alerts if a["kind"] == "threat_ja4"]
+check("ja4-alert", any(a["severity"] == "high" and a["detail"].get("label") == "curl TLS1.2 (e2e)" and a["detail"].get("feed") == "ja4-e2e" for a in ja4_alerts), ja4_alerts)
+check("ja4-quic-alert", any(a["detail"].get("label") == "vigil quic-probe (e2e)" for a in ja4_alerts), ja4_alerts)
+ja4_flows = [f for f in flows.values() if f.get("ja4_match")]
+check("ja4-block", any(f["domain"] == "example.com" and f["verdict"] == "block" and (f.get("reason") or "").startswith("ja4:ja4-e2e") and f["ja4"].startswith("t12") for f in ja4_flows), ja4_flows)
+check("ja4-allowlisted-flagged", any(f["domain"] == "example.org" and f["verdict"] == "allow" and f["ja4_match"]["label"] == "curl TLS1.2 (e2e)" for f in ja4_flows), ja4_flows)
+check("ja4-quic-match", any(f["domain"] == "www.cloudflare.com" and f["app_proto"] == "quic" and f["verdict"] == "allow" for f in ja4_flows), ja4_flows)
+check("ja4-default-curl-unmatched", any(f["domain"] == "example.com" and f["verdict"] == "allow" and f.get("domain_source") == "sni" and not f.get("ja4_match") for f in flows.values()))
 check("connect-error-reported",any(ends.get(i, {}).get("error", "") and "connect" in ends[i]["error"] for i in flows))

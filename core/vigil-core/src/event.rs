@@ -55,6 +55,8 @@ pub struct FlowEvent {
     pub alpn: Option<String>,
     pub tls_version: Option<&'static str>,
     pub ja4: Option<String>,
+    /// The JA4 fingerprint is listed by a JA4 feed.
+    pub ja4_match: Option<crate::policy::Ja4Match>,
     /// Real Encrypted Client Hello in use: `domain` is only the provider's
     /// public name. (GREASE ECH, sent by browsers on every handshake, is not
     /// reported.)
@@ -113,7 +115,8 @@ pub enum Severity {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AlertEvent {
     pub ts: u64,
-    /// "beacon", "threat_domain", "threat_ip", "encrypted_dns", "hardcoded_dns".
+    /// "beacon", "threat_domain", "threat_ip", "threat_ja4", "encrypted_dns",
+    /// "hardcoded_dns".
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Option<u32>,

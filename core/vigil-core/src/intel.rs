@@ -7,6 +7,8 @@
 //!   ("is `a.b.tracker.com` covered by `tracker.com`?") with one binary search
 //!   per label.
 //! * [`IpSet`] stores merged, sorted IPv4/IPv6 ranges.
+//! * [`Ja4Set`] stores JA4 TLS client fingerprints (fixed-size keys in a
+//!   sorted array) with optional labels, for threat matching.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -225,19 +227,235 @@ impl IpSet {
     }
 }
 
-/// A parsed feed: domains and IP ranges.
+/// Length of a JA4 fingerprint: `a` (10) `_` `b` (12) `_` `c` (12).
+pub const JA4_LEN: usize = 36;
+/// Length of the `a_b` prefix of a JA4 fingerprint.
+const JA4_AB_LEN: usize = 23;
+const NO_LABEL: u32 = u32::MAX;
+/// Labels longer than this are cut (at a character boundary).
+const MAX_LABEL: usize = 80;
+
+/// A validated JA4 feed entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ja4Pattern {
+    /// A complete fingerprint (normalised).
+    Exact([u8; JA4_LEN]),
+    /// `a_b_*`: any `c` section (any extension / signature-algorithm set).
+    AnyC([u8; JA4_AB_LEN]),
+}
+
+fn is_hex_lower(b: &[u8]) -> bool {
+    b.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Validates and normalises a JA4 TLS client fingerprint (FoxIO
+/// specification): `a_b_c` where
+/// * `a` is 10 characters: protocol (`t` TCP, `q` QUIC, `d` DTLS), TLS
+///   version (`13`, `12`, `11`, `10`, `s3`, `s2`, `d1`, `d2`, `d3`, `00`),
+///   SNI (`d` domain, `i` IP / none), two-digit cipher count, two-digit
+///   extension count and the two ALPN characters;
+/// * `b` and `c` are 12 lowercase hex digits (truncated SHA-256).
+///
+/// `a` (except the ALPN characters, which are case-sensitive) and the hashes
+/// are lower-cased. With `a_b_*` the `c` section is a wildcard. Raw
+/// (`ja4_r`) and original-order (`ja4_o`) forms are not accepted.
+pub fn parse_ja4(s: &str) -> Option<Ja4Pattern> {
+    let b = s.as_bytes();
+    let wildcard = b.len() == JA4_AB_LEN + 2 && b.ends_with(b"_*");
+    if !(b.len() == JA4_LEN || wildcard) || b[10] != b'_' || b[JA4_AB_LEN] != b'_' {
+        return None;
+    }
+    let mut out = [0u8; JA4_LEN];
+    let n = if wildcard { JA4_AB_LEN } else { JA4_LEN };
+    out[..n].copy_from_slice(&b[..n]);
+    // Everything but the ALPN characters (a[8..10]) is case-insensitive.
+    out[..8].make_ascii_lowercase();
+    out[11..n].make_ascii_lowercase();
+    let a = &out[..10];
+    let version_ok = matches!(
+        &a[1..3],
+        b"13" | b"12" | b"11" | b"10" | b"s3" | b"s2" | b"d1" | b"d2" | b"d3" | b"00"
+    );
+    let ok = matches!(a[0], b't' | b'q' | b'd')
+        && version_ok
+        && matches!(a[3], b'd' | b'i')
+        && a[4..8].iter().all(u8::is_ascii_digit)
+        && a[8..10].iter().all(u8::is_ascii_alphanumeric)
+        && is_hex_lower(&out[11..JA4_AB_LEN])
+        && (wildcard || is_hex_lower(&out[JA4_AB_LEN + 1..]));
+    if !ok {
+        return None;
+    }
+    Some(if wildcard {
+        let mut ab = [0u8; JA4_AB_LEN];
+        ab.copy_from_slice(&out[..JA4_AB_LEN]);
+        Ja4Pattern::AnyC(ab)
+    } else {
+        Ja4Pattern::Exact(out)
+    })
+}
+
+/// If `raw` is a JA4 feed line (`<ja4>[ separator label]`), returns the
+/// pattern and the label. Separators: whitespace, `#`, `,`, `;`, `|`.
+pub fn parse_ja4_line(raw: &str) -> Option<(Ja4Pattern, Option<&str>)> {
+    let line = raw.trim();
+    // Cheap pre-check: most lines of large domain feeds end here.
+    if line.len() < JA4_AB_LEN + 2 || line.as_bytes()[10] != b'_' {
+        return None;
+    }
+    let is_sep = |c: char| c.is_whitespace() || matches!(c, '#' | ',' | ';' | '|');
+    let (token, rest) = match line.find(is_sep) {
+        Some(i) => line.split_at(i),
+        None => (line, ""),
+    };
+    let pattern = parse_ja4(token)?;
+    let label = rest.trim_matches(|c: char| is_sep(c) || c == '"');
+    let label = (!label.is_empty()).then(|| {
+        let mut end = label.len().min(MAX_LABEL);
+        while !label.is_char_boundary(end) {
+            end -= 1;
+        }
+        label[..end].trim_end()
+    });
+    Some((pattern, label))
+}
+
+/// A JA4 feed hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ja4Hit<'a> {
+    /// The listed entry: the fingerprint, or `a_b_*` for a wildcard entry.
+    pub rule: &'a str,
+    pub label: Option<&'a str>,
+}
+
+/// JA4 fingerprints with optional labels: exact entries and `a_b_*`
+/// wildcard entries, each a sorted array of fixed-size keys (≈ 40 bytes per
+/// entry plus the distinct labels).
+#[derive(Default, Debug, Clone)]
+pub struct Ja4Set {
+    exact: Vec<([u8; JA4_LEN], u32)>,
+    any_c: Vec<([u8; JA4_AB_LEN + 2], u32)>,
+    labels: Vec<Box<str>>,
+}
+
+impl Ja4Set {
+    pub fn len(&self) -> usize {
+        self.exact.len() + self.any_c.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn hit<'a>(&'a self, key: &'a [u8], label: u32) -> Ja4Hit<'a> {
+        Ja4Hit {
+            // Keys are validated ASCII.
+            rule: std::str::from_utf8(key).unwrap_or_default(),
+            label: (label != NO_LABEL).then(|| &*self.labels[label as usize]),
+        }
+    }
+
+    /// Looks up an observed fingerprint (as computed by the engine, i.e.
+    /// already normalised). Exact entries win over wildcards.
+    pub fn lookup(&self, ja4: &str) -> Option<Ja4Hit<'_>> {
+        let b = ja4.as_bytes();
+        if b.len() != JA4_LEN {
+            return None;
+        }
+        if let Ok(i) = self.exact.binary_search_by(|(k, _)| k[..].cmp(b)) {
+            let (k, l) = &self.exact[i];
+            return Some(self.hit(k, *l));
+        }
+        let ab = &b[..JA4_AB_LEN];
+        let i = self
+            .any_c
+            .binary_search_by(|(k, _)| k[..JA4_AB_LEN].cmp(ab))
+            .ok()?;
+        let (k, l) = &self.any_c[i];
+        Some(self.hit(k, *l))
+    }
+
+    pub fn memory_bytes(&self) -> usize {
+        self.exact.capacity() * std::mem::size_of::<([u8; JA4_LEN], u32)>()
+            + self.any_c.capacity() * std::mem::size_of::<([u8; JA4_AB_LEN + 2], u32)>()
+            + self.labels.iter().map(|l| l.len() + 16).sum::<usize>()
+    }
+}
+
+/// Builds a [`Ja4Set`]; each distinct label is stored once.
+#[derive(Default)]
+pub struct Ja4SetBuilder {
+    set: Ja4Set,
+    label_ids: std::collections::HashMap<Box<str>, u32>,
+}
+
+impl Ja4SetBuilder {
+    pub fn push(&mut self, pattern: Ja4Pattern, label: Option<&str>) {
+        let l = match label {
+            None => NO_LABEL,
+            Some(l) => match self.label_ids.get(l) {
+                Some(i) => *i,
+                None => {
+                    let i = self.set.labels.len() as u32;
+                    self.set.labels.push(l.into());
+                    self.label_ids.insert(l.into(), i);
+                    i
+                }
+            },
+        };
+        match pattern {
+            Ja4Pattern::Exact(k) => self.set.exact.push((k, l)),
+            Ja4Pattern::AnyC(ab) => {
+                let mut k = [0u8; JA4_AB_LEN + 2];
+                k[..JA4_AB_LEN].copy_from_slice(&ab);
+                k[JA4_AB_LEN..].copy_from_slice(b"_*");
+                self.set.any_c.push((k, l));
+            }
+        }
+    }
+
+    pub fn build(self) -> Ja4Set {
+        let mut s = self.set;
+        // Stable sort + dedup keeps the first label seen for a fingerprint.
+        s.exact.sort_by_key(|a| a.0);
+        s.exact.dedup_by(|a, b| a.0 == b.0);
+        s.exact.shrink_to_fit();
+        s.any_c.sort_by_key(|a| a.0);
+        s.any_c.dedup_by(|a, b| a.0 == b.0);
+        s.any_c.shrink_to_fit();
+        s.labels.shrink_to_fit();
+        s
+    }
+}
+
+/// A parsed feed: domains, IP ranges and JA4 fingerprints.
 #[derive(Default, Debug, Clone)]
 pub struct Feed {
     pub domains: DomainSet,
     pub ips: IpSet,
+    pub ja4: Ja4Set,
     /// Lines that could not be interpreted.
     pub rejected: usize,
 }
 
 impl Feed {
     pub fn is_empty(&self) -> bool {
-        self.domains.is_empty() && self.ips.is_empty()
+        self.domains.is_empty() && self.ips.is_empty() && self.ja4.is_empty()
     }
+
+    pub fn memory_bytes(&self) -> usize {
+        self.domains.memory_bytes() + self.ja4.memory_bytes()
+    }
+}
+
+/// What a feed may contain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FeedKind {
+    /// Domains, IP ranges and JA4 fingerprints, recognised per line.
+    #[default]
+    Mixed,
+    /// JA4 fingerprints only; any other non-comment line is rejected.
+    Ja4,
 }
 
 fn is_sink_address(s: &str) -> bool {
@@ -250,6 +468,8 @@ fn is_sink_address(s: &str) -> bool {
 ///   paths, modifiers other than `$important`/`$all`, or exceptions are skipped)
 /// * plain domain lists: `tracker.example.com`, wildcard `*.example.com`
 /// * IP / CIDR lists (abuse.ch, Spamhaus DROP, FireHOL): `192.0.2.0/24 ; comment`
+/// * JA4 fingerprints with an optional label:
+///   `t13d190900_9dc949149365_97f8aa674fd9  Sliver` (see [`parse_ja4_line`])
 ///
 /// Comments start with `#`, `!` or `;`.
 pub fn parse_feed(text: &str) -> Feed {
@@ -258,9 +478,20 @@ pub fn parse_feed(text: &str) -> Feed {
 
 /// Streams a feed from a reader line by line, so the file never has to be
 /// held in memory in full. Invalid UTF-8 is replaced, not fatal.
-pub fn parse_feed_reader<R: std::io::BufRead>(mut r: R) -> std::io::Result<Feed> {
+pub fn parse_feed_reader<R: std::io::BufRead>(r: R) -> std::io::Result<Feed> {
+    parse_feed_reader_kind(r, FeedKind::Mixed)
+}
+
+/// Like [`parse_feed_reader`], restricted to the entries of `kind`.
+pub fn parse_feed_reader_kind<R: std::io::BufRead>(
+    mut r: R,
+    kind: FeedKind,
+) -> std::io::Result<Feed> {
     let mut buf = Vec::with_capacity(256);
-    let mut builder = FeedBuilder::default();
+    let mut builder = FeedBuilder {
+        kind,
+        ..Default::default()
+    };
     loop {
         buf.clear();
         if r.read_until(b'\n', &mut buf)? == 0 {
@@ -282,8 +513,10 @@ pub fn parse_feed_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Feed {
 
 #[derive(Default)]
 struct FeedBuilder {
+    kind: FeedKind,
     domains: DomainSetBuilder,
     ranges: Vec<IpRange>,
+    ja4: Ja4SetBuilder,
     rejected: usize,
 }
 
@@ -292,12 +525,27 @@ impl FeedBuilder {
         Feed {
             domains: self.domains.build(),
             ips: IpSet::from_ranges(self.ranges),
+            ja4: self.ja4.build(),
             rejected: self.rejected,
         }
     }
 
     fn line(&mut self, raw: &str) {
-        parse_line(raw, &mut self.domains, &mut self.ranges, &mut self.rejected);
+        if let Some((pattern, label)) = parse_ja4_line(raw) {
+            self.ja4.push(pattern, label);
+            return;
+        }
+        match self.kind {
+            FeedKind::Mixed => {
+                parse_line(raw, &mut self.domains, &mut self.ranges, &mut self.rejected)
+            }
+            FeedKind::Ja4 => {
+                let t = raw.trim();
+                if !(t.is_empty() || t.starts_with(['#', '!', ';']) || t.starts_with("//")) {
+                    self.rejected += 1;
+                }
+            }
+        }
     }
 }
 
@@ -499,5 +747,106 @@ not_a_domain
         assert_eq!(streamed.domains.len(), f.domains.len());
         assert_eq!(streamed.ips.len(), f.ips.len());
         assert_eq!(streamed.rejected, f.rejected);
+    }
+
+    const SLIVER: &str = "t13d190900_9dc949149365_97f8aa674fd9";
+
+    #[test]
+    fn ja4_grammar() {
+        assert!(matches!(parse_ja4(SLIVER), Some(Ja4Pattern::Exact(_))));
+        for ok in [
+            "q13d0312h3_55b375c5d22e_06cda9e17597",
+            "t12i210700_76e208dd3e22_16bbda4055b2",
+            "d13d1516h2_8daaf6152771_02713d6af862",
+            "t00i000000_000000000000_000000000000",
+            "ts3i0203c9_aaaaaaaaaaaa_bbbbbbbbbbbb",
+        ] {
+            assert!(parse_ja4(ok).is_some(), "{ok}");
+        }
+        // Upper case is normalised, except the ALPN characters.
+        let Some(Ja4Pattern::Exact(k)) = parse_ja4("T13D1516H2_8DAAF6152771_02713D6AF862") else {
+            panic!()
+        };
+        assert_eq!(&k[..], b"t13d1516H2_8daaf6152771_02713d6af862");
+        assert_eq!(
+            parse_ja4("t13d1516h2_8daaf6152771_*"),
+            Some(Ja4Pattern::AnyC(*b"t13d1516h2_8daaf6152771"))
+        );
+        for bad in [
+            "",
+            "t13d190900_9dc949149365",
+            "t13d190900_9dc949149365_97f8aa674fd",
+            "t13d190900_9dc949149365_97f8aa674fd9x",
+            "x13d190900_9dc949149365_97f8aa674fd9", // protocol
+            "t14d190900_9dc949149365_97f8aa674fd9", // version
+            "t13x190900_9dc949149365_97f8aa674fd9", // SNI flag
+            "t13d1a0900_9dc949149365_97f8aa674fd9", // counts
+            "t13d1909-0_9dc949149365_97f8aa674fd9", // ALPN
+            "t13d190900_9dc94914936g_97f8aa674fd9", // hex
+            "t13d190900-9dc949149365-97f8aa674fd9",
+            "t13d190900_*_97f8aa674fd9",
+            "*_9dc949149365_97f8aa674fd9",
+            "t13d190900_9dc949149365_97f8aa*",
+            "t13d190900_9dc949149365_97f8aa674fd9_extra",
+            "t13d190900_002f,0035_0005,000a_0403", // ja4_r
+            "t13d190900_9dc949149365_97f8aa674f€",
+        ] {
+            assert!(parse_ja4(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ja4_lines_and_labels() {
+        let line = format!("  {SLIVER}   Sliver agent  ");
+        let (p, l) = parse_ja4_line(&line).unwrap();
+        assert_eq!(p, parse_ja4(SLIVER).unwrap());
+        assert_eq!(l, Some("Sliver agent"));
+        for sep in ["#", " # ", ",", ";", "|", "\t", ",\""] {
+            let line = format!("{SLIVER}{sep}Sliver\"");
+            assert_eq!(parse_ja4_line(&line).unwrap().1, Some("Sliver"), "{line:?}");
+        }
+        assert_eq!(parse_ja4_line(SLIVER).unwrap().1, None);
+        assert_eq!(parse_ja4_line(&format!("{SLIVER} #")).unwrap().1, None);
+        let long = format!("{SLIVER} {}", "é".repeat(100));
+        assert!(parse_ja4_line(&long).unwrap().1.unwrap().len() <= MAX_LABEL);
+        assert!(parse_ja4_line(&format!("# {SLIVER}")).is_none());
+        assert!(parse_ja4_line("example.com").is_none());
+        assert!(parse_ja4_line("0.0.0.0 tracker.example.com").is_none());
+        assert!(parse_ja4_line("0.0.0.0 tracker-with-long-name.example.com").is_none());
+    }
+
+    #[test]
+    fn ja4_feed_parsing_and_matching() {
+        let text = format!(
+            "# JA4 feed\n{SLIVER}  Sliver\n{up}\n\
+             t12i210700_76e208dd3e22_16bbda4055b2 # Cobalt Strike\n\
+             {SLIVER} duplicate keeps the first label\n\
+             q13d0312h3_55b375c5d22e_*  QUIC wildcard\n\
+             evil.example\n203.0.113.0/24\nnot a fingerprint\n\n! comment\n",
+            up = SLIVER.to_uppercase()
+        );
+        let mixed = parse_feed(&text);
+        assert_eq!(mixed.ja4.len(), 3);
+        assert_eq!(mixed.domains.len(), 1);
+        assert_eq!(mixed.ips.len(), 1);
+        assert_eq!(mixed.rejected, 1);
+        let strict =
+            parse_feed_reader_kind(std::io::Cursor::new(text.as_bytes()), FeedKind::Ja4).unwrap();
+        assert_eq!(strict.ja4.len(), 3);
+        assert!(strict.domains.is_empty() && strict.ips.is_empty());
+        assert_eq!(strict.rejected, 3);
+        let set = &strict.ja4;
+        let hit = set.lookup(SLIVER).unwrap();
+        assert_eq!(hit.rule, SLIVER);
+        assert_eq!(hit.label, Some("Sliver"));
+        let cs = set.lookup("t12i210700_76e208dd3e22_16bbda4055b2").unwrap();
+        assert_eq!(cs.label, Some("Cobalt Strike"));
+        let q = set.lookup("q13d0312h3_55b375c5d22e_0123456789ab").unwrap();
+        assert_eq!(q.rule, "q13d0312h3_55b375c5d22e_*");
+        assert_eq!(q.label, Some("QUIC wildcard"));
+        assert!(set.lookup("t13d0312h3_55b375c5d22e_0123456789ab").is_none());
+        assert!(set.lookup("t13d190900_9dc949149365_97f8aa674fd8").is_none());
+        assert!(set.lookup("short").is_none());
+        assert!(set.memory_bytes() > 0);
     }
 }
