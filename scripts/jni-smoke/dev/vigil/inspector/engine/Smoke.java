@@ -49,6 +49,12 @@ public final class Smoke {
         check("config-update", VigilNative.nativeUpdateConfig(h, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"],\"sinkhole\":\"nxdomain\"}"));
         String summary = VigilNative.nativeLoadFeedFile(h, "smoke", "malware", feed.toString());
         check("load-feed", summary != null && summary.contains("\"ip_ranges\":1"));
+        Path ja4 = Files.createTempFile("ja4", ".txt");
+        Files.writeString(ja4, "# JA4\nt13d190900_9dc949149365_97f8aa674fd9  Sliver\nq13d0312h3_55b375c5d22e_*\nnot-a-ja4.example\n");
+        check("inspect-ja4-feed", VigilNative.nativeInspectFeedFile(ja4.toString()).contains("\"ja4\":2"));
+        String ja4Summary = VigilNative.nativeLoadFeedFile(h, "smoke-ja4", "ja4", ja4.toString());
+        check("load-ja4-feed", ja4Summary != null && ja4Summary.contains("\"ja4\":2") && ja4Summary.contains("\"domains\":0")
+            && ja4Summary.contains("\"rejected_lines\":1") && VigilNative.nativeRemoveFeed(h, "smoke-ja4"));
         // Signal the namespace side to generate traffic, then collect events.
         Files.writeString(Path.of(args[2]), "ready");
         StringBuilder all = new StringBuilder();

@@ -24,7 +24,11 @@ Tracker. Each download is a plain HTTPS GET with the User-Agent
 IP address, the time and that you use vigil, but nothing about your traffic.
 Turn feeds off in Settings → Threat intelligence feeds to stop these
 downloads; custom feeds go to the URL you enter, with the Authorization
-header you configure.
+header you configure. TAXII 2.1 sources are polled with the same daily
+update: vigil sends GET requests (User-Agent `vigil/<version> (+TAXII
+poller)`, your credentials, and an `added_after` timestamp) to the API root
+you entered. JA4 fingerprints of your connections are matched on the device
+and never sent anywhere.
 
 SIEM export sends the records you select to the collector you configure.
 Use `https://` or syslog over TLS: over plain `http://`, UDP or TCP the

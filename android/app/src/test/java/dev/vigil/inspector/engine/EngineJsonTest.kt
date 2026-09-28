@@ -23,6 +23,24 @@ class EngineJsonTest {
     ]"""
 
     @Test
+    fun parsesJa4MatchAndFeedSummary() {
+        val flow = EngineJson.parseBatch(
+            """[{"type":"flow","id":2,"ts":2,"proto":"udp","uid":10200,"src":"10.111.222.1:5000","dst_ip":"192.0.2.9","dst_port":443,
+               "domain":"c2.example","domain_source":"quic","app_proto":"quic","alpn":"h3","tls_version":"TLS1.3",
+               "ja4":"q13d0205h3_62ed6f6ca7ad_e0b9a5db47b5","ja4_match":{"feed":"ja4-foxio","rule":"q13d0205h3_62ed6f6ca7ad_*","label":"Sliver"},
+               "ech":false,"http_method":null,"verdict":"block","reason":"ja4:ja4-foxio (q13d0205h3_62ed6f6ca7ad_*)","tags":[]},
+              {"type":"flow","id":3,"ts":2,"proto":"tcp","src":"s","dst_ip":"d","dst_port":1,"ja4_match":null,"tags":[]}]""",
+        )
+        val m = (flow[0] as FlowEvent).ja4Match!!
+        assertEquals(Ja4Match("ja4-foxio", "q13d0205h3_62ed6f6ca7ad_*", "Sliver"), m)
+        assertEquals(null, (flow[1] as FlowEvent).ja4Match)
+        val s = EngineJson.json.decodeFromString(FeedSummary.serializer(), """{"id":"x","domains":0,"ip_ranges":0,"ja4":7,"rejected_lines":1,"memory_bytes":400}""")
+        assertEquals(7, s.ja4)
+        val cfg = EngineConfig(upstreamDns = listOf("1.1.1.1:53"), blockJa4Matches = true).toJson()
+        assertTrue(cfg.contains("\"block_ja4_matches\":true"))
+    }
+
+    @Test
     fun parsesEveryEventTypeAndSkipsUnknown() {
         val events = EngineJson.parseBatch(batch)
         assertEquals(7, events.size)

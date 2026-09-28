@@ -445,6 +445,55 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
     }
 }
 
+/// Matches the flow's JA4 fingerprint against the loaded feeds. On a hit it
+/// records `ja4_match` on the event and raises a `threat_ja4` alert (one per
+/// fingerprint and app per hour). Returns a block reason when
+/// `block_ja4_matches` is on and the (SNI/QUIC/Host) name is not on the user
+/// allowlist. Called before any client byte is forwarded, so a block resets
+/// the connection before the handshake reaches the server.
+pub(crate) fn check_ja4(shared: &Shared, ev: &mut FlowEvent) -> Option<crate::policy::BlockReason> {
+    let ja4 = ev.ja4.as_deref()?;
+    let (m, block) = {
+        let policy = shared.policy.read();
+        let m = policy.match_ja4(ja4)?;
+        let authoritative = matches!(ev.domain_source, Some("sni" | "http" | "quic"));
+        let allowlisted = authoritative
+            && ev
+                .domain
+                .as_deref()
+                .is_some_and(|d| policy.is_allowlisted(d));
+        (m, policy.block_ja4 && !allowlisted)
+    };
+    let dst = format!("{}:{}", ev.dst_ip, ev.dst_port);
+    let target = ev.domain.clone().unwrap_or_else(|| dst.clone());
+    let what = m.label.as_deref().unwrap_or("a listed client");
+    shared.alert(
+        "threat_ja4",
+        Severity::High,
+        ev.uid,
+        ja4,
+        ja4,
+        format!(
+            "TLS fingerprint of {what} (JA4 {ja4}, feed {}) in a connection to {target}{}",
+            m.feed,
+            if block { "; blocked" } else { "" }
+        ),
+        serde_json::json!({
+            "ja4": ja4,
+            "rule": m.rule,
+            "label": m.label,
+            "feed": m.feed,
+            "dst": dst,
+            "domain": ev.domain,
+            "proto": ev.app_proto.unwrap_or(ev.proto),
+            "blocked": block,
+        }),
+    );
+    let reason = block.then(|| Policy::ja4_block(&m));
+    ev.ja4_match = Some(m);
+    reason
+}
+
 /// Why a relay ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelayEnd {
@@ -485,7 +534,8 @@ async fn relay(
             let mut buf = Vec::with_capacity(4096);
             let (sniffed, sniff_end) = sniff(&mut cr, &mut buf).await;
             apply_sniffed(&mut ev, &sniffed);
-            if let Some(reason) = decide_named(shared, &mut ev) {
+            let ja4_block = check_ja4(shared, &mut ev);
+            if let Some(reason) = decide_named(shared, &mut ev).or(ja4_block) {
                 mark_blocked(shared, &mut ev, &reason);
                 shared.open_flow(ev.clone(), &counters);
                 opened.store(true, Relaxed);
@@ -653,6 +703,77 @@ mod tests {
         assert!(shared.tcp_keys.lock().is_empty());
         assert_eq!(shared.limits.gate.available_permits(), 1);
         assert_eq!(shared.limits.tcp.available_permits(), 4096);
+    }
+
+    #[test]
+    fn ja4_matches_alert_and_optionally_block() {
+        use crate::event::Event;
+        use crate::intel::parse_feed;
+        use crate::policy::{FeedCategory, LoadedFeed};
+        const JA4: &str = "t13d190900_9dc949149365_97f8aa674fd9";
+        let (shared, _tun) = test_shared_with_tun(Config {
+            allow_domains: vec!["trusted.example".into()],
+            ..Default::default()
+        });
+        shared.policy.write().set_feed(
+            "ja4-test",
+            LoadedFeed {
+                category: FeedCategory::Ja4,
+                feed: parse_feed(&format!("{JA4}  Sliver\n")),
+            },
+        );
+        let flow = |ja4: &str, domain: &str| FlowEvent {
+            uid: Some(10200),
+            dst_ip: "192.0.2.7".into(),
+            dst_port: 443,
+            domain: Some(domain.into()),
+            domain_source: Some("sni"),
+            ja4: Some(ja4.into()),
+            ..Default::default()
+        };
+        let mut other = flow("t13d1516h2_8daaf6152771_02713d6af862", "c2.example");
+        assert!(check_ja4(&shared, &mut other).is_none());
+        assert!(other.ja4_match.is_none());
+
+        // Alert only by default; one alert per fingerprint and app.
+        let mut ev = flow(JA4, "c2.example");
+        assert!(check_ja4(&shared, &mut ev).is_none());
+        let m = ev.ja4_match.clone().unwrap();
+        assert_eq!(
+            (m.feed.as_str(), m.rule.as_str(), m.label.as_deref()),
+            ("ja4-test", JA4, Some("Sliver"))
+        );
+        assert!(check_ja4(&shared, &mut flow(JA4, "other.example")).is_none());
+        let alerts: Vec<_> = shared
+            .events
+            .poll(100, Duration::ZERO)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Alert(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(alerts.len(), 1, "{alerts:?}");
+        let a = &alerts[0];
+        assert_eq!(
+            (a.kind, a.severity, a.target.as_str()),
+            ("threat_ja4", Severity::High, JA4)
+        );
+        assert_eq!(a.detail["label"], "Sliver");
+        assert_eq!(a.detail["dst"], "192.0.2.7:443");
+        assert_eq!(a.detail["blocked"], false);
+        let json = serde_json::to_value(Event::Flow(ev)).unwrap();
+        assert_eq!(json["ja4_match"]["label"], "Sliver");
+        assert_eq!(json["ja4_match"]["feed"], "ja4-test");
+
+        // Block mode; the user allowlist still wins.
+        shared.policy.write().block_ja4 = true;
+        let mut ev = flow(JA4, "c2.example");
+        let reason = check_ja4(&shared, &mut ev).expect("blocked");
+        assert_eq!(reason.describe(), format!("ja4:ja4-test ({JA4})"));
+        let mut trusted = flow(JA4, "api.trusted.example");
+        assert!(check_ja4(&shared, &mut trusted).is_none());
+        assert!(trusted.ja4_match.is_some());
     }
 
     #[tokio::test]

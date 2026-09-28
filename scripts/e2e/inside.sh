@@ -44,5 +44,9 @@ check "quic-blocked-no-reply"  bash -c '"$0" quic-probe 1.1.1.1:443 quic-probe.v
 check "quic-allowed-reply"     bash -c '"$0" quic-probe 1.1.1.1:443 www.cloudflare.com | grep -q "^reply"' "$here/../../core/target/debug/vigil-cli"
 check "dns-attributed-raw-tcp" bash -c 'exec 3<>/dev/tcp/example.com/443; sleep 4; exec 3>&-'
 check "beacon-series"          bash -c 'for i in 1 2 3 4 5 6; do curl -s -o /dev/null --max-time 5 http://example.net/; sleep 2; done'
+# JA4 (see e2e-netns.sh): curl --tls-max 1.2 is on the JA4 feed in block
+# mode; example.org is allowlisted, so it is only flagged.
+check "ja4-block-resets"       neg curl -sS -o /dev/null --max-time 10 --tls-max 1.2 https://example.com/
+check "ja4-allowlisted-passes" curl -sS -o /dev/null --max-time 15 --tls-max 1.2 https://example.org/
 check "ipv6-dns-answer"        bash -c 'dig +short +time=3 +tries=1 example.com AAAA @10.111.222.2 | grep -q ":"'
 echo "inside: $pass passed, $fail failed"

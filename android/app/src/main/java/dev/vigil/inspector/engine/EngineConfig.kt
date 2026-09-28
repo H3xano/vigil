@@ -11,6 +11,8 @@ data class EngineConfig(
     val sinkhole: String = "null_ip",
     @SerialName("sinkhole_ttl") val sinkholeTtl: Int = 60,
     @SerialName("block_encrypted_dns") val blockEncryptedDns: Boolean = false,
+    /** Reset connections whose JA4 is on a feed (otherwise the match only alerts). */
+    @SerialName("block_ja4_matches") val blockJa4Matches: Boolean = false,
     @SerialName("blocked_uids") val blockedUids: List<Int> = emptyList(),
     @SerialName("allow_domains") val allowDomains: List<String> = emptyList(),
     @SerialName("deny_domains") val denyDomains: List<String> = emptyList(),

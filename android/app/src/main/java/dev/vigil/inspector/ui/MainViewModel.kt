@@ -10,9 +10,11 @@ import dev.vigil.inspector.data.DestinationUsage
 import dev.vigil.inspector.data.DnsEntity
 import dev.vigil.inspector.data.ExportSettings
 import dev.vigil.inspector.data.FeedEntity
+import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.FlowEntity
 import dev.vigil.inspector.data.NameCount
 import dev.vigil.inspector.data.Settings
+import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.data.Totals
 import dev.vigil.inspector.engine.StatsEvent
 import dev.vigil.inspector.export.ExportStatus
@@ -200,7 +202,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setFeedEnabled(id: String, enabled: Boolean) = viewModelScope.launch { app.feeds.setEnabled(id, enabled) }
     fun refreshFeeds() = app.feeds.scheduleRefreshNow()
-    fun addFeed(name: String, url: String, category: String, auth: String?) = viewModelScope.launch { app.feeds.addCustom(name, url, category, auth) }
+    fun addFeed(name: String, url: String, category: String, auth: String?, kind: String = FeedKinds.LIST) =
+        viewModelScope.launch { app.feeds.addCustom(name, url, category, auth, kind) }
+    fun addTaxii(name: String, collection: TaxiiCollection, category: String, headerName: String?, auth: String?) =
+        viewModelScope.launch { app.feeds.addTaxii(name, collection, category, headerName, auth) }
+    suspend fun taxiiCollections(url: String, headerName: String?, auth: String?): Result<List<TaxiiCollection>> =
+        app.feeds.taxiiCollections(url, headerName, auth)
+    fun setBlockJa4Matches(block: Boolean) = updateSettings { it.copy(blockJa4Matches = block) }
     fun deleteFeed(id: String) = viewModelScope.launch { app.feeds.delete(id) }
 
     fun saveExport(cfg: ExportSettings) = updateSettings { it.copy(export = cfg) }

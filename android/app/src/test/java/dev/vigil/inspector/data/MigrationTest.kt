@@ -44,4 +44,38 @@ class MigrationTest {
         }
         assertEquals(indices(2), result)
     }
+
+    /** column name → (affinity, notNull, defaultValue) */
+    private fun fields(v: Int, table: String): Map<String, Triple<String, Boolean, String?>> =
+        schema(v)["entities"]!!.jsonArray.map { it.jsonObject }.single { it["tableName"]!!.jsonPrimitive.content == table }["fields"]!!
+            .jsonArray.associate { f ->
+                val o = f.jsonObject
+                o["columnName"]!!.jsonPrimitive.content to Triple(
+                    o["affinity"]!!.jsonPrimitive.content,
+                    o["notNull"]!!.jsonPrimitive.content.toBoolean(),
+                    o["defaultValue"]?.jsonPrimitive?.content,
+                )
+            }
+
+    @Test
+    fun migration2to3AddsExactlyTheSchema3Columns() {
+        assertEquals("indices are unchanged in 2 → 3", indices(2), indices(3))
+        val t2 = tables(2)
+        val t3 = tables(3)
+        assertEquals(t2.keys, t3.keys)
+        val result = t2.keys.associateWith { fields(2, it).toMutableMap() }
+        val created = t2.toMutableMap()
+        val add = Regex("^ALTER TABLE `(\\w+)` ADD COLUMN `(\\w+)` (INTEGER|TEXT)( NOT NULL)?(?: DEFAULT (.+))?$")
+        for (sql in VigilDatabase.MIGRATION_2_3_SQL) {
+            val m = add.matchEntire(sql) ?: error("unexpected statement $sql")
+            val (table, column, type, notNull, default) = m.destructured
+            result.getValue(table)[column] = Triple(type, notNull.isNotEmpty(), default.ifEmpty { null })
+            // SQLite appends the column definition to the table's CREATE statement.
+            val def = sql.substringAfter("ADD COLUMN ")
+            val sqlText = created.getValue(table)
+            created[table] = if (", PRIMARY KEY" in sqlText) sqlText.replace(", PRIMARY KEY", ", $def, PRIMARY KEY") else sqlText.dropLast(1) + ", $def)"
+        }
+        for (table in t3.keys) assertEquals(table, fields(3, table), result.getValue(table).toMap())
+        assertEquals(t3, created)
+    }
 }

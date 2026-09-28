@@ -7,7 +7,7 @@ prints them as JSON lines; the app polls them in batches (JSON arrays).
 
 | type | fields |
 |---|---|
-| `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`) |
+| `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ja4_match` (see below), `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`) |
 | `flow_update` | `id`, `ts`, `tx`, `rx` (running totals of long-lived flows) |
 | `flow_end` | `id`, `ts`, `tx` (bytes sent by the app), `rx`, `duration_ms`, `error` |
 | `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` |
@@ -46,19 +46,76 @@ are what the app itself sent. `dns` is a reverse lookup of the address in
 recent DNS answers, which is ambiguous for shared CDN addresses, so it is
 never used for blocking.
 
+### JA4 matches
+
+`ja4` is the FoxIO JA4 fingerprint of the client's TLS ClientHello (`t…`
+over TCP, `q…` for QUIC Initials). When it is listed by a loaded feed, the
+`flow` event carries
+
+```json
+"ja4_match": {"feed": "ja4-foxio", "rule": "t13d190900_9dc949149365_97f8aa674fd9", "label": "Sliver"}
+```
+
+`feed` is the feed id, `rule` the listed entry (the fingerprint itself, or
+`a_b_*` for a wildcard entry) and `label` the feed's label for it (may be
+null). Otherwise `ja4_match` is null. A match raises a `threat_ja4` alert; it
+blocks only when the config sets `block_ja4_matches` (then `verdict` is
+`block`, `reason` is `ja4:<feed> (<rule>)`, and the connection is reset
+before the ClientHello reaches the server; for QUIC the datagrams are
+dropped). A name on the user allowlist (from SNI, QUIC or HTTP Host) is
+never blocked for its JA4, but is still flagged. JA4 identifies the TLS
+library and its settings, not the program: benign software built on the
+same library (e.g. Go's default `crypto/tls`, which Sliver also uses) has
+the same fingerprint, which is why matching alerts only by default.
+
+### Feed files
+
+`nativeLoadFeedFile(handle, id, category, path)` takes one of the categories
+`malware`, `phishing`, `c2` (threat: hits alert), `tracking`, `ads`, `custom`
+(block only) and `ja4`. Unknown categories load as `tracking`. Lines are
+recognised individually: hosts-file entries, plain domains (`*.` prefix
+allowed), AdGuard `||domain^` rules, IP addresses and CIDR ranges, and JA4
+fingerprints. A JA4 line is the fingerprint optionally followed by a label,
+separated by whitespace, `#`, `,`, `;` or `|`:
+
+```
+# comment
+t13d190900_9dc949149365_97f8aa674fd9  Sliver
+t12i210700_76e208dd3e22_16bbda4055b2  # Cobalt Strike 4.9.1 (winhttp)
+q13d0312h3_55b375c5d22e_*             any QUIC client with this cipher list
+```
+
+A fingerprint must follow the JA4 grammar: `a_b_c`, where `a` is 10
+characters (`t`/`q`/`d`, version `13`/`12`/`11`/`10`/`s3`/`s2`/`d1`/`d2`/`d3`/`00`,
+`d`/`i`, two-digit cipher and extension counts, two alphanumeric ALPN
+characters) and `b`, `c` are 12 hex digits. Case is normalised except for
+the ALPN characters. The only wildcard is a whole `c` section (`a_b_*`), which
+matches any extension list; exact entries win over wildcards. Raw
+(`ja4_r`) and original-order (`ja4_o`) forms are rejected. Labels are cut
+at 80 bytes.
+
+Feeds of category `ja4` accept JA4 lines only; any other non-comment line
+counts as rejected. JA4 lines in feeds of other categories are matched too
+(so one indicator file, e.g. from TAXII, can hold domains, addresses and
+fingerprints). The summary returned by `nativeLoadFeedFile` (and by
+`nativeInspectFeedFile`, which parses without an engine) is
+`{id, domains, ip_ranges, ja4, rejected_lines, memory_bytes}`.
+
 ### Alert kinds
 
 | kind | severity | raised when |
 |---|---|---|
 | `threat_domain` | high | a lookup or connection matches a malware, phishing or C2 feed |
 | `threat_ip` | high | a connection's address, or a hard-coded DNS server's address, matches a threat IP feed |
+| `threat_ja4` | high | a TLS or QUIC ClientHello's JA4 fingerprint is listed by a feed. `target` is the fingerprint; `detail`: `ja4`, `rule`, `label`, `feed`, `dst` (`ip:port`), `domain`, `proto`, `blocked` |
 | `beacon` | medium | ≥ 6 connections to one destination at a near-constant interval (10 s–1 h, jitter ≤ 15 % by default) |
 | `encrypted_dns` | low | an app uses DoH, DoT or DoQ, so its lookups are invisible |
 | `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver |
 | `new_destination` | info | (opt-in, app-side) after a 24 h learning period, an app contacts a domain it never used before |
 
 Repeated alerts with the same kind, app and *finding* are suppressed for an
-hour. For `threat_domain` and `threat_ip` the finding is the matched feed
+hour. For `threat_ja4` the finding is the fingerprint (one alert per
+fingerprint and app, whatever the destinations). For `threat_domain` and `threat_ip` the finding is the matched feed
 entry (for example `feed:urlhaus|evil.example`), not the full name, so a
 malware generating thousands of names under one listed domain (DGA, DNS
 tunnelling) raises one alert per app; `target` is the first name seen. For
@@ -80,6 +137,7 @@ added after 0.1.0:
 | `max_tcp_flows` | integer > 0 | 4096 | TCP connections admitted or relaying. Further SYNs are answered with a RST. |
 | `max_pending_connects` | integer > 0 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
 | `max_dns_inflight` | integer > 0 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |
+| `block_ja4_matches` | bool | `false` | Reset connections (drop QUIC flows) whose JA4 fingerprint is on a feed, instead of only alerting. Allowlisted names are exempt. See "JA4 matches". |
 
 The four caps are read when the engine starts; a later config update does
 not resize them.
@@ -134,7 +192,8 @@ without custom pipelines. A completed flow looks like this:
 }
 ```
 
-DNS records use `dns.question.name/type`, `dns.response_code` and
+A flow whose JA4 is listed also carries `vigil.ja4_match` (`feed`, `rule`,
+`label`). DNS records use `dns.question.name/type`, `dns.response_code` and
 `dns.answers[].data`. Alerts use `event.kind: "alert"`, `event.severity`
 (0–100) and `message`.
 

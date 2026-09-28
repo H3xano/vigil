@@ -119,6 +119,7 @@ private fun alertHelp(kind: String): Pair<String, String>? = when (kind) {
     "beacon" -> "Beaconing" to Glossary.BEACONING
     "threat_domain", "threat_ip" -> "Threat feed hit" to
         "The destination is listed in an enabled threat-intelligence feed (malware, phishing or C2). ${Glossary.C2}"
+    "threat_ja4" -> "JA4 match" to Glossary.JA4_MATCH
     "encrypted_dns" -> "Encrypted DNS" to
         "The app resolves names over DNS-over-HTTPS/TLS/QUIC, so vigil cannot see which names it looks up. " +
         "Connections are still named from TLS/QUIC SNI. ${Glossary.SNI}"

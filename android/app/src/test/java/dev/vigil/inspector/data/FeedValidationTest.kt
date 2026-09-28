@@ -29,6 +29,24 @@ class FeedValidationTest {
     }
 
     @Test
+    fun ja4FeedsCountFingerprintsOnly() {
+        assertNull(FeedValidation.check(FeedSummary(ja4 = 7, rejectedLines = 1), null, FeedKinds.JA4))
+        // Mixed lists count JA4 lines as entries too.
+        assertNull(FeedValidation.check(FeedSummary(ja4 = 7), null, FeedKinds.LIST))
+        assertNotNull(FeedValidation.check(FeedSummary(domains = 500), null, FeedKinds.JA4))
+        assertNotNull(FeedValidation.check(FeedSummary(ja4 = 2, domains = 30), null, FeedKinds.JA4))
+        assertNotNull(FeedValidation.check(FeedSummary(ja4 = 2), previousEntries = 100, kind = FeedKinds.JA4))
+    }
+
+    @Test
+    fun taxiiResyncMustNotCollapse() {
+        assertNull(FeedValidation.checkTaxiiResync(0, null))
+        assertNull(FeedValidation.checkTaxiiResync(0, 100))
+        assertNull(FeedValidation.checkTaxiiResync(500, 5000))
+        assertNotNull(FeedValidation.checkTaxiiResync(10, 5000))
+    }
+
+    @Test
     fun rejectsSuddenCollapse() {
         assertNotNull(FeedValidation.check(FeedSummary(domains = 99), previousEntries = 1000))
         assertNotNull(FeedValidation.check(FeedSummary(domains = 5, ipRanges = 4), previousEntries = 850_000))

@@ -52,7 +52,10 @@ object ExportRecords {
                 "action" to f.verdict, "reason" to f.reason, "duration" to end.durationMs * 1_000_000, "end" to iso(end.ts),
                 "dataset" to "vigil.flow",
             ),
-            "vigil" to obj("type" to "flow", "flow_id" to f.id, "domain_source" to f.domainSource, "tags" to f.tags, "error" to end.error),
+            "vigil" to obj(
+                "type" to "flow", "flow_id" to f.id, "domain_source" to f.domainSource, "tags" to f.tags, "error" to end.error,
+                "ja4_match" to f.ja4Match?.let { obj("feed" to it.feed, "rule" to it.rule, "label" to it.label) },
+            ),
             "app" to app(a),
             "network" to obj("transport" to f.proto, "protocol" to f.appProto, "bytes" to end.tx + end.rx),
             "source" to obj("ip" to srcIp, "port" to srcPort, "bytes" to end.tx),

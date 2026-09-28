@@ -32,6 +32,8 @@ data class ExportSettings(
 data class Settings(
     val sinkhole: String = "null_ip",
     val blockEncryptedDns: Boolean = false,
+    /** Block connections whose TLS/QUIC JA4 fingerprint is on a feed (default: alert only). */
+    val blockJa4Matches: Boolean = false,
     /** Keep private/LAN destinations out of the tunnel (casting, printers...). */
     val excludeLan: Boolean = true,
     /** "network" (resolvers of the underlying network) or "custom". */
