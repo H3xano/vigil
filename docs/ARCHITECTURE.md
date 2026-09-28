@@ -117,7 +117,24 @@
    runtime is stopped first and the remaining open flows are ended after it,
    so no flow can open after the final sweep. Long flows emit `flow_update`
    with live byte counts.
-7. **Alerts** (`detect.rs`) are deduplicated per kind, app and finding for an
+7. **Per-app rules** (`policy.rs`). Besides apps blocked at all times, an
+   app can be blocked on Wi-Fi, on mobile data, in the background or with
+   the screen off (`app_rules`), and a domain can be allowed or blocked for
+   one app (`app_domain_rules`). The conditions are evaluated against a
+   device state the host pushes on its own (`Engine::set_device_state`,
+   `nativeSetDeviceState`), because it changes on every app switch: one
+   hash lookup per decision. The app block comes first (before any name is
+   known, at the SYN gate and for UDP flows and DNS), then the app's allow
+   and block rules, then the global lists and feeds. Every allowed relay and
+   UDP flow is registered in the open-flow table with its UID, the name the
+   app sent and a cut signal (`FlowCut`); after a state or rule change,
+   `Shared::recheck_open_flows` walks that table and cuts the flows the
+   per-app rules now block (the relay resets both sides, the UDP flow ends;
+   `flow_end.error` = `blocked: <reason>`), and wakes UDP flows held blocked
+   by a condition so they re-decide. Per-app DNS decisions are answered with
+   TTL 0 (and answers for names with a per-app rule get their TTLs zeroed),
+   because Android's resolver cache is per network and shared by every app.
+8. **Alerts** (`detect.rs`) are deduplicated per kind, app and finding for an
    hour (threat alerts by matched feed entry, so DGA names do not cause
    storms), in a table of at most 10 000 findings, with a global budget of
    120 alerts per minute. The beacon detector's table (20 000 series) is
@@ -193,6 +210,12 @@ connections would loop back into the proxy; the app adds it with
   start mid-connection (e.g. after connection migration) are relayed and
   shown by address, with a DNS-derived name at best.
 - Resource caps (`max_*`) are fixed when the engine starts.
+- Per-app conditions are as current as the host's device state. On Android
+  the foreground app comes from usage stats, polled once a second while
+  some app has a background rule and the screen is on, so an app's first
+  connections after it comes to the screen can still be refused for up to
+  about a second. Global lists and feeds are not re-applied to open
+  connections (per-app rules are).
 - DNS over TCP to port 53 of any address is treated as DNS. Other
   protocols on TCP/53 are not relayed transparently.
 - IP fragments (other than IPv6 atomic fragments) are dropped, and ICMP is
@@ -210,8 +233,14 @@ connections would loop back into the proxy; the app adds it with
 ## Android app (`android/app/src/main/java/dev/vigil/inspector`)
 
 - `vpn/VigilVpnService`: owns one *session* (TUN, engine handle, event pump,
-  feed sync, config sync, notification). Route changes re-establish the
-  interface. It supports always-on VPN and a Quick Settings tile.
+  feed sync, config sync, device-state push, notification). Route changes
+  re-establish the interface. It supports always-on VPN and a Quick
+  Settings tile. The device state for per-app rules comes from the default
+  network callback (Wi-Fi / mobile data), `ACTION_SCREEN_ON`/`OFF` and
+  `processing/ForegroundTracker` (usage access); only changes are pushed.
+- `data/AppRules`: per-app rules are stored by app key (package or
+  `uid:<n>`) in the settings and resolved to UIDs by `vpn/ConfigFactory`;
+  packages sharing a UID share one engine rule (their conditions merge).
 - `engine/EngineHandle`: a read/write lock around the native handle, so
   `nativeStop` can never race a poll.
 - `processing/EventProcessor`: batches each poll into one Room transaction,
@@ -225,7 +254,8 @@ connections would loop back into the proxy; the app adds it with
 - `export/`: ECS-shaped records, syslog/HTTP wire formats, and mTLS through
   KeyChain.
 - `ui/`: Compose screens for Overview, Activity (connections/DNS), Apps (with
-  per-app detail and blocking), Alerts, Settings, Feeds, Export and Rules.
+  per-app detail, blocking and network-access conditions), Alerts, Settings,
+  Feeds, Export and Rules (global and per-app).
 
 ## Addresses
 

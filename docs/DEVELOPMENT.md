@@ -43,10 +43,10 @@ Run all of these before committing anything that touches the engine or the
 app. Every one was green at the 0.1.0 commit.
 
 ```sh
-cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 130 unit tests
-scripts/e2e-netns.sh          # 171 checks: direct, beacon (in-flow beaconing), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
-scripts/jni-smoke.sh          # 28 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest   # 116 JVM tests (1 skipped: TaxiiLiveTest)
+cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 163 unit tests
+scripts/e2e-netns.sh          # 187 checks: direct, beacon (in-flow beaconing), apprules (per-app conditions and device state), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+scripts/jni-smoke.sh          # 32 checks, no root
+cd android && ./gradlew lintDebug testDebugUnitTest   # 161 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 scripts/android-features.sh   # 14 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed, Maximum throughput restart
@@ -103,7 +103,10 @@ descriptor is passed over a Unix socket (SCM_RIGHTS) to `vigil-cli` running in
 the host namespace. So traffic from `dig`/`curl` inside the namespace goes
 through the real engine and out through the host's network.
 `scripts/e2e/last-events.jsonl` keeps the events of the last run for
-inspection.
+inspection. The CLI attributes nothing to apps, except with `--uid N`
+(every connection is UID N); `--state FILE` sets the device state for
+per-app conditions and re-reads it on `SIGUSR1`, which the apprules stage
+sends from inside the namespace.
 
 ## Emulator for on-device tests
 
@@ -309,7 +312,9 @@ core/vigil-core/src/
   ../testdata/edns/ test-only CA and server certificate (dns.vigil.test, 127.0.0.1)
   intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
   asn.rs            IP → ASN table (iptoasn TSV, feed category `asn`); Policy::asn_lookup, one lookup per flow
-  policy.rs         Policy, feed categories, DoH host list, JA4 block reasons
+  policy.rs         Policy (precedence in its header), per-app conditions and domain rules, feed categories,
+                    DoH host list, JA4 block reasons
+  config/app_rules.rs  app_rules / app_domain_rules and the DeviceState (nativeSetDeviceState)
   detect.rs         beacon detectors (new connections, bursts inside long-lived flows), alert limiter
   event.rs          event types + bounded queue
   config.rs         Config (JSON contract with the app); config/upstream.rs the upstream section
@@ -333,7 +338,9 @@ android/app/src/main/java/dev/vigil/inspector/
 
 - `core/vigil-core/src/config.rs` (+ `config/upstream.rs`) ↔
   `engine/EngineConfig.kt` ↔ `vpn/ConfigFactory.kt` (the Rust test
-  `upstream_json_contract` parses the JSON asserted in `ConfigFactoryTest`)
+  `upstream_json_contract` parses the JSON asserted in `ConfigFactoryTest`,
+  `app_rules_json_contract` the per-app rules and the `nativeSetDeviceState`
+  payload)
 - `core/vigil-core/src/event.rs` ↔ `engine/EngineEvent.kt` ↔ `docs/EVENTS.md`
 - JNI signatures in `vigil-jni/src/lib.rs` ↔ `engine/VigilNative.kt` ↔
   `scripts/jni-smoke/…/VigilNative.java`

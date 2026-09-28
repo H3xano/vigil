@@ -35,7 +35,32 @@ unreachable (reply 4)` (the proxy's answer about the destination) and
 `socket: the SOCKS5 proxy does not relay UDP` (such UDP flows are then
 absorbed until idle, like blocked ones). A flow
 that the server resets before the app has sent anything is still reported
-(`flow` with `verdict: allow`, then `flow_end` with the error).
+(`flow` with `verdict: allow`, then `flow_end` with the error). An open
+relay or UDP flow that a per-app rule comes to block (the device state or
+the rules changed, see "Per-app rules and device state") ends with
+`error: "blocked: <reason>"`, e.g. `blocked: app rule: background`; a TCP
+connection is reset on both sides.
+
+### Block reasons
+
+`reason` of a blocked `flow` or `dns` event:
+
+| reason | meaning |
+|---|---|
+| `app` | The app is blocked at all times (`blocked_uids`). |
+| `app rule: wifi`, `app rule: cellular`, `app rule: screen off`, `app rule: background` | The app is blocked by one of its conditions (`app_rules`) in the current device state. With several, the first in this order is reported. |
+| `app domain rule (<rule>)` | The app's own block rule for `<rule>` (`app_domain_rules`), which covers the name. |
+| `custom (<rule>)` | The global denylist (`deny_domains`). |
+| `feed:<id> (<rule>)` | A feed entry: a name, or an address for IP entries (NAT64 addresses name the embedded IPv4 address). |
+| `ja4:<feed> (<rule>)` | A listed JA4 fingerprint with `block_ja4_matches` (see "JA4 matches"). |
+| `encrypted_dns` | DoT/DoQ or a known DoH endpoint with `block_encrypted_dns`. |
+
+In a `dns` event blocked through a CNAME, the rule reads `<rule> via CNAME
+<target>`. Precedence (first match wins): the app block (`app`, then the
+conditions), the app's allow rules, the app's block rules, the global
+allowlist, the global denylist, feeds (threat categories first). Before a
+name is known (the SYN gate, UDP flows without a name) only the app block
+and IP feed entries apply.
 
 In `dns` events, `rcode` is `REFUSED` (with `verdict: block`) when the app
 queried a hard-coded resolver whose address is on an IP feed. Queries with
@@ -321,10 +346,60 @@ added after 0.1.0:
 | `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
 | `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; unknown names load as `tracking`) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
 | `feeds_preload_timeout_ms` | integer | 10000 | How long packet processing waits for `feeds` at start (at most 60000). Feeds not loaded by then finish loading in the background while traffic flows. |
+| `app_rules` | list of `{"uid", "block_wifi", "block_cellular", "block_background", "block_screen_off"}` | `[]` | Conditional blocking of an app (see "Per-app rules and device state"). Blocking at all times stays in `blocked_uids`. |
+| `app_domain_rules` | list of `{"uid", "domain", "action"}` | `[]` | `action` `allow` or `block`: the domain and its subdomains for that app only. |
+| `device_state` | object or absent | absent | The device state to install with this config (normally only in the start config); absent keeps the current one. Same object as `nativeSetDeviceState`. |
 
 The four caps, `feeds` and `feeds_preload_timeout_ms` are read when the
 engine starts; a later config update does not resize the caps or reload
 the feeds.
+
+### Per-app rules and device state
+
+`app_rules` blocks an app (by Linux UID) while a condition holds:
+`block_wifi` (the underlying network is Wi-Fi), `block_cellular` (mobile
+data), `block_screen_off`, `block_background` (the app is not in the
+foreground; with the screen off every app is). Omitted flags are false.
+`app_domain_rules` allow or block a domain, and its subdomains, for one
+UID; an allow wins over a block of the same app. See "Block reasons" for
+the precedence: an app's allow rule overrides the global lists and every
+feed, threat feeds included (as the global allowlist does), for that app
+only; an app block (always or conditional) wins over everything, because
+it applies before the name is known.
+
+The conditions are evaluated against the **device state**, which the app
+pushes with `nativeSetDeviceState(handle, json)` whenever it changes (the
+Kotlin mirror is `DeviceState` in `EngineConfig.kt`):
+
+```json
+{"network": "wifi", "screen_on": true, "foreground_uids": [10123]}
+```
+
+| field | values | default |
+|---|---|---|
+| `network` | `wifi`, `cellular`, `other` (Ethernet, unknown: neither rule applies), `none` | `other` |
+| `screen_on` | bool | `true` |
+| `foreground_uids` | list of UIDs, or null/absent when unknown | unknown |
+
+With `foreground_uids` unknown (no usage access on Android),
+`block_background` applies only while the screen is off. The default state
+blocks nothing conditionally. The device state is a separate call because
+it changes on every app switch; a full `nativeUpdateConfig` rebuilds every
+domain list and re-applies the upstream path. It is a few hash lookups
+per open flow.
+
+Changes apply at once to everything: new connections, UDP datagrams and DNS
+lookups follow the new state, and open relays and UDP flows that it (or an
+updated rule list) blocks are cut (`flow_end.error` = `blocked: <reason>`;
+TCP is reset both ways). UDP flows held blocked by a condition are released
+when the state changes, so the app's next datagram is decided again. The
+global lists and feeds still apply to new connections only.
+
+DNS answers that depend on the app are never cached by Android's resolver
+(one cache per network, shared by all apps): sinkhole answers for an app
+block or per-app rule, and every answer (sinkholed or real) for a name that
+some app has a domain rule for, have TTL 0. Unblocking therefore takes
+effect for names at once, too.
 
 ### `beacon`
 
@@ -484,6 +559,9 @@ false (and the running config is kept) when the JSON does not parse or:
 - `upstream_dns` is empty;
 - any of the four caps above is 0;
 - `encrypted_dns` is invalid (see its section above);
+- an `app_domain_rules` entry has an empty domain, an `action` other than
+  `allow`/`block`, or there are more than 10 000 `app_rules` or 100 000
+  `app_domain_rules`;
 - `upstream.mode` is `wireguard` or `socks5` without its section, a key is
   not base64 of 32 bytes, an endpoint or server is not `host:port`, an
   address or AllowedIPs entry is not a CIDR, there is no tunnel address or
@@ -502,7 +580,8 @@ shorter). The app's next datagram starts a new flow on a fresh socket.
 | call | behaviour |
 |---|---|
 | `nativeStart(tunFd, configJson, bridge): Long` | 0 on failure (including an invalid config). |
-| `nativeShutdown(handle): Boolean` | Stops the engine (TUN loop, relays, runtime), then queues a `flow_end` for every open flow and a final `engine` event with `state: stopped`. The handle stays valid: `nativePollEvents` keeps returning the remaining events and, once the queue is empty, returns null immediately instead of waiting. `nativeUpdateConfig` and `nativeRemoveFeed` return false, `nativeStats` and `nativeLoadFeedFile` return null. A second call is a no-op returning true; false only for a null handle. |
+| `nativeShutdown(handle): Boolean` | Stops the engine (TUN loop, relays, runtime), then queues a `flow_end` for every open flow and a final `engine` event with `state: stopped`. The handle stays valid: `nativePollEvents` keeps returning the remaining events and, once the queue is empty, returns null immediately instead of waiting. `nativeUpdateConfig`, `nativeSetDeviceState` and `nativeRemoveFeed` return false, `nativeStats` and `nativeLoadFeedFile` return null. A second call is a no-op returning true; false only for a null handle. |
+| `nativeSetDeviceState(handle, stateJson): Boolean` | Installs the device state for per-app conditions (see "Per-app rules and device state") and cuts open flows it blocks. False for invalid JSON or an engine that is not running. |
 | `nativeStop(handle)` | Stops the engine if it is still running (same events as above, which are then lost with the handle) and frees the handle. Must be called exactly once, also after `nativeShutdown`. |
 
 To keep the final `flow_end` events, call `nativeShutdown`, drain
