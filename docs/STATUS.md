@@ -1,7 +1,7 @@
 # Project status and handoff
 
-Last updated: 2026-09-28, version 0.2.0 (review fixes, lifecycle testing,
-release signing, F-Droid preparation).
+Last updated: 2026-09-28, version 0.2.0 released; 0.3 features (encrypted DNS,
+JA4/TAXII, WireGuard/SOCKS5 chaining) merged on `main`, unreleased.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -17,9 +17,9 @@ systematic device testing in backlog item 1 is still to do.
 
 | Area | State | Verified by |
 |---|---|---|
-| Rust engine (`core/vigil-core`) | done | 69 unit tests, 49 end-to-end checks with real traffic (`scripts/e2e-netns.sh`) |
-| JNI layer (`core/vigil-jni`) | done | 26 checks from a real JVM (`scripts/jni-smoke.sh`) |
-| Android app (`android/`) | done | 45 Kotlin unit tests, lint clean, 28 on-device checks (`scripts/android-e2e.sh`) |
+| Rust engine (`core/vigil-core`) | done | 113 unit tests, 156 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / edns / socks5 / wireguard) |
+| JNI layer (`core/vigil-jni`) | done | 28 checks from a real JVM (`scripts/jni-smoke.sh`) |
+| Android app (`android/`) | done | 86 Kotlin unit tests, lint clean; on-device: 28 (`android-e2e.sh`), 21 lifecycle (`android-lifecycle.sh`), 12 DoH/SOCKS5 (`android-features.sh`) |
 | Release APK (R8-minified) | builds, runs | manual smoke test on the emulator (JNI survives R8) |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
@@ -72,6 +72,37 @@ restart budget without black-holing the device, process death (START_STICKY),
 and Private DNS automatic and strict. Always-on VPN starts 2 s after a reboot
 with the service left `exported="false"`. A real TUN read error has still
 never been observed, so the injected error stands in for it.
+
+## New in 0.3 (unreleased, 2026-09-28)
+
+Three features, built in parallel and integrated; every suite above passes
+on the merged tree, and direct-mode throughput is unchanged (1,296 Mbit/s).
+
+- **Encrypted upstream DNS:** DoT and DoH (HTTP/2, HTTP/1.1 fallback) with
+  Quad9 / Cloudflare / Google / Mullvad presets or a custom server, fail-closed
+  by default (`fallback_plain` off → SERVFAIL, never cleartext). rustls with
+  ring and webpki-roots. Verified on the emulator with Quad9 DoH.
+- **JA4 threat matching and TAXII 2.1:** `ja4` feeds (exact and `a_b_*`
+  entries), `threat_ja4` alerts, optional `block_ja4_matches`; TAXII 2.1
+  collections (domains, IPs, JA4) polled incrementally; Room schema v3.
+  Tested against an OASIS medallion server. The only built-in JA4 source
+  (FoxIO mapping, 4 malware fingerprints) is off by default; its licence
+  (FoxIO License 1.1, non-commercial) is downloaded-not-redistributed and
+  **awaits the owner's confirmation**.
+- **Upstream chaining:** all upstream sockets go through one dialer
+  (`engine/upstream/`): direct, WireGuard (boringtun + a client smoltcp
+  stack, wg-quick import) or SOCKS5 (CONNECT, UDP ASSOCIATE, auth,
+  `send_domain` for Tor). Fail-closed by default. Encrypted DNS also goes
+  through the dialer. SOCKS5 verified on the emulator; WireGuard verified
+  against a kernel peer in the netns e2e only.
+
+Costs and caveats: arm64 `libvigil.so` grew from 1.44 MB to 3.16 MB
+(rustls/ring/h2 ≈ 1.4 MB, boringtun ≈ 0.3 MB). WireGuard: one peer, a
+256 KiB tunnelled TCP window, IPv6 only with an IPv6 tunnel address. Tor
+(SOCKS5) cannot carry UDP, so QUIC falls back to TCP. `via` and the DNS
+`upstream` are in events and SIEM export but not stored in Room.
+Still needs a device: a real WireGuard provider `.conf` (roaming, battery
+with keepalive) and Orbot on 127.0.0.1:9050 with Orbot excluded from the VPN.
 
 ## Feature inventory
 
@@ -126,10 +157,9 @@ history.
    Batching TUN reads or reusing buffers is likely the biggest win. Measure
    with `LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh`. A larger TCP
    window made no difference.
-5. **STIX/TAXII 2.1 ingestion.** This was in the original idea but is not
-   built. Custom feeds already accept MISP text exports; TAXII needs a
-   collection poller (Kotlin) that converts domain-name and ipv4-addr
-   indicators into a feed file.
+5. **Store `via` and DNS `upstream` in Room** (schema v4) so the app can
+   show per-flow which path and DNS transport was used; add a WireGuard
+   throughput benchmark and consider a larger tunnelled TCP window.
 6. **ASN / geo enrichment.** An offline IP→ASN database (e.g. iptoasn.com)
    would enable "new ASN for this app" alerts and nicer UI labels.
 7. **Beaconing on long-lived connections.** Today only connection starts
@@ -189,6 +219,11 @@ history.
 | Apache-2.0 | Friendly to enterprise and SIEM users. |
 | F-Droid first, reproducible builds | Matches the open-source analyst audience, avoids Play's VpnService/QUERY_ALL_PACKAGES review, and reproducibility lets users keep one signing key across GitHub and F-Droid. |
 | Debug-only `INJECT_ENGINE_ERROR` intent | Lets the lifecycle script exercise the real restart path; guarded by `BuildConfig.DEBUG` and the service is not exported. |
+| rustls with ring, not aws-lc-rs | aws-lc-rs is hard to cross-compile for Android and to build reproducibly. |
+| DoH over HTTP/2 (h2 crate) | Quad9 and Mullvad reject HTTP/1.1 DoH; hyper would be heavier. |
+| One upstream dialer for every socket | Guarantees WireGuard/SOCKS5 fail-closed covers relays, UDP and all DNS paths; direct mode stays a plain protected socket. |
+| boringtun vendored as an rlib | Otherwise cargo-ndk copied a stray `libboringtun` .so into the APK. |
+| JA4 matches alert only by default | Fingerprints collide with benign clients (Sliver = Go's default TLS client). |
 | Vendor netstack-smoltcp with a small patch | Upstream has no way to send a RST, so resets became FINs and truncated responses looked complete. Patch marked `vigil patch`. |
 | Global resource caps, evict longest-idle UDP flow | One noisy app (P2P, WebRTC) must not exhaust memory or fds and take down every app's connectivity. |
 | Threat alerts keyed by feed entry + UID | DGA/tunnelling produced one alert per random subdomain. |

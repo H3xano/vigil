@@ -57,6 +57,8 @@ adb shell am force-stop $pkg
 # Re-grant consent: an appop set right after install can be reset while the
 # package is still being set up.
 adb shell appops set $pkg ACTIVATE_VPN allow
+adb shell appops set $pkg GET_USAGE_STATS allow
+adb shell appops get $pkg GET_USAGE_STATS | grep -q "GET_USAGE_STATS: allow" || { echo "could not grant usage access"; exit 1; }
 adb shell appops get $pkg ACTIVATE_VPN | grep -q "ACTIVATE_VPN: allow" || { echo "could not grant VPN consent"; exit 1; }
 # Start the inspector exactly as the UI does (consent already granted).
 adb shell am start-foreground-service -n $pkg/dev.vigil.inspector.vpn.VigilVpnService -a dev.vigil.inspector.START >/dev/null

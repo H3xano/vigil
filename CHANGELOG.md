@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Encrypted upstream DNS: DNS over TLS and DNS over HTTPS (HTTP/2), with
+  Quad9, Cloudflare, Google and Mullvad presets or a custom server;
+  fail-closed unless plain fallback is enabled.
+- JA4 threat matching: `ja4` feeds, `threat_ja4` alerts, optional blocking;
+  STIX/TAXII 2.1 collections as feed sources (domains, IPs, JA4).
+- Route inspected traffic through WireGuard or a SOCKS5 proxy (e.g. Orbot),
+  fail-closed by default, so vigil works for people who already use a VPN.
+- Room schema v3; `scripts/android-features.sh` on-device checks.
+
 ## 0.2.0 (2026-09-28): GitHub pre-release, release-signed APK
 
 - Review fixes across engine, service and UI (details in `docs/STATUS.md`,

@@ -48,6 +48,7 @@ scripts/jni-smoke.sh          # 28 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest   # 86 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
+scripts/android-features.sh   # 12 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed
 LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
 scripts/bench-throughput.sh                            # vs. real internet link
 ```
