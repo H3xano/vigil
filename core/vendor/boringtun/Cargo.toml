@@ -1,0 +1,137 @@
+# Vendored copy of boringtun 0.7.1 (BSD-3-Clause, Cloudflare; see LICENSE).
+# The only change (marked "vigil patch" below) is the library's crate-type:
+# upstream builds a staticlib and a cdylib for its C/JNI bindings as well,
+# and cargo-ndk would copy that stray libboringtun-*.so into the APK. vigil
+# only links the Noise implementation (src/noise) as an rlib.
+# Benchmarks and dev-dependencies are omitted; src/ is unmodified. To move
+# to a newer release, replace src/ and re-apply the crate-type change.
+[package]
+edition = "2018"
+name = "boringtun"
+version = "0.7.1"
+authors = [
+    "Noah Kennedy <nkennedy@cloudflare.com>",
+    "Andy Grover <agrover@cloudflare.com>",
+    "Jeff Hiner <jhiner@cloudflare.com>",
+]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "boringtun 0.7.1 built as an rlib only (vigil)"
+readme = "README.md"
+license = "BSD-3-Clause"
+repository = "https://github.com/cloudflare/boringtun"
+publish = false
+
+[features]
+default = []
+device = [
+    "socket2",
+    "thiserror",
+]
+ffi-bindings = ["tracing-subscriber"]
+jni-bindings = [
+    "ffi-bindings",
+    "jni",
+]
+mock-instant = ["mock_instant"]
+
+[lib]
+name = "boringtun"
+# vigil patch: upstream has ["staticlib", "cdylib", "rlib"].
+crate-type = ["rlib"]
+path = "src/lib.rs"
+
+# vigil patch: upstream's code predates these lints; keep vigil's build
+# output clean without touching src/.
+[lints.rust]
+deprecated = "allow"
+dead_code = "allow"
+mismatched_lifetime_syntaxes = "allow"
+
+[dependencies.aead]
+version = "0.5.0-pre.2"
+
+[dependencies.base64]
+version = "0.22"
+
+[dependencies.blake2]
+version = "0.10"
+
+[dependencies.chacha20poly1305]
+version = "0.10.0-pre.1"
+
+[dependencies.hex]
+version = "0.4"
+
+[dependencies.hmac]
+version = "0.12"
+
+[dependencies.ip_network]
+version = "0.4.1"
+
+[dependencies.ip_network_table]
+version = "0.2.0"
+
+[dependencies.jni]
+version = "0.19.0"
+optional = true
+
+[dependencies.libc]
+version = "0.2"
+
+[dependencies.mock_instant]
+version = "0.3"
+optional = true
+
+[dependencies.parking_lot]
+version = "0.12"
+
+[dependencies.portable-atomic]
+version = "1.13.1"
+features = ["fallback"]
+
+[dependencies.rand_core]
+version = "0.6.4"
+features = ["getrandom"]
+
+[dependencies.ring]
+version = "0.17"
+
+[dependencies.socket2]
+version = "0.4.7"
+features = ["all"]
+optional = true
+
+[dependencies.thiserror]
+version = "1"
+optional = true
+
+[dependencies.tracing]
+version = "0.1.40"
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+features = ["fmt"]
+optional = true
+
+[dependencies.untrusted]
+version = "0.9.0"
+
+[dependencies.x25519-dalek]
+version = "2.0.1"
+features = [
+    "reusable_secrets",
+    "static_secrets",
+]
+
+[target."cfg(unix)".dependencies.nix]
+version = "0.31"
+features = [
+    "time",
+    "user",
+]
+default-features = false

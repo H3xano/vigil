@@ -1,9 +1,12 @@
 //! Engine configuration, supplied as JSON by the host (Android app or CLI).
 
+pub mod upstream;
+
 use crate::proto::dns::SinkholeMode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+pub use upstream::{UpstreamConfig, UpstreamMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -58,6 +61,8 @@ pub struct Config {
     /// Forwarding of the virtual resolver's queries over DNS-over-TLS or
     /// DNS-over-HTTPS instead of plain DNS to `upstream_dns`.
     pub encrypted_dns: EncryptedDnsConfig,
+    /// How relayed traffic leaves the device (direct, WireGuard, SOCKS5).
+    pub upstream: UpstreamConfig,
 }
 
 /// Transport used to forward the virtual resolver's queries.
@@ -398,6 +403,7 @@ impl Default for Config {
             max_pending_connects: 256,
             max_dns_inflight: 256,
             encrypted_dns: EncryptedDnsConfig::default(),
+            upstream: UpstreamConfig::default(),
         }
     }
 }
@@ -474,6 +480,7 @@ impl Config {
         self.encrypted_dns
             .validate()
             .map_err(ConfigError::Invalid)?;
+        self.upstream.validate().map_err(ConfigError::Invalid)?;
         Ok(())
     }
 
@@ -549,6 +556,14 @@ mod tests {
         assert!(rejected(r#"{"max_tcp_flows":0}"#));
         assert!(rejected(r#"{"max_pending_connects":0}"#));
         assert!(rejected(r#"{"max_dns_inflight":0}"#));
+        assert!(rejected(r#"{"upstream":{"mode":"socks5"}}"#));
+        assert!(rejected(
+            r#"{"upstream":{"mode":"socks5","socks5":{"server":"nope"}}}"#
+        ));
+        assert!(rejected(
+            r#"{"upstream":{"mode":"wireguard","wireguard":{"private_key":"AAAA"}}}"#
+        ));
+        assert!(Config::from_json(r#"{"upstream":{"mode":"tor"}}"#).is_err());
         assert!(matches!(
             Config::from_json("{not json"),
             Err(ConfigError::Json(_))
@@ -583,6 +598,44 @@ mod tests {
         assert!(Config::from_json(r#"{"mtu":65535}"#).is_ok());
         assert!(Config::from_json(r#"{"beacon":{"min_interval_s":0,"max_interval_s":0}}"#).is_ok());
         Config::default().validate().unwrap();
+        assert_eq!(Config::default().upstream.mode, UpstreamMode::Direct);
+        assert!(Config::default().upstream.fail_closed);
+    }
+
+    #[test]
+    fn upstream_json_contract() {
+        // Shape of ConfigFactory.kt output for the two proxy modes.
+        let c = Config::from_json(
+            r#"{"upstream":{"mode":"socks5","fail_closed":true,"network_id":"100",
+                "socks5":{"server":"127.0.0.1:9050","username":"","password":"",
+                          "send_domain":true,"udp":"block"}}}"#,
+        )
+        .unwrap();
+        let s = c.upstream.socks5.as_ref().unwrap();
+        assert!(s.send_domain);
+        assert_eq!(s.udp, upstream::Socks5Udp::Block);
+        let key = "YAnz4CFg6SqZkWpBHQ3K3G3oN6bT9x5cyTqQyzQ8bVE=";
+        let c = Config::from_json(&format!(
+            r#"{{"upstream":{{"mode":"wireguard","fail_closed":false,
+                "wireguard":{{"private_key":"{key}","peer_public_key":"{key}",
+                "preshared_key":null,"endpoint":"[2001:db8::1]:51820",
+                "addresses":["10.2.0.2/32","fd00::2/128"],"allowed_ips":["0.0.0.0/0","::/0"],
+                "mtu":1280,"persistent_keepalive":25}}}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(c.upstream.mode, UpstreamMode::Wireguard);
+        assert!(!c.upstream.fail_closed);
+        assert_eq!(c.upstream.wireguard.as_ref().unwrap().mtu, 1280);
+        let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        // Verbatim from ConfigFactoryTest.kt (nulls omitted, as the app sends).
+        for app in [
+            r#"{"upstream":{"mode":"direct","fail_closed":true,"network_id":"100"}}"#,
+            r#"{"upstream":{"mode":"wireguard","fail_closed":true,"wireguard":{"private_key":"YAnz4CFg6SqZkWpBHQ3K3G3oN6bT9x5cyTqQyzQ8bVE=","peer_public_key":"xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=","endpoint":"vpn.example.com:51820","addresses":["10.64.0.2/32","fd00::2/128"],"allowed_ips":["0.0.0.0/0","::/0"],"mtu":1280,"persistent_keepalive":25},"network_id":"101"}}"#,
+            r#"{"upstream":{"mode":"socks5","fail_closed":false,"socks5":{"server":"[::1]:9050","username":"u","password":"secret","send_domain":true,"udp":"block"},"network_id":""}}"#,
+        ] {
+            Config::from_json(app).unwrap();
+        }
     }
 
     #[test]

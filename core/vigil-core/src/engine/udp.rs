@@ -1,7 +1,7 @@
 //! UDP: per-flow NAT over protected sockets, with QUIC SNI extraction.
 
 use super::tcp::{check_ja4, decide_named, emit_closed_flow, mark_blocked, observe_allowed};
-use super::{dns, sock, FlowCounters, FlowKey, GaugeGuard, Shared};
+use super::{dns, upstream, FlowCounters, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, FlowEvent, Verdict};
 use crate::intel::is_special;
 use crate::packet::{self, UdpInfo, PROTO_UDP};
@@ -233,14 +233,22 @@ async fn flow(
         return;
     }
 
-    let sock = match sock::connect_udp(shared.platform.clone(), dst).await {
+    ev.via = Some(shared.upstream.via());
+    let sock = match upstream::connect_udp(shared, dst).await {
         Ok(s) => s,
         Err(e) => {
             ev.verdict = Some(Verdict::Allow);
+            let blocked = upstream::is_udp_blocked(&e);
             emit_closed_flow(shared, ev, Some(format!("socket: {e}")));
+            if blocked {
+                // The upstream path cannot carry UDP: absorb the flow like a
+                // blocked one (apps then fall back, e.g. QUIC to TCP).
+                while let Ok(Some(_)) = tokio::time::timeout(idle, rx.recv()).await {}
+            }
             return;
         }
     };
+    ev.via = Some(sock.via());
     ev.verdict = Some(Verdict::Allow);
     let id = ev.id;
     let counters = FlowCounters::new();
@@ -272,7 +280,7 @@ async fn flow(
                     error = Some(e.to_string());
                 }
             }
-            r = sock::recv_with(&sock, |data| (data.len(), packet::build_udp(dst, src, data))) => {
+            r = sock.recv_with(|data| (data.len(), packet::build_udp(dst, src, data))) => {
                 match r {
                     Ok((n, pkt)) => {
                         counters.rx.fetch_add(n as u64, Relaxed);

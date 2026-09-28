@@ -55,6 +55,7 @@ import dev.vigil.inspector.ui.screens.FlowDetailScreen
 import dev.vigil.inspector.ui.screens.OnboardingScreen
 import dev.vigil.inspector.ui.screens.RulesScreen
 import dev.vigil.inspector.ui.screens.SettingsScreen
+import dev.vigil.inspector.ui.screens.UpstreamScreen
 import dev.vigil.inspector.ui.theme.VigilTheme
 import dev.vigil.inspector.vpn.VigilVpnService
 
@@ -216,6 +217,7 @@ class MainActivity : ComponentActivity() {
                 composable("export") { ExportScreen(vm, nav) }
                 composable("rules") { RulesScreen(vm, nav) }
                 composable("dns") { DnsScreen(vm, nav) }
+                composable("upstream") { UpstreamScreen(vm, nav) }
                 composable("app/{pkg}", arguments = listOf(navArgument("pkg") { type = NavType.StringType })) {
                     AppDetailScreen(vm, nav, it.arguments?.getString("pkg").orEmpty())
                 }

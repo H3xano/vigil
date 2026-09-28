@@ -128,7 +128,9 @@ Measured with `scripts/bench-throughput.sh` (release build, x86_64 host):
 - Android 10 (API 29) or later, because per-app attribution needs
   `getConnectionOwnerUid`.
 - Only one VPN can be active at a time, so vigil can't run alongside another
-  VPN app.
+  VPN app. Instead, vigil can send its traffic through your WireGuard server
+  or a SOCKS5 proxy such as Tor/Orbot (Settings → Route through VPN / proxy),
+  failing closed by default when the tunnel or proxy is down.
 - If Private DNS is in **strict** mode, the OS encrypts DNS before vigil sees
   it. Names then come only from TLS/QUIC/HTTP, and the app warns about this.
 - Traffic protected by real **Encrypted Client Hello** exposes only the

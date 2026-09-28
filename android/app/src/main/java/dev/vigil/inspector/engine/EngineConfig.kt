@@ -26,8 +26,12 @@ data class EngineConfig(
     @SerialName("worker_threads") val workerThreads: Int = 2,
     /** Upstream DNS over TLS/HTTPS for the virtual resolver's lookups. */
     @SerialName("encrypted_dns") val encryptedDns: EncryptedDnsConfig = EncryptedDnsConfig(),
+    val upstream: UpstreamConfig = UpstreamConfig(),
 ) {
     fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
+
+    /** JSON for logs: keys and passwords replaced. */
+    fun toLogJson(): String = copy(upstream = upstream.redacted()).toJson()
 
     companion object {
         const val TUN_V4 = "10.111.222.1"
@@ -55,6 +59,49 @@ data class EncryptedDnsServer(
     val host: String? = null,
     val addrs: List<String> = emptyList(),
     val port: Int? = null,
+)
+
+/** Mirror of the Rust `UpstreamConfig` (core/vigil-core/src/config/upstream.rs). */
+@Serializable
+data class UpstreamConfig(
+    /** "direct", "wireguard" or "socks5". */
+    val mode: String = "direct",
+    @SerialName("fail_closed") val failClosed: Boolean = true,
+    val wireguard: WireGuardConfig? = null,
+    val socks5: Socks5Config? = null,
+    /** Identifies the underlying network; a change makes WireGuard roam. */
+    @SerialName("network_id") val networkId: String = "",
+) {
+    fun redacted() = copy(
+        wireguard = wireguard?.copy(privateKey = REDACTED, presharedKey = wireguard.presharedKey?.let { REDACTED }),
+        socks5 = socks5?.copy(password = if (socks5.password.isEmpty()) "" else REDACTED),
+    )
+
+    private companion object {
+        const val REDACTED = "<redacted>"
+    }
+}
+
+@Serializable
+data class WireGuardConfig(
+    @SerialName("private_key") val privateKey: String,
+    @SerialName("peer_public_key") val peerPublicKey: String,
+    @SerialName("preshared_key") val presharedKey: String? = null,
+    val endpoint: String,
+    val addresses: List<String>,
+    @SerialName("allowed_ips") val allowedIps: List<String> = emptyList(),
+    val mtu: Int = 1280,
+    @SerialName("persistent_keepalive") val persistentKeepalive: Int = 0,
+)
+
+@Serializable
+data class Socks5Config(
+    val server: String,
+    val username: String = "",
+    val password: String = "",
+    @SerialName("send_domain") val sendDomain: Boolean = false,
+    /** "auto" or "block". */
+    val udp: String = "auto",
 )
 
 @Serializable

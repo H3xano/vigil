@@ -1,7 +1,8 @@
 //! DNS: inspection, sinkholing (including CNAME-cloaked trackers), upstream
 //! forwarding and IP→name learning.
 
-use super::{dns_upstream, sock, Shared};
+use super::upstream::{self, UpstreamUdp};
+use super::{dns_upstream, Shared};
 use crate::event::{now_ms, DnsEvent, Event, Severity, Verdict};
 use crate::packet::PROTO_UDP;
 use crate::policy::{BlockReason, Decision};
@@ -30,8 +31,10 @@ const POOL_SERVERS: usize = 32;
 const POOL_MAX_AGE: Duration = Duration::from_secs(30);
 
 struct Pooled {
-    sock: tokio::net::UdpSocket,
+    sock: UpstreamUdp,
     created: Instant,
+    /// Upstream dialer generation the socket was made with.
+    generation: u64,
 }
 
 /// Reusable protected UDP sockets to upstream resolvers, so a query does not
@@ -333,14 +336,21 @@ fn refuse_server(
 }
 
 async fn query_udp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Result<Vec<u8>> {
-    let p = match shared.dns_upstreams.take(server) {
+    // Sockets from before an upstream path change are not reused.
+    let generation = shared.upstream.generation();
+    let p = match shared
+        .dns_upstreams
+        .take(server)
+        .filter(|p| p.generation == generation)
+    {
         Some(p) => {
-            sock::drain(&p.sock);
+            p.sock.drain();
             p
         }
         None => Pooled {
-            sock: sock::connect_udp(shared.platform.clone(), server).await?,
+            sock: upstream::connect_udp(shared, server).await?,
             created: Instant::now(),
+            generation,
         },
     };
     p.sock.send(query).await?;
@@ -348,9 +358,8 @@ async fn query_udp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Res
     loop {
         let reply = tokio::time::timeout_at(
             deadline,
-            sock::recv_with(&p.sock, |d| {
-                dns::answers_query(query, d).then(|| d.to_vec())
-            }),
+            p.sock
+                .recv_with(|d| dns::answers_query(query, d).then(|| d.to_vec())),
         )
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "dns timeout"))??;
@@ -365,7 +374,7 @@ async fn query_udp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Res
 
 async fn query_tcp(shared: &Shared, query: &[u8], server: SocketAddr) -> io::Result<Vec<u8>> {
     let fut = async {
-        let mut s = sock::connect_tcp(shared.platform.clone(), server).await?;
+        let mut s = upstream::connect_tcp(shared, server).await?;
         let mut msg = (query.len() as u16).to_be_bytes().to_vec();
         msg.extend_from_slice(query);
         s.write_all(&msg).await?;
@@ -394,6 +403,14 @@ pub(super) async fn forward(
         return None;
     }
     for &server in servers.iter().take(MAX_UPSTREAMS_TRIED) {
+        if shared.upstream.dns_over_tcp() {
+            // SOCKS5: DNS goes through the proxy as DNS over TCP.
+            match query_tcp(shared, query, server).await {
+                Ok(resp) => return Some((resp, "tcp")),
+                Err(e) => log::debug!("dns upstream {server} (tcp): {e}"),
+            }
+            continue;
+        }
         match query_udp(shared, query, server).await {
             Ok(resp) => {
                 if transport == "tcp" && dns::is_truncated(&resp) {

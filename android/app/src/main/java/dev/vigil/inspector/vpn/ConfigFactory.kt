@@ -1,8 +1,12 @@
 package dev.vigil.inspector.vpn
 
 import dev.vigil.inspector.data.Settings
+import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.BeaconConfig
 import dev.vigil.inspector.engine.EngineConfig
+import dev.vigil.inspector.engine.Socks5Config
+import dev.vigil.inspector.engine.UpstreamConfig
+import dev.vigil.inspector.engine.WireGuardConfig
 
 object ConfigFactory {
     /**
@@ -10,9 +14,22 @@ object ConfigFactory {
      * Anything that is not a valid IPv6 /96 is dropped, because the engine
      * rejects the whole config otherwise.
      */
-    fun build(s: Settings, networkDns: List<String>, blockedUids: List<Int>, nat64Prefixes: List<String> = emptyList()): EngineConfig {
-        val upstreams = when (s.upstreamMode) {
-            "custom" -> s.customUpstreams.mapNotNull(::normalizeResolver)
+    fun build(
+        s: Settings,
+        networkDns: List<String>,
+        blockedUids: List<Int>,
+        nat64Prefixes: List<String> = emptyList(),
+        networkId: String = "",
+    ): EngineConfig {
+        val up = s.upstream
+        val tunnelDns = up.wireguard?.dns.orEmpty().mapNotNull(::normalizeResolver)
+        val upstreams = when {
+            // DNS goes through the tunnel, to the provider's resolvers.
+            up.mode == UpstreamSettings.MODE_WIREGUARD && tunnelDns.isNotEmpty() -> tunnelDns
+            s.upstreamMode == "custom" -> s.customUpstreams.mapNotNull(::normalizeResolver)
+            // The network's resolver is usually on the local network: not
+            // reachable through a tunnel or proxy, and asking it would bypass them.
+            up.mode != UpstreamSettings.MODE_DIRECT -> emptyList()
             else -> networkDns
         }.ifEmpty { EngineConfig.FALLBACK_UPSTREAMS }
         val beacon = when (s.beaconSensitivity) {
@@ -32,8 +49,56 @@ object ConfigFactory {
             nat64Prefixes = nat64Prefixes.mapNotNull(::normalizeNat64Prefix).distinct(),
             // Invalid settings (which the DNS screen does not save) become "off".
             encryptedDns = s.encryptedDns.toEngine(),
+            upstream = upstreamConfig(up, networkId),
         )
     }
+
+    /**
+     * The engine's upstream section. A WireGuard mode without an imported
+     * configuration is passed on as such: the engine rejects it, so inspection
+     * fails to start instead of silently running direct.
+     */
+    fun upstreamConfig(up: UpstreamSettings, networkId: String): UpstreamConfig = when (up.mode) {
+        UpstreamSettings.MODE_WIREGUARD -> UpstreamConfig(
+            mode = up.mode,
+            failClosed = up.failClosed,
+            networkId = networkId,
+            wireguard = up.wireguard?.let { w ->
+                WireGuardConfig(
+                    privateKey = w.privateKey,
+                    peerPublicKey = w.peerPublicKey,
+                    presharedKey = w.presharedKey,
+                    endpoint = w.endpoint,
+                    addresses = w.addresses,
+                    allowedIps = w.allowedIps,
+                    mtu = w.mtu ?: DEFAULT_WG_MTU,
+                    persistentKeepalive = w.persistentKeepalive,
+                )
+            },
+        )
+        UpstreamSettings.MODE_SOCKS5 -> UpstreamConfig(
+            mode = up.mode,
+            failClosed = up.failClosed,
+            networkId = networkId,
+            socks5 = Socks5Config(
+                server = hostPort(up.socks5.host, up.socks5.port),
+                username = up.socks5.username,
+                password = up.socks5.password,
+                sendDomain = up.socks5.sendDomain,
+                udp = up.socks5.udp,
+            ),
+        )
+        else -> UpstreamConfig(mode = UpstreamSettings.MODE_DIRECT, failClosed = up.failClosed, networkId = networkId)
+    }
+
+    /** `host:port`, bracketing IPv6 literals. */
+    fun hostPort(host: String, port: Int): String {
+        val h = host.trim().removePrefix("[").removeSuffix("]")
+        return if (h.contains(':')) "[$h]:$port" else "$h:$port"
+    }
+
+    /** Used when the wg-quick file sets no MTU (as the WireGuard Android app does). */
+    const val DEFAULT_WG_MTU = 1280
 
     /**
      * Accepts `1.1.1.1`, `1.1.1.1:5353`, `2606:4700::1111` or

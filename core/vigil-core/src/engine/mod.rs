@@ -18,6 +18,7 @@ mod dns_upstream;
 mod sock;
 mod tcp;
 mod udp;
+pub(crate) mod upstream;
 
 use crate::config::{Config, ConfigError};
 use crate::detect::{AlertLimiter, BeaconDetector};
@@ -163,6 +164,8 @@ pub(crate) struct Shared {
     pub udp_flows: Mutex<udp::FlowTable>,
     pub dns_upstreams: dns::UpstreamPool,
     pub encrypted_dns: dns_upstream::EncryptedUpstream,
+    /// How upstream sockets reach the internet (direct, WireGuard, SOCKS5).
+    pub upstream: upstream::Upstream,
     open_flows: Mutex<OpenFlows>,
     shut_down: AtomicBool,
 }
@@ -187,6 +190,7 @@ impl Shared {
             udp_flows: Mutex::new(udp::FlowTable::default()),
             dns_upstreams: dns::UpstreamPool::default(),
             encrypted_dns: dns_upstream::EncryptedUpstream::default(),
+            upstream: upstream::Upstream::default(),
             open_flows: Mutex::new(OpenFlows::default()),
             shut_down: AtomicBool::new(false),
         }
@@ -334,6 +338,7 @@ impl Shared {
             dropped_packets: s.dropped_packets.load(Relaxed),
             dropped_events: self.events.dropped(),
             dns_cache_size: self.dns_cache.len() as u64,
+            upstream: self.upstream.status(),
             ..self.encrypted_dns.stats.snapshot()
         }
     }
@@ -374,7 +379,13 @@ impl Engine {
             Arc::new(TunDevice::from_raw_fd_dup(tun_fd)?)
         };
         let (tun_tx, tun_rx) = mpsc::channel(TUN_QUEUE);
+        let upstream = config.upstream.clone();
         let shared = Arc::new(Shared::new(config, platform, tun_tx));
+        {
+            // A WireGuard tunnel spawns its driver on the runtime.
+            let _guard = runtime.enter();
+            shared.upstream.apply(&upstream, &shared.platform);
+        }
         let s = shared.clone();
         runtime.spawn(async move {
             if let Err(e) = run(s.clone(), tun, tun_rx).await {
@@ -406,8 +417,16 @@ impl Engine {
     }
 
     /// Installs a new configuration. Resource caps keep their start values.
+    /// A changed upstream path applies to connections opened from now on;
+    /// open ones keep theirs (see `engine/upstream`).
     pub fn update_config(&self, config: Config) -> Result<(), ConfigError> {
         config.validate()?;
+        if let Some(rt) = self.runtime.lock().as_ref() {
+            let _guard = rt.enter();
+            self.shared
+                .upstream
+                .apply(&config.upstream, &self.shared.platform);
+        }
         self.shared.policy.write().apply_config(&config);
         *self.shared.config.write() = Arc::new(config);
         Ok(())

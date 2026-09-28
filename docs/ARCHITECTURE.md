@@ -14,6 +14,8 @@
 | SYN handling | The SYN is held while vigil attributes the flow, checks policy and **connects upstream first** | Refused or unreachable destinations reach the app as a real RST. |
 | Parsers | Hand-written, bounds-checked zero-copy readers instead of `nom` | They are small and dependency-free, and garbage-input tests show they never panic. |
 | Feeds | Sorted string arena plus binary search per label | About 8 bytes of overhead per entry and no per-name allocation, streamed from disk. Better suited to phones than a trie or HashSet. |
+| Upstream chaining | One dialer (`engine/upstream`) for every upstream socket: direct, WireGuard (boringtun + a client-side smoltcp interface) or SOCKS5 | Android allows one VPN, so users of a real VPN could not run vigil. Terminating flows in user space already gives vigil its own upstream sockets; only their egress changes, so inspection is identical in every mode. |
+| WireGuard in user space | `boringtun` (vendored as an rlib) for Noise; smoltcp 0.12 (the version netstack-smoltcp already pulls in) for the tunnel's TCP/UDP | No kernel or root needed; the same crates cross-compile for all ABIs. Kernel WireGuard is used only as the e2e peer. |
 
 ## Engine data path (`core/vigil-core/src/engine`)
 
@@ -35,8 +37,10 @@
      with a `hardcoded_dns` alert), and refuses other ports on the virtual
      resolver, including the Private DNS probe on 853;
    - checks policy by IP (app block, IP feeds, DoT on 853);
-   - connects upstream with a protected socket (created and protected on the
-     blocking pool, since `protect()` is a JNI upcall plus netd IPC).
+   - connects upstream through the upstream dialer (a protected socket,
+     created and protected on the blocking pool since `protect()` is a JNI
+     upcall plus netd IPC; or a connection through the WireGuard tunnel or
+     SOCKS5 proxy, see below).
 
    On success the SYN goes to smoltcp and the flow's metadata (including the
    connected upstream socket) is parked until smoltcp yields the stream. On
@@ -103,6 +107,49 @@
    pruned at most once a minute when full; until then new targets are not
    tracked.
 
+## Upstream paths (`engine/upstream`)
+
+Every upstream socket comes from the dialer: `upstream::connect_relay`
+(TCP relay, at the SYN gate), `connect_tcp` (DNS over TCP, and any other
+engine code needing an upstream TCP connection) and `connect_udp` (UDP
+flows and the pooled DNS sockets). The result is an `UpstreamTcp`
+(`AsyncRead + AsyncWrite + Unpin + Send`) or an `UpstreamUdp` (send /
+receive-with-callback), and says which path it took (`via`).
+
+- **direct**: the protected sockets of `sock.rs`, unchanged. The relay
+  splits them into tokio's owned halves as before, so this mode costs one
+  enum match per read/write.
+- **wireguard**: `wireguard.rs` keeps boringtun's `Tunn`, a smoltcp
+  `Interface` (medium IP, the tunnel addresses) and its sockets behind one
+  lock. A driver task owns the protected UDP socket to the endpoint: it
+  decrypts datagrams into smoltcp, polls smoltcp, encrypts what it emits and
+  runs the WireGuard timers (handshake retries, keepalive, rekey) every
+  250 ms. TCP connects complete the tunnelled handshake before the SYN gate
+  admits the app's SYN, so refusals stay faithful; resets map to smoltcp
+  aborts both ways. Handshakes failing for 10 s mark the tunnel down (an
+  idle tunnel is not down); while down it retries every 15 s and re-creates
+  the socket / re-resolves the endpoint every 30 s. A `network_id` change
+  (the app sends the network handle) re-creates the socket at once; the
+  session survives and the peer learns the new address from the next
+  packet. A replaced tunnel's driver ends when its last connection does.
+- **socks5**: `socks5.rs` speaks CONNECT (by address, or by the sniffed
+  SNI/Host with `send_domain`, which defers the connect to the app's first
+  bytes) and UDP ASSOCIATE (one association per UDP flow; the proxy's
+  refusal is remembered and UDP is blocked from then on). Plain DNS goes to
+  the proxy as DNS over TCP. Only failures to use the proxy itself (connect,
+  handshake, authentication) count as "down"; a CONNECT refused by the
+  destination is reported to the app like a direct refusal.
+- **fail closed** (default): errors are returned, never replaced by a direct
+  connection. With `fail_closed: false` the dialer goes direct while the path
+  is down. WireGuard destinations outside AllowedIPs always go direct, as
+  wg-quick routes them.
+
+Loopback proxies work: sockets to 127.0.0.1 are protected like any other,
+and the loopback route precedes the VPN's routing rules. A proxy *app* on
+the same phone (Orbot) must be excluded from vigil's VPN, or its own
+connections would loop back into the proxy; the app adds it with
+`addDisallowedApplication`.
+
 ## Known engine limitations
 
 - **QUIC names are sniffed only on UDP ports 443 and 80**, and only when
@@ -115,6 +162,15 @@
   protocols on TCP/53 are not relayed transparently.
 - IP fragments (other than IPv6 atomic fragments) are dropped, and ICMP is
   not relayed.
+- WireGuard: one peer; no IP fragmentation inside the tunnel (datagrams
+  larger than the tunnel MTU are dropped); destinations of a family without
+  a tunnel address fail. A TCP connection's window through the tunnel is
+  256 KiB (about 40 Mbit/s at 50 ms RTT), and there is no congestion control
+  on the tunnelled side.
+- SOCKS5: UDP needs a proxy with UDP ASSOCIATE (Tor has none: UDP is then
+  blocked and QUIC falls back to TCP). DNS over TCP through the proxy
+  opens a connection per query (slow through Tor). An answer larger than
+  the app's UDP buffer is not truncated for it.
 
 ## Android app (`android/app/src/main/java/dev/vigil/inspector`)
 

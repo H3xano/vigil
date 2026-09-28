@@ -53,3 +53,6 @@ check("ja4-allowlisted-flagged", any(f["domain"] == "example.org" and f["verdict
 check("ja4-quic-match", any(f["domain"] == "www.cloudflare.com" and f["app_proto"] == "quic" and f["verdict"] == "allow" for f in ja4_flows), ja4_flows)
 check("ja4-default-curl-unmatched", any(f["domain"] == "example.com" and f["verdict"] == "allow" and f.get("domain_source") == "sni" and not f.get("ja4_match") for f in flows.values()))
 check("connect-error-reported",any(ends.get(i, {}).get("error", "") and "connect" in ends[i]["error"] for i in flows))
+relayed = [f for f in flows.values() if f["verdict"] == "allow"]
+check("flows-via-direct", relayed and all(f.get("via") == "direct" for f in relayed), [(f["dst_ip"], f.get("via")) for f in relayed if f.get("via") != "direct"][:10])
+check("stats-upstream-direct", all(s.get("upstream", {}).get("mode") == "direct" for s in stats), stats[-1].get("upstream") if stats else None)

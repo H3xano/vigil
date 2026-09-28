@@ -33,6 +33,8 @@ data class FlowEvent(
     val verdict: String? = null,
     val reason: String? = null,
     val tags: List<String> = emptyList(),
+    /** Upstream path: "direct", "wireguard" or "socks5" (null if never connected). */
+    val via: String? = null,
 ) : EngineEvent
 
 /** A flow's JA4 fingerprint is listed by [feed]; [rule] is the entry (`a_b_*` for wildcards). */
@@ -107,7 +109,24 @@ data class StatsEvent(
     @SerialName("encrypted_dns_last_ok_ts") val encryptedDnsLastOkTs: Long = 0,
     @SerialName("encrypted_dns_last_error_ts") val encryptedDnsLastErrorTs: Long = 0,
     @SerialName("encrypted_dns_last_error") val encryptedDnsLastError: String? = null,
+    val upstream: UpstreamStatus? = null,
 ) : EngineEvent
+
+/** State of the upstream path (WireGuard tunnel or SOCKS5 proxy). */
+@Serializable
+data class UpstreamStatus(
+    val mode: String = "direct",
+    /** "up", "connecting", "idle" or "down". */
+    val state: String = "up",
+    @SerialName("fail_closed") val failClosed: Boolean = true,
+    val endpoint: String? = null,
+    @SerialName("handshake_age_s") val handshakeAgeS: Long? = null,
+    @SerialName("tx_bytes") val txBytes: Long? = null,
+    @SerialName("rx_bytes") val rxBytes: Long? = null,
+    @SerialName("last_error") val lastError: String? = null,
+    /** SOCKS5 only: "unknown", "supported", "unsupported" or "blocked". */
+    val udp: String? = null,
+)
 
 @Serializable
 @SerialName("engine")

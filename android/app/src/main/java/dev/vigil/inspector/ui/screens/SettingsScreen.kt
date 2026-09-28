@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.BuildConfig
+import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.VigilNative
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
@@ -114,6 +115,15 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SettingRow("Custom rules", "${s.denyDomains.size} blocked · ${s.allowDomains.size} allowed domains", onClick = { nav.navigate("rules") })
 
             SectionTitle("Network")
+            SettingRow(
+                "Route through VPN / proxy",
+                when (s.upstream.mode) {
+                    UpstreamSettings.MODE_WIREGUARD -> "WireGuard" + (s.upstream.wireguard?.endpoint?.let { " to $it" } ?: "")
+                    UpstreamSettings.MODE_SOCKS5 -> "SOCKS5 proxy ${ConfigFactory.hostPort(s.upstream.socks5.host, s.upstream.socks5.port)}"
+                    else -> "Direct. Use your WireGuard server or a SOCKS5 proxy (e.g. Tor) while vigil runs."
+                } + if (s.upstream.mode != UpstreamSettings.MODE_DIRECT && !s.upstream.failClosed) " · falls back to direct" else "",
+                onClick = { nav.navigate("upstream") },
+            )
             SettingRow(
                 "Keep local network traffic direct",
                 "Private and link-local destinations (printers, casting, NAS) bypass the inspector. Changing this restarts inspection.",
