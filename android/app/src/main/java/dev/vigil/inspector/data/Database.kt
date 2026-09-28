@@ -177,6 +177,9 @@ object FeedKinds {
 
     /** An IP-to-ASN table (engine category `asn`): enriches connections, never blocks. */
     const val ASN = "asn"
+
+    /** The tracker-company database ([TrackerDatabase]): labels destinations, never blocks, not loaded by the engine. */
+    const val TRACKERS = "trackers"
 }
 
 data class AppUsage(
@@ -455,6 +458,7 @@ abstract class VigilDatabase : RoomDatabase() {
     abstract fun destinations(): DestinationDao
     abstract fun feeds(): FeedDao
     abstract fun appAsns(): AppAsnDao
+    abstract fun trackerUsage(): TrackerUsageDao
 
     companion object {
         fun create(context: Context): VigilDatabase =

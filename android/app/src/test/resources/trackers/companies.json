@@ -1,0 +1,24 @@
+{
+	"_attribution": "Excerpt of AdGuard companiesdb (https://github.com/AdguardTeam/companiesdb, dist/ files of 2026-09-28), CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/). Trimmed for vigil's unit tests; descriptions shortened.",
+	"timeUpdated": "2026-09-28T10:12:19.506Z",
+	"companies": {
+		"appsflyer": {
+			"name": "AppsFlyer",
+			"websiteUrl": "https://www.appsflyer.com/",
+			"description": "AppsFlyer is the global leading platform for Mobile Attribution & Marketing Analytics.",
+			"source": "AdGuard"
+		},
+		"google": {
+			"name": "Google",
+			"websiteUrl": "http://www.google.com",
+			"description": "Google LLC is an American multinational technology company that specializes in Internet-related services and products...",
+			"source": "AdGuard"
+		},
+		"meta": {
+			"name": "Meta Platforms, Inc.",
+			"websiteUrl": "https://www.meta.com/",
+			"description": "Meta builds technologies that help people connect, find communities and grow businesses.",
+			"source": "AdGuard"
+		}
+	}
+}

@@ -63,9 +63,19 @@ object FeedCatalog {
                 "enables new-network alerts. Downloaded weekly (≈ 9 MB, ≈ 10 MB of memory while inspecting). " +
                 "Data: iptoasn.com, public domain (PDDL 1.0).",
         ),
+        // Tracker-company labels (AdGuard companiesdb, CC BY-SA 4.0). Downloaded by the device from AdGuard's
+        // repository, not redistributed. On by default: it only labels destinations and never blocks.
+        FeedEntity(
+            id = TrackerDatabase.FEED_ID, name = "Tracker labels (AdGuard companiesdb)", url = TrackerDatabase.TRACKERS_URL,
+            category = TrackerDatabase.CATEGORY, enabled = true, builtin = true, kind = FeedKinds.TRACKERS,
+            format = TrackerDatabase.FORMAT_ADGUARD,
+            description = "Names the company and kind of tracker behind a domain, e.g. \"Google · Advertising\", and lists the " +
+                "tracker companies each app contacts. Labels only: nothing is blocked. Downloaded weekly (≈ 1.5 MB). " +
+                "Data: ${TrackerDatabase.ATTRIBUTION}.",
+        ),
     )
 
-    val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom", AsnDatabase.CATEGORY)
+    val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom", AsnDatabase.CATEGORY, TrackerDatabase.CATEGORY)
 
     private fun feed(id: String, name: String, url: String, category: String, enabled: Boolean, description: String) =
         FeedEntity(id = id, name = name, url = url, category = category, enabled = enabled, builtin = true, description = description)

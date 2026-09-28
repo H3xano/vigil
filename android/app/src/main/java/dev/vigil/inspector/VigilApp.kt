@@ -13,6 +13,7 @@ import androidx.work.WorkerParameters
 import dev.vigil.inspector.data.AppResolver
 import dev.vigil.inspector.data.FeedRepository
 import dev.vigil.inspector.data.SettingsStore
+import dev.vigil.inspector.data.TrackerLabels
 import dev.vigil.inspector.data.VigilDatabase
 import dev.vigil.inspector.export.SiemExporter
 import dev.vigil.inspector.processing.AlertNotifier
@@ -42,6 +43,8 @@ class VigilApp : Application() {
     val foreground by lazy { ForegroundTracker(this) }
     val notifier by lazy { AlertNotifier(this, apps) }
     val exporter by lazy { SiemExporter(this, settings, scope).also { it.start() } }
+    /** Tracker-company labels, loaded on first use (see [TrackerLabels]). */
+    val trackers by lazy { TrackerLabels(scope, feeds.feeds, feeds::fileFor) }
     /** App-wide, so upload windows and the per-app baseline span engine sessions. */
     val exfil by lazy { ExfilDetector(java.io.File(filesDir, "exfil_baseline.json")) }
     private val pruneLock = Mutex()

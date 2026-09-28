@@ -1,6 +1,7 @@
 package dev.vigil.inspector.vpn
 
 import dev.vigil.inspector.data.FeedEntity
+import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.BeaconConfig
@@ -69,11 +70,11 @@ object ConfigFactory {
 
     /**
      * The feeds the engine should hold: enabled ones with a downloaded file
-     * ([hasFile]). The service preloads exactly these at start and keeps the
+     * ([hasFile]), except the tracker labels (read by the app only). The service preloads exactly these at start and keeps the
      * engine in sync with this selection afterwards.
      */
     fun loadableFeeds(feeds: List<FeedEntity>, hasFile: (String) -> Boolean): List<FeedEntity> =
-        feeds.filter { it.enabled && hasFile(it.id) }
+        feeds.filter { it.enabled && it.kind != FeedKinds.TRACKERS && hasFile(it.id) }
 
     /**
      * [base] as a start config: [feeds] (already filtered by [loadableFeeds])

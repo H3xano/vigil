@@ -155,6 +155,8 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                 if (!converted.renameTo(target)) throw IOException("could not store feed")
                 Log.i(TAG, "asn ${feed.id}: ${stats.routed} routed ranges, ${stats.asCount} networks, ${stats.rejected} rejected rows")
                 FeedSummary(id = feed.id, ipRanges = stats.routed)
+            } else if (feed.kind == FeedKinds.TRACKERS) {
+                refreshTrackers(feed, tmp, converted, target)
             } else {
                 download(feed, tmp)
                 val file = if (Ja4Converters.needsConversion(feed.format)) {
@@ -206,6 +208,28 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             dao.markError(feed.id, e.message ?: e.javaClass.simpleName)
         }
         result
+    }
+
+    /**
+     * Tracker labels: downloads `trackers.json` ([tmp]) and `companies.json`
+     * (next to it), converts both into one compact file and swaps it in.
+     * Read by the app only ([TrackerLabels]); the engine never loads it.
+     */
+    private suspend fun refreshTrackers(feed: FeedEntity, tmp: File, converted: File, target: File): FeedSummary {
+        val companies = File.createTempFile("${feed.id}-companies-", ".tmp", dir)
+        try {
+            download(feed, tmp, feed.url, TrackerDatabase.MAX_JSON_BYTES)
+            download(feed, companies, TrackerDatabase.companiesUrl(feed.url), TrackerDatabase.MAX_JSON_BYTES)
+            val stats = TrackerDatabase.convert(tmp.readText(Charsets.UTF_8), companies.readText(Charsets.UTF_8), converted)
+            coroutineContext.ensureActive()
+            val previous = if (feed.lastUpdated != null && target.exists()) feed.domains else null
+            TrackerDatabase.validate(stats, previous)?.let { throw IOException(it) }
+            if (!converted.renameTo(target)) throw IOException("could not store feed")
+            Log.i(TAG, "trackers ${feed.id}: ${stats.domains} domains, ${stats.trackers} trackers, ${stats.companies} companies, ${stats.rejected} rejected")
+            return FeedSummary(id = feed.id, domains = stats.domains)
+        } finally {
+            companies.delete()
+        }
     }
 
     /**
@@ -307,7 +331,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         feed.authHeader?.let { FeedCredential(feed.authHeaderName ?: "Authorization", it, feed.url) }
 
     /** Blocking download that still honours cancellation (WorkManager stop, REPLACE). */
-    private suspend fun download(feed: FeedEntity, dest: File) = coroutineScope {
+    private suspend fun download(feed: FeedEntity, dest: File, url: String = feed.url, maxBytes: Long = MAX_FEED_BYTES) = coroutineScope {
         // Disconnecting from another thread unblocks a read stuck in the socket.
         val current = AtomicReference<HttpURLConnection?>()
         val watchdog = launch(Dispatchers.IO) {
@@ -318,7 +342,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             }
         }
         try {
-            val conn = FeedHttp.get(feed.url, credentialOf(feed), { c ->
+            val conn = FeedHttp.get(url, credentialOf(feed), { c ->
                 c.connectTimeout = 20_000
                 c.readTimeout = 60_000
                 c.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+feed updater)")
@@ -333,7 +357,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                         val n = input.read(buf)
                         if (n < 0) break
                         total += n
-                        if (total > MAX_FEED_BYTES) throw IOException("feed larger than ${MAX_FEED_BYTES / 1_000_000} MB")
+                        if (total > maxBytes) throw IOException("feed larger than ${maxBytes / 1_000_000} MB")
                         out.write(buf, 0, n)
                     }
                 }
@@ -372,10 +396,11 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         /**
          * How old a downloaded copy may be before a refresh fetches it again.
          * The ASN table changes slowly and is large: weekly, and at most daily
-         * even for a forced refresh. Other feeds: [maxAgeMs], 0 when forced.
+         * even for a forced refresh. The tracker labels follow the same schedule. Other feeds: [maxAgeMs], 0 when forced.
          */
         fun maxAgeFor(feed: FeedEntity, maxAgeMs: Long, force: Boolean): Long = when {
             feed.kind == FeedKinds.ASN -> if (force) ASN_FORCED_MIN_AGE_MS else maxOf(maxAgeMs, AsnDatabase.MAX_AGE_MS)
+            feed.kind == FeedKinds.TRACKERS -> if (force) ASN_FORCED_MIN_AGE_MS else maxOf(maxAgeMs, TrackerDatabase.MAX_AGE_MS)
             force -> 0L
             else -> maxAgeMs
         }
