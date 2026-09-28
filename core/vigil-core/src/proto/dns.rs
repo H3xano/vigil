@@ -174,9 +174,11 @@ fn read_name(msg: &[u8], r: &mut Reader<'_>) -> Option<String> {
 }
 
 fn parse_svcb_hints(rdata: &[u8], msg: &[u8], rdata_offset: usize) -> Option<Vec<IpAddr>> {
-    let mut r = Reader::new(msg);
-    r.skip(rdata_offset)?;
+    // Bounded to the RDATA, so a SvcParam length cannot run into the next
+    // record (names may still point backwards into the whole message).
     let end = rdata_offset + rdata.len();
+    let mut r = Reader::new(msg.get(..end)?);
+    r.skip(rdata_offset)?;
     let _priority = r.u16()?;
     read_name(msg, &mut r)?;
     let mut out = Vec::new();
@@ -456,6 +458,41 @@ mod tests {
             vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]
         );
         assert_eq!(p.min_ttl(), Some(30));
+    }
+
+    /// An HTTPS answer whose RDATA is `rdata`, followed by an A record.
+    fn https_answer_then_a(rdata: &[u8]) -> Vec<u8> {
+        let mut m = build_query(8, "svc.example", TYPE_HTTPS);
+        m[2] = 0x81;
+        m[3] = 0x80;
+        m[7] = 2;
+        m.extend_from_slice(&[0xc0, 0x0c, 0, TYPE_HTTPS as u8, 0, 1, 0, 0, 0, 60]);
+        m.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        m.extend_from_slice(rdata);
+        m.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 9, 9, 9, 9]);
+        m
+    }
+
+    #[test]
+    fn svcb_hints_stay_inside_their_rdata() {
+        // Priority 1, target ".", ipv4hint 1.2.3.4.
+        let ok = https_answer_then_a(&[0, 1, 0, 0, 4, 0, 4, 1, 2, 3, 4]);
+        let p = parse(&ok).unwrap();
+        assert_eq!(
+            p.answers[0].data,
+            RData::Hints(vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))])
+        );
+        assert_eq!(p.answers[1].data, RData::A(Ipv4Addr::new(9, 9, 9, 9)));
+        // The ipv4hint claims 8 bytes but the RDATA holds 4: the next
+        // record's bytes must not be read as a second hint.
+        let bad = https_answer_then_a(&[0, 1, 0, 0, 4, 0, 8, 1, 2, 3, 4]);
+        let p = parse(&bad).unwrap();
+        assert_eq!(p.answers[0].data, RData::Other);
+        assert_eq!(p.answers[1].data, RData::A(Ipv4Addr::new(9, 9, 9, 9)));
+        assert_eq!(
+            p.answer_ips().collect::<Vec<_>>(),
+            vec![IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))]
+        );
     }
 
     #[test]
