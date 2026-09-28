@@ -42,7 +42,7 @@ class VigilApp : Application() {
     val feeds by lazy { FeedRepository(this, db.feeds()) }
     val foreground by lazy { ForegroundTracker(this) }
     val notifier by lazy { AlertNotifier(this, apps) }
-    val exporter by lazy { SiemExporter(this, settings, scope).also { it.start() } }
+    val exporter by lazy { SiemExporter(this, settings, scope, trackerLabel = trackers::match).also { it.start() } }
     /** Tracker-company labels, loaded on first use (see [TrackerLabels]). */
     val trackers by lazy { TrackerLabels(scope, feeds.feeds, feeds::fileFor) }
     /** App-wide, so upload windows and the per-app baseline span engine sessions. */

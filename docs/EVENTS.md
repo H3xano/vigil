@@ -540,6 +540,23 @@ upstream transport as `vigil.upstream`. DNS records use `dns.question.name/type`
 `dns.answers[].data`. `host.os.version` is the Android release (`15`,
 `16`) and `vigil.android.api_level` the API level (`35`, `36`).
 
+When the destination name of a flow (`destination.domain`) or DNS record
+(`dns.question.name`) is a known tracker or service in the tracker labels
+(AdGuard companiesdb, on by default), the record carries `vigil.tracker`:
+
+| Field | Example | Meaning |
+|---|---|---|
+| `vigil.tracker.id` | `google_marketing` | companiesdb tracker id |
+| `vigil.tracker.name` | `Google Marketing` | tracker name |
+| `vigil.tracker.company` | `Google` | company; omitted when the database names none |
+| `vigil.tracker.category` | `advertising` | companiesdb category key: `advertising`, `site_analytics`, `mobile_analytics`, `telemetry`, `social_media`, `pornvertising` (counted as trackers in the app), or `cdn`, `hosting`, `essential`, `customer_interaction`, `audio_video_player`, `misc`, … (labelled only) |
+| `vigil.tracker.domain` | `doubleclick.net` | the listed domain that matched (the name itself or a parent domain) |
+
+The label is looked up when the record is exported (longest listed suffix
+on label boundaries, so `ads.g.doubleclick.net` matches `doubleclick.net`
+and `notdoubleclick.net` does not). It is informational: vigil does not
+block because of it. Alerts carry no tracker fields.
+
 Alerts use `event.kind: "alert"`, `event.category: ["intrusion_detection",
 "network"]`, `event.type: ["denied"]` when vigil blocked the connection or
 lookup (`threat_domain`, `threat_ip`, and `threat_ja4` with blocking on) and

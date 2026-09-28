@@ -9,6 +9,7 @@ import android.util.Log
 import dev.vigil.inspector.BuildConfig
 import dev.vigil.inspector.data.ExportSettings
 import dev.vigil.inspector.data.SettingsStore
+import dev.vigil.inspector.data.TrackerMatch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,7 +50,13 @@ import javax.net.ssl.X509ExtendedKeyManager
  * and HTTP transports. vigil's own sockets bypass the tunnel (the app is
  * excluded from its VPN).
  */
-class SiemExporter(private val context: Context, private val settings: SettingsStore, private val scope: CoroutineScope) {
+class SiemExporter(
+    private val context: Context,
+    private val settings: SettingsStore,
+    private val scope: CoroutineScope,
+    /** Tracker label of a destination name, added to flow and DNS records as `vigil.tracker`. */
+    private val trackerLabel: (String?) -> TrackerMatch? = { null },
+) {
     private val config: StateFlow<ExportSettings> = settings.flow.map { it.export }
         .stateIn(scope, SharingStarted.Eagerly, settings.value.export)
     private val online = MutableStateFlow(true)
@@ -69,7 +76,7 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
             "alerts_dns" -> kind == "alert" || kind == "dns"
             else -> kind == "alert"
         }
-        if (wanted) pipeline.offer(record)
+        if (wanted) pipeline.offer(ExportRecords.withTracker(record, trackerLabel))
     }
 
     fun start() {
