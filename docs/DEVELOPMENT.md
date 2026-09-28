@@ -42,10 +42,10 @@ Run all of these before committing anything that touches the engine or the
 app. Every one was green at the 0.1.0 commit.
 
 ```sh
-cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-scripts/e2e-netns.sh          # direct, encrypted DNS, SOCKS5 and WireGuard stages (E2E_STAGES=...), needs internet, no root
-scripts/jni-smoke.sh          # 26 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest
+cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 113 unit tests
+scripts/e2e-netns.sh          # 156 checks: direct, edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+scripts/jni-smoke.sh          # 28 checks, no root
+cd android && ./gradlew lintDebug testDebugUnitTest   # 86 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 LOCAL=1 BYTES=1000000000 scripts/bench-throughput.sh   # engine ceiling
@@ -170,7 +170,7 @@ would make the second build trivially identical.
   namespace** (`ip link add … type wireguard`); `scripts/e2e/wgconf.py`
   configures them over generic netlink, so wireguard-tools are not needed.
   Without the module the stage prints SKIP. `E2E_STAGES="wireguard"` (or
-  `socks5`, `direct`) runs single stages.
+  `socks5`, `edns`, `direct`) runs single stages.
 - **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
   queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
   then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
@@ -198,12 +198,13 @@ core/vigil-core/src/
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
   engine/dns_upstream.rs  encrypted upstream DNS (DoT, DoH over HTTP/2 or 1.1), TLS config
   engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
-  engine/upstream/  the dialer for every upstream socket: direct, wireguard.rs (boringtun + client smoltcp), socks5.rs
-  proto/{dns,tls,quic,http}.rs   parsers (pure)
+  engine/upstream/  the dialer for every upstream socket (relays, UDP flows, plain DNS, DoT/DoH):
+                    mod.rs direct + dispatch, wireguard.rs (boringtun + client smoltcp), socks5.rs
+  proto/{dns,tls,quic,http}.rs   parsers (pure); tls.rs also computes JA4
   proto/doh.rs      DoH HTTP/1.1 request encoding and response parsing (pure)
   ../testdata/edns/ test-only CA and server certificate (dns.vigil.test, 127.0.0.1)
   intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
-  policy.rs         Policy, feed categories, DoH host list
+  policy.rs         Policy, feed categories, DoH host list, JA4 block reasons
   detect.rs         beacon detector, alert limiter
   event.rs          event types + bounded queue
   config.rs         Config (JSON contract with the app); config/upstream.rs the upstream section

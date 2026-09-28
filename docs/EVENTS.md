@@ -44,7 +44,8 @@ over TCP to any resolver, not only the virtual one, is inspected and logged
 with `transport: tcp`; such connections do not produce `flow` events.
 
 `dns.upstream` is the transport that produced the answer: `udp` (or `tcp`
-after a truncated UDP answer) for plain DNS, `dot`/`doh` when
+after a truncated UDP answer, and always `tcp` with a SOCKS5 upstream) for
+plain DNS, `dot`/`doh` when
 `encrypted_dns` is on. For a SERVFAIL caused by unreachable resolvers it
 names the transport that failed, and `reason` says why (for example
 `upstream unreachable (dot: dns.quad9.net (9.9.9.9:853): timed out)`). With
@@ -73,8 +74,13 @@ never used for blocking.
 below): `direct`, `wireguard` or `socks5`. It is `direct` in the tunnel and
 proxy modes too for destinations outside the WireGuard peer's AllowedIPs,
 and when the path is down with `fail_closed: false`. It is null when no
-upstream connection was attempted (flows blocked before connecting). For a
-failed connect it names the path that was tried.
+upstream connection was attempted (TCP flows blocked at the SYN gate, UDP
+and QUIC flows blocked by policy or JA4). TCP flows blocked after the sniff
+(by SNI, Host or JA4) name the path of the connection made at the SYN gate,
+to which nothing of the app's was sent; with SOCKS5 `send_domain` that
+connection is made lazily, so a blocked flow never contacts the proxy
+(`via` is still `socks5`). For a failed connect it names the path that was
+tried.
 
 ### JA4 matches
 
@@ -184,6 +190,8 @@ added after 0.1.0:
 | `max_pending_connects` | integer > 0 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
 | `max_dns_inflight` | integer > 0 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |
 | `block_ja4_matches` | bool | `false` | Reset connections (drop QUIC flows) whose JA4 fingerprint is on a feed, instead of only alerting. Allowlisted names are exempt. See "JA4 matches". |
+| `encrypted_dns` | object | `{"mode":"off"}` | DoT/DoH for the virtual resolver's lookups. See "`encrypted_dns`" below. |
+| `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
 
 The four caps are read when the engine starts; a later config update does
 not resize them.
@@ -194,7 +202,9 @@ Forwards the virtual resolver's queries over DNS-over-TLS (RFC 7858) or
 DNS-over-HTTPS (RFC 8484) instead of plain DNS to `upstream_dns`. Only the
 transport changes: policy, sinkholing, CNAME-cloaking checks and `dns`
 events work as before. Queries an app sends to a hard-coded resolver are
-still forwarded to that resolver in cleartext.
+still forwarded to that resolver in cleartext. The TLS connections use the
+`upstream` path like every other socket (see "Encrypted DNS over an upstream
+path" below).
 
 ```json
 "encrypted_dns": {
@@ -239,9 +249,9 @@ certificate. While `mode` is `off` only the server count is checked.
 
 ### Upstream path (`upstream`)
 
-Where vigil's own upstream sockets go: TCP relay connections, UDP flows and
-plain DNS to the configured (or app-chosen) resolvers. Inspection is the
-same in every mode.
+Where vigil's own upstream sockets go: TCP relay connections, UDP flows,
+plain DNS to the configured (or app-chosen) resolvers and the DoT/DoH
+connections of `encrypted_dns`. Inspection is the same in every mode.
 
 ```json
 "upstream": {
@@ -284,6 +294,29 @@ opened on until they end (a replaced WireGuard tunnel lives until its last
 connection closes). The app restarts the session only when the excluded
 proxy app changes (that needs a new VPN interface).
 
+### Encrypted DNS over an upstream path
+
+`encrypted_dns` and `upstream` combine; neither replaces the other.
+
+- **DoT/DoH connections** are opened through the upstream path: inside the
+  WireGuard tunnel, or as TCP connections through the SOCKS5 proxy (CONNECT
+  to the server's bootstrap address; `send_domain` does not apply). The
+  proxy or tunnel peer sees only TLS. `fail_closed` applies to them as to
+  any connection: with the path down they fail (SERVFAIL unless
+  `fallback_plain`), never going direct. When the path changes, open
+  encrypted DNS connections are dropped and new ones use the new path.
+- **Plain DNS** (encrypted DNS off, `fallback_plain`, bootstrap lookups of
+  server names, hard-coded resolvers) goes to `upstream_dns` or the
+  app's resolver over the same path; with SOCKS5 always as DNS over TCP
+  (`dns.upstream` = `tcp`).
+- **Precedence** (as the app builds the config): when `encrypted_dns.mode`
+  is not `off` it answers the virtual resolver's lookups, whatever
+  `upstream_dns` holds. `upstream_dns` is chosen independently: the
+  WireGuard configuration's DNS servers, else the custom resolvers, else
+  public resolvers in tunnel and proxy modes (the network's resolver is
+  usually unreachable through them), else the network's resolvers. It is
+  then used only for the plain cases above.
+
 **Validation.** `nativeStart` returns 0 and `nativeUpdateConfig` returns
 false (and the running config is kept) when the JSON does not parse or:
 
@@ -293,7 +326,7 @@ false (and the running config is kept) when the JSON does not parse or:
 - `tcp_connect_timeout_ms` or `udp_idle_timeout_s` is 0;
 - `upstream_dns` is empty;
 - any of the four caps above is 0;
-- `encrypted_dns` is invalid (see its section above).
+- `encrypted_dns` is invalid (see its section above);
 - `upstream.mode` is `wireguard` or `socks5` without its section, a key is
   not base64 of 32 bytes, an endpoint or server is not `host:port`, an
   address or AllowedIPs entry is not a CIDR, there is no tunnel address or
