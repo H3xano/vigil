@@ -18,8 +18,6 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +30,7 @@ import dev.vigil.inspector.data.DnsProviders
 import dev.vigil.inspector.data.EncryptedDnsSettings
 import dev.vigil.inspector.engine.StatsEvent
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatRelative
 import dev.vigil.inspector.ui.theme.VigilColors
@@ -59,10 +58,10 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
     val saved = settings.encryptedDns
 
     // Edited locally and applied with Save, so half-typed custom servers
-    // never reach the engine.
-    var draft by remember { mutableStateOf(saved) }
-    var addrsText by remember { mutableStateOf(saved.customAddrs.joinToString(", ")) }
-    var portText by remember { mutableStateOf(saved.customPort.toString()) }
+    // never reach the engine. Kept across rotation.
+    var draft by rememberRetained("dns.draft") { saved }
+    var addrsText by rememberRetained("dns.addrs") { saved.customAddrs.joinToString(", ") }
+    var portText by rememberRetained("dns.port") { saved.customPort.toString() }
     val candidate = draft.copy(
         customAddrs = EncryptedDnsSettings.splitAddrs(addrsText),
         customPort = portText.toIntOrNull() ?: 0,

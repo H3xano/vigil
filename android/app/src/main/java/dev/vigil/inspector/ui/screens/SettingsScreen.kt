@@ -25,7 +25,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,16 +45,23 @@ import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.vpn.ConfigFactory
 
 @Composable
-fun SettingRow(title: String, summary: String? = null, checked: Boolean? = null, onClick: (() -> Unit)? = null, onChecked: ((Boolean) -> Unit)? = null) {
+fun SettingRow(
+    title: String,
+    summary: String? = null,
+    checked: Boolean? = null,
+    onClick: (() -> Unit)? = null,
+    onChecked: ((Boolean) -> Unit)? = null,
+    enabled: Boolean = true,
+) {
     // A switch row is one focus target: the whole row toggles, and the
     // Switch itself is decorative (onCheckedChange = null).
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = summary?.let { { Text(it) } },
-        trailingContent = checked?.let { c -> { Switch(checked = c, onCheckedChange = null) } },
+        trailingContent = checked?.let { c -> { Switch(checked = c, onCheckedChange = null, enabled = enabled) } },
         modifier = Modifier.fillMaxWidth().let { m ->
             when {
-                checked != null && onChecked != null -> m.toggleable(value = checked, role = Role.Switch, onValueChange = onChecked)
+                checked != null && onChecked != null -> m.toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChecked)
                 onClick != null -> m.clickable(onClick = onClick)
                 else -> m
             }
@@ -82,8 +89,8 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     val feeds by vm.feeds.collectAsStateWithLifecycle()
     val configError by vm.configError.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var confirmClear by remember { mutableStateOf(false) }
-    var editUpstreams by remember { mutableStateOf(false) }
+    var confirmClear by rememberSaveable { mutableStateOf(false) }
+    var editUpstreams by rememberSaveable { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Settings")
@@ -228,7 +235,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
         )
     }
     if (editUpstreams) {
-        var text by remember { mutableStateOf(s.customUpstreams.joinToString(", ")) }
+        var text by rememberSaveable { mutableStateOf(s.customUpstreams.joinToString(", ")) }
         val parsed = text.split(',', ' ', '\n').filter { it.isNotBlank() }
         val invalid = parsed.filter { ConfigFactory.normalizeResolver(it) == null }
         AlertDialog(
