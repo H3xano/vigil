@@ -1,0 +1,64 @@
+# Excerpt of https://github.com/mvt-project/mvt-indicators/blob/main/indicators.yaml (MIT licence)
+indicators:
+  -
+    type: github
+    name: NSO Group Pegasus Indicators of Compromise
+    sources:
+      - Amnesty International
+    references:
+      - https://www.amnesty.org/en/latest/research/2021/07/forensic-methodology-report-how-to-catch-nso-groups-pegasus/
+    github:
+      owner: AmnestyTech
+      repo: investigations
+      branch: master
+      path: 2021-07-18_nso/pegasus.stix2
+
+  -
+    type: github
+    name: Predator Spyware Indicators of Compromise
+    sources:
+      - Meta
+      - Amnesty International
+      - Citizen Lab
+      - Cisco
+      - Inside Story
+      - iVerify
+    references:
+      - https://citizenlab.ca/2021/12/pegasus-vs-predator-dissidents-doubly-infected-iphone-reveals-cytrox-mercenary-spyware/
+      - https://about.fb.com/news/2021/12/taking-action-against-surveillance-for-hire/
+      - https://blog.talosintelligence.com/mercenary-intellexa-predator/
+      - https://citizenlab.ca/2023/09/predator-in-the-wires-ahmed-eltantawy-targeted-with-predator-spyware-after-announcing-presidential-ambitions/
+      - https://insidestory.gr/article/predatorgate-ti-egrafan-ta-sms-pagida-poy-elavan-epiheirimaties-ypoyrgoi-kai-dimosiografoi
+      - https://iverify.io/blog/trust-broken-at-the-core
+    github:
+      owner: mvt-project
+      repo: mvt-indicators
+      branch: main
+      path: intellexa_predator/predator.stix2
+
+  -
+    type: github
+    name: RCS Lab Spyware Indicators of Compromise
+    sources:
+      - Google
+      - Lookout
+    references:
+      - https://blog.google/threat-analysis-group/italian-spyware-vendor-targets-users-in-italy-and-kazakhstan/
+    github:
+      owner: mvt-project
+      repo: mvt-indicators
+      branch: main
+      path: 2022-06-23_rcs_lab/rcs.stix2
+
+  -
+    type: github
+    name: Stalkerware Indicators of Compromise
+    sources:
+      - ECHAP
+    references:
+      - https://github.com/AssoEchap/stalkerware-indicators
+    github:
+      owner: AssoEchap
+      repo: stalkerware-indicators
+      branch: master
+      path: generated/stalkerware.stix2

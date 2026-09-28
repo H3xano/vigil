@@ -68,6 +68,14 @@ object Indicators {
         }
     }
 
+    private val PACKAGE = Regex("^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$")
+
+    /**
+     * An Android package name (as listed by indicator sources; case kept,
+     * hyphens tolerated because some sources list them), or null.
+     */
+    fun packageName(raw: String): String? = raw.trim().takeIf { it.length <= 255 && PACKAGE.matches(it) }
+
     /** Host of a URL (`scheme://host[:port]/…`): a domain or IP address, or null. */
     fun urlHost(url: String): String? {
         val m = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@]*@)?(\\[[0-9a-fA-F:.]+]|[^/?#:]+)").find(url.trim()) ?: return null

@@ -1,0 +1,46 @@
+# Excerpt of https://github.com/AssoEchap/stalkerware-indicators/blob/master/watchware.yaml
+# (c) Echap, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Unmodified entries.
+- name: WiseMo
+  names:
+  - WiseMo
+  type: watchware
+  packages:
+  - com.wisemo.host.v10
+  certificates:
+  - 9B48840CBF93379410172B4B85989624D2B33D59
+  websites:
+  - wisemo.com
+  - www.wisemo.com
+  c2:
+    domains:
+    - mycloud1.wisemo.com
+    - mycloud.wisemo.com
+    - mtracker.fortess.net
+    - mycloud-cs10.wisemo.com
+    - mycloud-cs17.wisemo.com
+    - mycloud-cs17a.wisemo.com
+    - mycloud-cs5a.wisemo.com
+    - mycloud-cs9.wisemo.com
+
+- name: FamiSafe
+  type: watchware
+  packages:
+  - com.wondershare.famisafe
+  - com.wondershare.famisafe.kids
+  certificates:
+  - 61B90229F79F730043D06FEE46BB8FD9E3A0E70B
+  - 095514BA4F28DBE521C74ABF77972BE3C86A50A5
+  websites:
+  - famisafe.wondershare.com
+  - famisafeapp.wondershare.com
+  - accounts.wondershare.com
+  c2:
+    domains:
+    - 300624.com
+    - analytics.300624.com
+    - api.wondershare.cc
+    - app-api-pro.wondershare.cc
+    - data-api.famisafe.com
+    - dc.wondershare.cc
+    - famisafe-b6807.firebaseio.com
+    - sparrow.wondershare.com
