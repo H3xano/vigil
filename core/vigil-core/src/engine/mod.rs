@@ -468,6 +468,88 @@ impl Shared {
     }
 }
 
+/// Waits for the engine's main task and reports how it ended: an error or a
+/// panic becomes an `engine` event with `state: error` (the app restarts
+/// the session on it). Without this a panic in `run` was swallowed by
+/// tokio, leaving the TUN unread with the routes up: every app black-holed.
+/// Cancellation (at shutdown) is not reported.
+async fn supervise(shared: Arc<Shared>, main: tokio::task::JoinHandle<io::Result<()>>) {
+    let message = match main.await {
+        Ok(Ok(())) => "engine loop ended".to_string(),
+        Ok(Err(e)) => e.to_string(),
+        Err(e) if e.is_panic() => format!("engine panicked: {}", panic_message(e.into_panic())),
+        Err(_) => return,
+    };
+    log::error!("engine stopped: {message}");
+    shared.emit(Event::Engine(EngineEvent {
+        ts: now_ms(),
+        state: "error",
+        message,
+    }));
+}
+
+fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
+    match p.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p
+            .downcast_ref::<&str>()
+            .map_or_else(|| "(no message)".to_string(), |s| s.to_string()),
+    }
+}
+
+/// The engine's long-running tasks. Aborted when dropped, so they do not
+/// outlive `run` when it fails.
+struct EngineTasks {
+    tasks: Vec<(&'static str, tokio::task::JoinHandle<io::Result<()>>)>,
+    aborts: Vec<tokio::task::AbortHandle>,
+}
+
+impl EngineTasks {
+    fn new() -> Self {
+        Self {
+            tasks: Vec::new(),
+            aborts: Vec::new(),
+        }
+    }
+
+    fn spawn<F>(&mut self, name: &'static str, f: F)
+    where
+        F: std::future::Future<Output = io::Result<()>> + Send + 'static,
+    {
+        let h = tokio::spawn(f);
+        self.aborts.push(h.abort_handle());
+        self.tasks.push((name, h));
+    }
+
+    /// Resolves when the first task ends (none should while the engine
+    /// runs), with an error saying which one and how.
+    async fn first_exit(&mut self) -> io::Error {
+        let tasks = std::mem::take(&mut self.tasks);
+        if tasks.is_empty() {
+            return std::future::pending().await;
+        }
+        let (names, handles): (Vec<_>, Vec<_>) = tasks.into_iter().unzip();
+        let (r, i, _rest) = futures::future::select_all(handles).await;
+        let name = names[i];
+        io::Error::other(match r {
+            Ok(Ok(())) => format!("{name} task ended"),
+            Ok(Err(e)) => format!("{name}: {e}"),
+            Err(e) if e.is_panic() => {
+                format!("{name} task panicked: {}", panic_message(e.into_panic()))
+            }
+            Err(_) => format!("{name} task cancelled"),
+        })
+    }
+}
+
+impl Drop for EngineTasks {
+    fn drop(&mut self) {
+        for a in &self.aborts {
+            a.abort();
+        }
+    }
+}
+
 /// Result of loading a threat/tracker feed.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FeedSummary {
@@ -510,17 +592,8 @@ impl Engine {
             let _guard = runtime.enter();
             shared.upstream.apply(&upstream, &shared.platform);
         }
-        let s = shared.clone();
-        runtime.spawn(async move {
-            if let Err(e) = run(s.clone(), tun, tun_rx).await {
-                log::error!("engine stopped: {e}");
-                s.emit(Event::Engine(EngineEvent {
-                    ts: now_ms(),
-                    state: "error",
-                    message: e.to_string(),
-                }));
-            }
-        });
+        let main = runtime.spawn(run(shared.clone(), tun, tun_rx));
+        runtime.spawn(supervise(shared.clone(), main));
         shared.emit(Event::Engine(EngineEvent {
             ts: now_ms(),
             state: "started",
@@ -592,6 +665,11 @@ impl Engine {
     /// stopped, every open flow gets its `flow_end`, then a `stopped` engine
     /// event is queued and the queue is closed (polls stop waiting).
     /// Idempotent; must not be called from inside the engine's runtime.
+    ///
+    /// Blocks for up to about 2 s (the runtime's shutdown timeout, waiting
+    /// for blocking-pool work such as a UID lookup or `protect()` upcall),
+    /// with the runtime lock held, so a concurrent call waits as long.
+    /// Callers must not call it on the Android main (UI) thread.
     pub fn shutdown(&self) {
         // Held throughout, so a concurrent call returns only when done.
         let mut rt = self.runtime.lock();
@@ -664,13 +742,11 @@ async fn run(
         .tcp_send_buffer_size(TCP_WINDOW)
         .build()?;
     let listener = listener.ok_or_else(|| io::Error::other("tcp listener missing"))?;
-    if let Some(runner) = runner {
-        tokio::spawn(async move {
-            if let Err(e) = runner.await {
-                log::error!("tcp stack runner exited: {e}");
-            }
-        });
-    }
+    let runner = runner.ok_or_else(|| io::Error::other("tcp stack runner missing"))?;
+    // Every task below must run as long as the engine: if one ends (or
+    // panics), `run` fails and the session is restarted.
+    let mut tasks = EngineTasks::new();
+    tasks.spawn("tcp stack", runner);
     // Packets for the TCP stack go straight into its input queue, and the
     // TUN writer drains the stack's output itself: no forwarding tasks.
     let stack_in = stack
@@ -681,7 +757,7 @@ async fn run(
     // TUN writer: packets from the TCP stack and from vigil (UDP, DNS, RSTs).
     let s = shared.clone();
     let writer_tun = tun.clone();
-    tokio::spawn(async move {
+    tasks.spawn("tun writer", async move {
         let mut stack_open = true;
         loop {
             let p = tokio::select! {
@@ -707,11 +783,32 @@ async fn run(
                 log::warn!("tun write ({} bytes): {e}", p.len());
             }
         }
+        Ok(())
     });
 
-    tokio::spawn(tcp::accept_loop(shared.clone(), listener));
-    tokio::spawn(housekeeping(shared.clone()));
+    let s = shared.clone();
+    tasks.spawn("tcp accept", async move {
+        tcp::accept_loop(s, listener).await;
+        Ok(())
+    });
+    let s = shared.clone();
+    tasks.spawn("housekeeping", async move {
+        housekeeping(s).await;
+        Ok(())
+    });
 
+    tokio::select! {
+        r = read_tun(&shared, &tun, &stack_in) => r,
+        e = tasks.first_exit() => Err(e),
+    }
+}
+
+/// The TUN read loop; returns only on a fatal read error.
+async fn read_tun(
+    shared: &Arc<Shared>,
+    tun: &TunDevice,
+    stack_in: &mpsc::Sender<Vec<u8>>,
+) -> io::Result<()> {
     let gate = tcp::Gate::new(shared.clone(), stack_in.clone());
     let mut buf = vec![0u8; 65_536];
     let mut transient = 0u32;
@@ -735,7 +832,7 @@ async fn run(
         let pkt = &buf[..n];
         shared.stats.packets_out.fetch_add(1, Relaxed);
         shared.stats.bytes_out.fetch_add(n as u64, Relaxed);
-        dispatch(&shared, &gate, &stack_in, pkt);
+        dispatch(shared, &gate, stack_in, pkt);
     }
 }
 
@@ -1177,6 +1274,72 @@ mod tests {
         assert_eq!(src2, other);
         let syn_ack = next_segment(&mut out, other).await;
         assert_eq!((syn_ack.flags, syn_ack.ack), (TCP_SYN | TCP_ACK, 5001));
+    }
+
+    fn engine_errors(s: &Shared) -> Vec<String> {
+        s.events
+            .poll(100, Duration::ZERO)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Engine(e) if e.state == "error" => Some(e.message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn supervisor_reports_errors_and_panics() {
+        let s = test_shared(Config::default());
+        let main = tokio::spawn(async { Err(io::Error::other("tun read: boom")) });
+        supervise(s.clone(), main).await;
+        assert_eq!(engine_errors(&s), vec!["tun read: boom".to_string()]);
+
+        let main = tokio::spawn(async {
+            if true {
+                panic!("bug in dispatch");
+            }
+            Ok(())
+        });
+        supervise(s.clone(), main).await;
+        assert_eq!(
+            engine_errors(&s),
+            vec!["engine panicked: bug in dispatch".to_string()]
+        );
+
+        // Cancelled at shutdown: nothing to report.
+        let main = tokio::spawn(std::future::pending::<io::Result<()>>());
+        main.abort();
+        supervise(s.clone(), main).await;
+        assert!(engine_errors(&s).is_empty());
+    }
+
+    #[tokio::test]
+    async fn engine_tasks_fail_when_any_task_ends() {
+        let mut tasks = EngineTasks::new();
+        tasks.spawn("forever", std::future::pending());
+        tasks.spawn("writer", async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            panic!("writer bug {}", 7);
+        });
+        let e = tokio::time::timeout(Duration::from_secs(2), tasks.first_exit())
+            .await
+            .unwrap();
+        assert_eq!(e.to_string(), "writer task panicked: writer bug 7");
+        let forever = tasks.aborts[0].clone();
+        assert!(!forever.is_finished());
+        drop(tasks);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(forever.is_finished(), "remaining tasks are aborted");
+
+        let mut tasks = EngineTasks::new();
+        tasks.spawn("tcp stack", async { Err(io::Error::other("closed")) });
+        assert_eq!(tasks.first_exit().await.to_string(), "tcp stack: closed");
+        let mut tasks = EngineTasks::new();
+        tasks.spawn("tcp accept", async { Ok(()) });
+        assert_eq!(
+            tasks.first_exit().await.to_string(),
+            "tcp accept task ended"
+        );
     }
 
     /// A datagram socket pair stands in for the TUN device.
