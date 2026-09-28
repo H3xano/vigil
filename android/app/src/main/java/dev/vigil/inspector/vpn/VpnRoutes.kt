@@ -47,6 +47,14 @@ object VpnRoutes {
         return (base + extras).distinct()
     }
 
+    /**
+     * Every route of the interface. Routes are fixed at `establish()`, so the
+     * service restarts the session when this changes (LAN exclusion toggled,
+     * or a NAT64 prefix inside an excluded range appearing or going away).
+     */
+    fun all(excludeLan: Boolean, nat64Prefixes: List<String> = emptyList()): List<Cidr> =
+        ipv4(excludeLan) + ipv6(excludeLan, nat64Prefixes)
+
     private fun parseCidr(s: String): Cidr {
         val (a, p) = s.split('/')
         return Cidr(a, p.toInt())

@@ -13,6 +13,8 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -48,6 +50,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -86,6 +89,15 @@ class VigilVpnService : android.net.VpnService() {
     private var handledStartId = 0
     private val restarts = RestartBudget()
 
+    /**
+     * Newest start id passed to onStartCommand. Main thread only: foreground
+     * changes are made on the main thread too, so a start request that
+     * arrives while a stop is being handled can never lose the foreground
+     * state it just acquired.
+     */
+    private var latestStartId = 0
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var packageReceiver: BroadcastReceiver? = null
     /** Bumped when packages are installed/removed, so blocked UIDs are recomputed. */
@@ -109,11 +121,14 @@ class VigilVpnService : android.net.VpnService() {
         val tun: ParcelFileDescriptor,
         val engine: EngineHandle,
         val processor: EventProcessor,
-        val excludeLan: Boolean,
+        /** Routes installed at establish(); a change needs a new interface. */
+        val routes: List<VpnRoutes.Cidr>,
         /** App excluded from the VPN as the SOCKS5 proxy (e.g. Orbot). */
         val excludedPackage: String?,
-        /** The configuration the engine currently runs with. */
+        /** The configuration the engine currently runs with (without the start-only feed list). */
         @Volatile var applied: EngineConfig,
+        /** Feeds passed in the start config: id → FeedEntity.lastUpdated (0 if never). */
+        val preloaded: Map<String, Long>,
     ) {
         @Volatile var draining = false
         var pump: Job? = null
@@ -128,6 +143,7 @@ class VigilVpnService : android.net.VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = maxOf(latestStartId, startId)
         if (intent?.action == ACTION_STOP) {
             commands.trySend(Command.Stop(startId))
             return START_NOT_STICKY
@@ -186,7 +202,8 @@ class VigilVpnService : android.net.VpnService() {
                 val s = current
                 when {
                     s == null -> startFresh()
-                    ServiceState.status.value == VpnStatus.Running(s.id) && s.engine.isOpen -> Unit // already healthy
+                    // Already healthy. Always-on toggles arrive as start requests: re-check lockdown.
+                    ServiceState.status.value == VpnStatus.Running(s.id) && s.engine.isOpen -> refreshUpstreamWarning(s)
                     else -> restart("start requested while not healthy")
                 }
             }
@@ -264,22 +281,53 @@ class VigilVpnService : android.net.VpnService() {
 
     private fun activate(s: Session) {
         current = s
-        ServiceState.loadedFeeds.value = emptyMap()
+        ServiceState.loadedFeeds.value = s.preloaded
         ServiceState.configError.value = null
+        refreshUpstreamWarning(s, notify = false)
+        // Normally a no-op (onStartCommand made the service foreground), but it
+        // guarantees the running VPN is never left in a plain started service,
+        // and it shows the current warning at once.
+        val n = buildNotification(ServiceState.stats.value)
+        mainHandler.post { if (!goForeground(n)) Log.w(TAG, "could not re-enter the foreground for session ${s.id}") }
         s.pump = scope.launch { pump(s) }
         s.side = scope.launch {
             launch { syncFeeds(s) }
             launch { applyConfigChanges(s) }
-            launch { updateNotification() }
+            launch { updateNotification(s) }
         }
         ServiceState.status.value = VpnStatus.Running(s.id)
         Log.i(TAG, "session ${s.id} started (engine ${VigilNative.nativeVersion()})")
     }
 
-    private fun createSession(previousId: Long?): Result<Session> {
+    /**
+     * Always-on lockdown with the SOCKS5 proxy app excluded from the VPN
+     * leaves the proxy without network ([ServicePolicy.lockdownWarning]).
+     * Android does not tell the VPN app when lockdown is toggled, so this is
+     * re-checked with every notification refresh.
+     */
+    private fun refreshUpstreamWarning(s: Session, notify: Boolean = true) {
+        val pkg = s.excludedPackage
+        val lockdown = pkg != null && runCatching { isLockdownEnabled }.getOrDefault(false)
+        val warning = ServicePolicy.lockdownWarning(pkg, lockdown, pkg?.let(::appLabel))
+        if (warning != ServiceState.upstreamWarning.value) {
+            ServiceState.upstreamWarning.value = warning
+            if (warning != null) Log.w(TAG, "always-on lockdown is on and the proxy app $pkg is excluded from the VPN: it has no network")
+            if (notify) notifications.notify(NOTIFICATION_ID, buildNotification(ServiceState.stats.value))
+        }
+    }
+
+    private fun appLabel(pkg: String): String? = runCatching {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    }.getOrNull()
+
+    private suspend fun createSession(previousId: Long?): Result<Session> {
         if (prepare(this) != null) return Result.failure(IllegalStateException("VPN permission required. Open vigil to grant it."))
+        // Unreadable settings that configured a tunnel or proxy: fail closed.
+        app.settings.loadProblem.value?.let { return Result.failure(IllegalStateException(it)) }
         val settings = app.settings.value
         val net = refreshNetworkInfo()
+        // Read before establish(), so a slow database cannot delay the interface.
+        val feeds = ConfigFactory.loadableFeeds(app.feeds.feeds.first()) { app.feeds.fileFor(it).exists() }
         val builder = Builder()
             .setSession("vigil")
             .setMtu(EngineConfig.MTU)
@@ -308,8 +356,8 @@ class VigilVpnService : android.net.VpnService() {
                 Log.w(TAG, "could not exclude proxy app $pkg from the VPN", e)
             }
         }
-        VpnRoutes.ipv4(settings.excludeLan).forEach { builder.addRoute(it.address, it.prefix) }
-        VpnRoutes.ipv6(settings.excludeLan, net.nat64Prefixes).forEach { builder.addRoute(it.address, it.prefix) }
+        val routes = VpnRoutes.all(settings.excludeLan, net.nat64Prefixes)
+        routes.forEach { builder.addRoute(it.address, it.prefix) }
 
         val pfd = try {
             builder.establish()
@@ -321,7 +369,10 @@ class VigilVpnService : android.net.VpnService() {
         // Ids are start times; keep them strictly increasing across quick restarts.
         val id = maxOf(System.currentTimeMillis(), (previousId ?: 0L) + 1)
         val config = buildConfig(settings, net)
-        val handle = VigilNative.nativeStart(pfd.fd, config.toJson(), PlatformBridge(this, connectivity))
+        // The engine loads the feeds before it processes the first packet, so
+        // blocking and threat alerts cover the session from its start.
+        val startConfig = ConfigFactory.startConfig(config, feeds) { app.feeds.fileFor(it).absolutePath }
+        val handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
         if (handle == 0L) {
             runCatching { pfd.close() }
             return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
@@ -329,7 +380,8 @@ class VigilVpnService : android.net.VpnService() {
         val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil) { message ->
             commands.trySend(Command.EngineError(id, message))
         }
-        return Result.success(Session(id, pfd, EngineHandle(handle), processor, settings.excludeLan, excluded, config))
+        val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }
+        return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded))
     }
 
     /**
@@ -364,6 +416,7 @@ class VigilVpnService : android.net.VpnService() {
         if (mine || explicit) {
             ServiceState.stats.value = null
             ServiceState.loadedFeeds.value = emptyMap()
+            ServiceState.upstreamWarning.value = null
         }
     }
 
@@ -373,6 +426,7 @@ class VigilVpnService : android.net.VpnService() {
         s?.let { teardown(it) }
         ServiceState.stats.value = null
         ServiceState.loadedFeeds.value = emptyMap()
+        ServiceState.upstreamWarning.value = null
         postProblem(NOTIFICATION_FAILED_ID, "vigil stopped inspecting", message, AlertNotifier.CHANNEL_ALERTS)
         fail(message)
     }
@@ -383,9 +437,21 @@ class VigilVpnService : android.net.VpnService() {
         stopServiceFor(handledStartId)
     }
 
+    /**
+     * Stops the service unless a newer start request is pending. On the main
+     * thread, like onStartCommand: if a newer Start was received (it is
+     * queued behind this command), the service stays in the foreground for
+     * the VPN that Start brings up; `stopSelf(startId)` is then a no-op.
+     */
     private fun stopServiceFor(startId: Int) {
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf(startId)
+        mainHandler.post {
+            if (ServicePolicy.mayLeaveForeground(startId, latestStartId)) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                Log.i(TAG, "start request $latestStartId pending; staying in the foreground")
+            }
+            stopSelf(startId)
+        }
     }
 
     private suspend fun pump(s: Session) {
@@ -430,11 +496,15 @@ class VigilVpnService : android.net.VpnService() {
         }
     }
 
-    /** Keeps the engine's loaded feeds in sync with the enabled feed set. */
+    /**
+     * Keeps the engine's loaded feeds in sync with the enabled feed set. The
+     * feeds of the start config are already loaded, so only feeds changed
+     * since (another download, enabled or disabled) are loaded or removed.
+     */
     private suspend fun syncFeeds(s: Session) {
-        val loaded = mutableMapOf<String, Long>()
+        val loaded = s.preloaded.toMutableMap()
         app.feeds.feeds.collect { feeds ->
-            val wanted = feeds.filter { it.enabled && app.feeds.fileFor(it.id).exists() }.associateBy { it.id }
+            val wanted = ConfigFactory.loadableFeeds(feeds) { app.feeds.fileFor(it).exists() }.associateBy { it.id }
             for (id in loaded.keys - wanted.keys) {
                 s.engine.use { VigilNative.nativeRemoveFeed(it, id) }
                 loaded.remove(id)
@@ -467,12 +537,12 @@ class VigilVpnService : android.net.VpnService() {
     private suspend fun applyConfigChanges(s: Session) {
         combine(app.settings.flow, ServiceState.network, packagesChanged) { st, net, _ -> st to net }
             .debounce(300)
-            .map { (st, net) -> Triple(st.excludeLan, st.upstream.excludedPackage, buildConfig(st, net)) }
+            .map { (st, net) -> Triple(VpnRoutes.all(st.excludeLan, net.nat64Prefixes), st.upstream.excludedPackage, buildConfig(st, net)) }
             .distinctUntilChanged()
-            .collect { (excludeLan, excludedPackage, config) ->
-                if (excludeLan != s.excludeLan || excludedPackage != s.excludedPackage) {
-                    // Routes and excluded apps can only change by
-                    // re-establishing the interface.
+            .collect { (routes, excludedPackage, config) ->
+                if (routes != s.routes || excludedPackage != s.excludedPackage) {
+                    // Routes (LAN exclusion, a NAT64 prefix in ULA space) and
+                    // excluded apps can only change by re-establishing the interface.
                     commands.trySend(Command.Restart(s.id, "VPN routes or excluded apps changed"))
                     return@collect
                 }
@@ -498,9 +568,10 @@ class VigilVpnService : android.net.VpnService() {
             }
     }
 
-    private suspend fun updateNotification() {
+    private suspend fun updateNotification(s: Session) {
         while (true) {
             delay(15_000)
+            refreshUpstreamWarning(s, notify = false)
             notifications.notify(NOTIFICATION_ID, buildNotification(ServiceState.stats.value))
         }
     }
@@ -580,10 +651,13 @@ class VigilVpnService : android.net.VpnService() {
         val text = stats?.let {
             "${formatCount(it.flowsTotal)} connections · ${formatCount(it.blocked)} blocked · ${formatCount(it.dnsQueries)} lookups"
         } ?: "Inspecting device traffic on-device"
+        val warning = ServiceState.upstreamWarning.value
+        val excluded = current?.excludedPackage
         return NotificationCompat.Builder(this, AlertNotifier.CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_vigil)
             .setContentTitle("vigil is inspecting traffic")
-            .setContentText(text)
+            .setContentText(if (warning != null && excluded != null) ServicePolicy.lockdownShort(excluded, appLabel(excluded)) else text)
+            .apply { if (warning != null) setStyle(NotificationCompat.BigTextStyle().bigText("$warning\n\n$text")) }
             .setContentIntent(open)
             .addAction(0, "Stop", stop)
             .setOngoing(true)

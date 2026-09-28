@@ -34,4 +34,14 @@ object ServiceState {
      * new session.
      */
     val configError = MutableStateFlow<String?>(null)
+
+    /**
+     * A problem with the upstream path of the running session that the user
+     * must fix outside vigil; null when there is none. Currently: the SOCKS5
+     * proxy app (e.g. Orbot) is excluded from the VPN while Android's
+     * always-on lockdown ("Block connections without VPN") is on, so the
+     * proxy has no network and every relayed connection fails. Also shown in
+     * the ongoing notification. Cleared when inspection stops.
+     */
+    val upstreamWarning = MutableStateFlow<String?>(null)
 }

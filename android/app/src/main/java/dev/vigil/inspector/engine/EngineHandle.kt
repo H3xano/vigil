@@ -1,5 +1,6 @@
 package dev.vigil.inspector.engine
 
+import androidx.annotation.WorkerThread
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -23,6 +24,7 @@ class EngineHandle(private var handle: Long) {
      * can still be polled before [close]. False if already closed, or if the
      * native library predates `nativeShutdown`.
      */
+    @WorkerThread // blocks up to about 2 s while the engine winds down
     fun shutdown(): Boolean = lock.read {
         if (handle == 0L) return@read false
         try {
@@ -32,6 +34,8 @@ class EngineHandle(private var handle: Long) {
         }
     }
 
+    /** Waits for a blocking poll to return (write lock) and frees the engine. */
+    @WorkerThread
     fun close() = lock.write {
         if (handle != 0L) {
             VigilNative.nativeStop(handle)

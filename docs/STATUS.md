@@ -283,6 +283,19 @@ history.
   adversarial app can evade it (see ARCHITECTURE.md).
 - Engine resource caps (`max_udp_flows` etc.) are read at start; changing them
   needs a restart.
+- A SOCKS5 proxy app on the device (Orbot) does not work with Android's
+  always-on "Block connections without VPN" (lockdown): the proxy app is
+  excluded from vigil's VPN so its traffic does not loop, and lockdown gives
+  apps outside the VPN no network at all, so every proxied connection fails
+  (closed, never direct). vigil detects this and says so in its notification
+  (`ServiceState.upstreamWarning`); turn lockdown off or use a proxy on
+  another device.
+- If the saved settings become unreadable and they configured a WireGuard or
+  SOCKS5 upstream that cannot be recovered, inspection refuses to start until
+  the upstream is set up again (the unreadable document is kept as a backup
+  in the app's preferences).
+- The weekly database VACUUM runs only while inspection is off, or while the
+  device is idle and charging, because it blocks event writes while it runs.
 
 ## Decision log
 
