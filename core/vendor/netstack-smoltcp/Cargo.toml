@@ -3,7 +3,9 @@
 #   * TcpStream::abort / TcpAbortHandle: abort the connection, so smoltcp
 #     sends a RST instead of a FIN;
 #   * a connection reset by the peer (or timed out) surfaces as
-#     ErrorKind::ConnectionReset from reads and writes instead of EOF.
+#     ErrorKind::ConnectionReset from reads and writes instead of EOF;
+#   * shutdown() completes once the FIN is queued (not at CLOSED), and
+#     sockets leave TIME-WAIT after 1 s instead of smoltcp's 10 s.
 # The upstream crate's dev-dependencies, examples and tests are omitted.
 # To rebase onto a newer release, diff src/ against the published crate.
 [package]

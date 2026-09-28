@@ -16,7 +16,10 @@ use smoltcp::{
     socket::tcp::{Socket as TcpSocket, SocketBuffer as TcpSocketBuffer, State as TcpState},
     storage::RingBuffer,
     time::{Duration, Instant},
-    wire::{HardwareAddress, IpAddress, IpCidr, IpProtocol, Ipv4Address, Ipv6Address, TcpPacket},
+    wire::{
+        HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpProtocol, Ipv4Address, Ipv6Address,
+        TcpPacket,
+    },
 };
 use spin::Mutex as SpinMutex;
 use tokio::{
@@ -56,11 +59,62 @@ struct TcpSocketControl {
     reset: bool,
     // vigil patch: last state observed, to tell a reset from an orderly close.
     last_state: TcpState,
+    // vigil patch: when the socket was first seen in TIME-WAIT.
+    time_wait_since: Option<Instant>,
 }
+
+// vigil patch: how long a socket stays in TIME-WAIT before it is removed.
+// smoltcp keeps it for 10 s with both buffers allocated, and every socket in
+// the set is scanned for every packet, so short connections piled up (about
+// 0.5 GB and a collapsing request rate at a few hundred connections a
+// second). On a virtual link to a local app, 1 s still absorbs a
+// retransmitted FIN; a later one gets a RST.
+const TIME_WAIT_REAP: Duration = Duration::from_secs(1);
 
 struct TcpSocketCreation {
     control: SharedControl,
     socket: TcpSocket<'static>,
+    // vigil patch: the connection's addresses (app side, destination).
+    src_addr: SocketAddr,
+    dst_addr: SocketAddr,
+}
+
+// vigil patch: removes older sockets for the 4-tuple of a new connection.
+// A SYN reaches the stack only once vigil's previous connection with the
+// same addresses has ended, but its socket may still be in TIME-WAIT (or
+// LAST-ACK). The app may reuse the port by then (it closed second, so it
+// kept no TIME-WAIT itself), and the old socket, first in the set, would
+// swallow the new SYN, leaving the new connection hanging.
+fn remove_stale_sockets(
+    sockets: &mut HashMap<SocketHandle, SharedControl>,
+    socket_set: &mut SocketSet<'static>,
+    src_addr: SocketAddr,
+    dst_addr: SocketAddr,
+) {
+    let (local, remote) = (IpEndpoint::from(dst_addr), IpEndpoint::from(src_addr));
+    let stale: Vec<SocketHandle> = sockets
+        .keys()
+        .copied()
+        .filter(|h| {
+            let socket = socket_set.get::<TcpSocket>(*h);
+            socket.local_endpoint() == Some(local) && socket.remote_endpoint() == Some(remote)
+        })
+        .collect();
+    for handle in stale {
+        trace!("replacing a stale socket for {} <-> {}", src_addr, dst_addr);
+        if let Some(control) = sockets.remove(&handle) {
+            let mut control = control.lock();
+            control.send_state = TcpSocketState::Closed;
+            control.recv_state = TcpSocketState::Closed;
+            if let Some(waker) = control.send_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = control.recv_waker.take() {
+                waker.wake();
+            }
+        }
+        socket_set.remove(handle);
+    }
 }
 
 type SharedNotify = Arc<Notify>;
@@ -170,6 +224,7 @@ impl TcpListenerRunner {
                     abort: false,
                     reset: false,
                     last_state: TcpState::Listen,
+                    time_wait_since: None,
                 }));
 
                 stream_tx
@@ -181,7 +236,12 @@ impl TcpListenerRunner {
                     })
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
                 socket_tx
-                    .send(TcpSocketCreation { control, socket })
+                    .send(TcpSocketCreation {
+                        control,
+                        socket,
+                        src_addr,
+                        dst_addr,
+                    })
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
             }
 
@@ -205,7 +265,14 @@ impl TcpListenerRunner {
     ) -> std::io::Result<()> {
         let mut socket_set = SocketSet::new(vec![]);
         loop {
-            while let Ok(TcpSocketCreation { control, socket }) = socket_rx.try_recv() {
+            while let Ok(TcpSocketCreation {
+                control,
+                socket,
+                src_addr,
+                dst_addr,
+            }) = socket_rx.try_recv()
+            {
+                remove_stale_sockets(&mut sockets, &mut socket_set, src_addr, dst_addr);
                 let handle = socket_set.add(socket);
                 sockets.insert(handle, control);
             }
@@ -221,14 +288,22 @@ impl TcpListenerRunner {
 
             // Check all the sockets' status
             let mut sockets_to_remove = Vec::new();
+            let mut any_time_wait = false;
 
             for (socket_handle, control) in sockets.iter() {
                 let socket_handle = *socket_handle;
                 let socket = socket_set.get_mut::<TcpSocket>(socket_handle);
                 let mut control = control.lock();
 
+                // vigil patch: reap sockets that were in TIME-WAIT long enough.
+                let reap = socket.state() == TcpState::TimeWait && {
+                    any_time_wait = true;
+                    let since = *control.time_wait_since.get_or_insert(before_poll);
+                    before_poll - since >= TIME_WAIT_REAP
+                };
+
                 // Remove the socket only when it is in the closed state.
-                if socket.state() == TcpState::Closed {
+                if socket.state() == TcpState::Closed || reap {
                     sockets_to_remove.push(socket_handle);
 
                     // vigil patch: an orderly close reaches CLOSED from
@@ -290,6 +365,12 @@ impl TcpListenerRunner {
 
                     socket.close();
                     control.send_state = TcpSocketState::Closing;
+                    // vigil patch: the FIN is queued, so shutdown() is done
+                    // (like shutdown(2)); it used to wait for CLOSED, i.e.
+                    // for the end of TIME-WAIT, holding the relay 10 s.
+                    if let Some(waker) = control.send_waker.take() {
+                        waker.wake();
+                    }
                 }
 
                 // Check if readable
@@ -398,9 +479,13 @@ impl TcpListenerRunner {
             if iface_ingress_tx_avail.load(Ordering::Acquire) {
                 tokio::task::yield_now().await;
             } else {
-                let next_duration = iface
+                let mut next_duration = iface
                     .poll_delay(before_poll, &socket_set)
                     .unwrap_or(Duration::from_millis(5));
+                // vigil patch: wake up to reap TIME-WAIT sockets.
+                if any_time_wait {
+                    next_duration = next_duration.min(TIME_WAIT_REAP);
+                }
                 if next_duration != Duration::ZERO {
                     let _ = tokio::time::timeout(
                         tokio::time::Duration::from(next_duration),
@@ -659,7 +744,11 @@ impl AsyncWrite for TcpStream {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let mut control = self.control.lock();
 
-        if matches!(control.send_state, TcpSocketState::Closed) {
+        // vigil patch: done once the FIN is queued (Closing), not only at CLOSED.
+        if matches!(
+            control.send_state,
+            TcpSocketState::Closing | TcpSocketState::Closed
+        ) {
             return Ok(()).into();
         }
 
