@@ -30,9 +30,11 @@
 //! A config update that changes the path builds a new dialer; connections
 //! and UDP flows already open keep the path they were opened on until they
 //! end (a replaced WireGuard tunnel lives on until its last connection
-//! closes). Pooled DNS sockets from the old path are not reused. A change
-//! of `network_id` alone makes WireGuard re-create its socket and
-//! re-resolve the endpoint, keeping the session (roaming).
+//! closes). Pooled DNS sockets from the old path are not reused (nor, with
+//! WireGuard and `fail_closed: false`, ones from before the tunnel went
+//! down or came back: see [`Upstream::generation`]). A change of
+//! `network_id` alone makes WireGuard re-create its socket and re-resolve
+//! the endpoint, keeping the session (roaming).
 
 mod socks5;
 mod wireguard;

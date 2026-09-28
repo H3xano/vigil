@@ -67,6 +67,18 @@ MODE=idle SECS=10 scripts/bench-throughput.sh         # CPU while connections si
 VIGIL_CLI=/path/to/other/vigil-cli ...                 # compare builds; STATS=1 keeps stats events
 ```
 
+The WireGuard client has an in-process benchmark against the unit tests'
+user-space peer (3 bulk echo streams of 64 MiB, small round trips timed on
+a fourth stream meanwhile; the single-threaded peer caps the bulk rate):
+
+```sh
+cd core && cargo test --release -p vigil-core -- --ignored wg_bench --nocapture
+```
+
+Moving encryption out of the smoltcp lock took the probe round trip under
+load from p50 540 us / p99 1.3 ms to p50 120 us / p99 0.2 ms, and the bulk
+echo from 105-135 to 144 MB/s (3 runs each, same host).
+
 Numbers on the development host (x86_64, 2 engine workers, 3 runs each):
 
 | Workload | 0.3.0 | now |
