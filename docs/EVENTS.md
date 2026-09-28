@@ -41,7 +41,17 @@ In `dns` events, `rcode` is `REFUSED` (with `verdict: block`) when the app
 queried a hard-coded resolver whose address is on an IP feed. Queries with
 more than one question (or none) are answered REFUSED and not logged. DNS
 over TCP to any resolver, not only the virtual one, is inspected and logged
-with `transport: tcp`; such connections do not produce `flow` events.
+with `transport: tcp`; such connections do not produce `flow` events, except
+when the server's address itself is blocked for the app (`blocked_uids`, an
+IP feed): the connection is then reset at connect time with a blocked
+`flow` event, like any TCP connection. A message to a hard-coded resolver
+that is not a standard query (unparseable, a response, or an opcode other
+than QUERY) is never forwarded: it is answered REFUSED (the connection is
+closed if it has no DNS header) and logged as a `dns` event with
+`verdict: block`, `reason: "not a standard query (…)"` and, when unparseable,
+an empty `qname`/`qtype`, plus a `hardcoded_dns` alert. (Over UDP such
+payloads are relayed as ordinary UDP flows, with the usual policy checks
+and `flow` events.)
 
 `dns.upstream` is the transport that produced the answer: `udp` (or `tcp`
 after a truncated UDP answer, and always `tcp` with a SOCKS5 upstream) for

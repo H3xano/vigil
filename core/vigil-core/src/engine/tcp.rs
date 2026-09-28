@@ -222,6 +222,16 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
     if dst.port() == 53 {
         // DNS over TCP to a hard-coded resolver: inspected like UDP queries
         // to it (policy, sinkholing, alert) and forwarded to that server.
+        // The server itself is checked first, like any destination (app
+        // block, IP feeds), so a blocked app cannot use it as a channel.
+        let decision = shared.policy.read().check_ip(uid, dst.ip());
+        if let Decision::Block(reason) = decision {
+            shared.stats.flows_total.fetch_add(1, Relaxed);
+            let mut ev = base_event(shared, shared.next_flow_id(), uid, src, dst, "tcp");
+            mark_blocked(shared, &mut ev, &reason);
+            emit_closed_flow(shared, ev, None);
+            return GateResult::Reject;
+        }
         return GateResult::Admit(
             uid,
             MetaKind::LocalDns {
@@ -952,6 +962,44 @@ mod tests {
         assert!(shared.tcp_half_closed.lock().is_empty());
         let err = flow_end_error(&shared).unwrap();
         assert_eq!(err, "app reused the port for a new connection");
+    }
+
+    #[tokio::test]
+    async fn tcp_dns_to_a_listed_resolver_is_refused_at_the_gate() {
+        use crate::intel::parse_feed;
+        use crate::policy::{FeedCategory, LoadedFeed};
+        let (shared, mut tun) = test_shared_with_tun(Config::default());
+        shared.policy.write().set_feed(
+            "c2ips",
+            LoadedFeed {
+                category: FeedCategory::C2,
+                feed: parse_feed("192.0.2.53\n"),
+            },
+        );
+        let (stack_tx, mut stack_rx) = mpsc::channel(16);
+        let gate = Gate::new(shared.clone(), stack_tx);
+        let (pkt, info) = syn(40010, "192.0.2.53:53");
+        gate.on_syn(pkt.clone(), info);
+        assert!(is_rst(&tun.recv().await.unwrap()));
+        assert!(stack_rx.try_recv().is_err());
+        let events = shared.events.poll(100, Duration::ZERO);
+        assert!(events.iter().any(|e| matches!(e,
+            Event::Flow(f) if f.verdict == Some(Verdict::Block) && f.dst_port == 53)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Alert(a) if a.kind == "threat_ip")));
+        // Other resolvers are still admitted into vigil's resolver.
+        let (pkt, info) = syn(40011, "192.0.2.54:53");
+        gate.on_syn(pkt, info);
+        assert!(stack_rx.recv().await.is_some());
+        assert!(matches!(
+            shared
+                .tcp_meta
+                .lock()
+                .get(&(info.src, info.dst))
+                .map(|m| &m.kind),
+            Some(MetaKind::LocalDns { upstream: Some(_) })
+        ));
     }
 
     #[tokio::test]

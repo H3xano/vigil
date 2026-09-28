@@ -134,12 +134,15 @@ async fn answer(
     transport: &'static str,
 ) -> Option<Vec<u8>> {
     let started = Instant::now();
-    let Some(msg) = dns::parse(query).filter(|m| !m.is_response && m.opcode == 0) else {
-        // Not a query we understand: relay it untouched to where it was going.
+    let parsed = dns::parse(query);
+    let Some(msg) = parsed.as_ref().filter(|m| !m.is_response && m.opcode == 0) else {
         return match upstream {
-            Some(server) => forward(shared, query, &[server], transport)
-                .await
-                .map(|(r, _)| r),
+            // Not a standard query, so nothing vigil could inspect: never
+            // relayed blind to a hard-coded server (a channel around the
+            // policy), but refused and reported.
+            Some(server) => {
+                refuse_uninspectable(shared, query, parsed.as_ref(), uid, server, transport)
+            }
             None => dns::servfail_response(query),
         };
     };
@@ -296,6 +299,53 @@ fn sinkhole(
         );
     }
     shared.emit(Event::Dns(ev.clone()));
+    resp
+}
+
+/// Refuses a message to a hard-coded resolver that is not a standard query
+/// (unparseable, a response, or another opcode): REFUSED if it has a DNS
+/// header, else nothing (the TCP connection is closed). Reported as a
+/// blocked `dns` event and a `hardcoded_dns` alert.
+fn refuse_uninspectable(
+    shared: &Shared,
+    query: &[u8],
+    msg: Option<&dns::Message>,
+    uid: Option<u32>,
+    server: SocketAddr,
+    transport: &'static str,
+) -> Option<Vec<u8>> {
+    let why = match msg {
+        None => "unparseable DNS message".to_string(),
+        Some(m) if m.is_response => "DNS response sent as a query".to_string(),
+        Some(m) => format!("DNS opcode {}", m.opcode),
+    };
+    let q = msg.and_then(|m| m.first_question());
+    shared.stats.blocked.fetch_add(1, Relaxed);
+    let resp = dns::refused_response(query);
+    shared.emit(Event::Dns(DnsEvent {
+        ts: now_ms(),
+        uid,
+        qname: q.map(|q| q.name.clone()).unwrap_or_default(),
+        qtype: q.map(|q| dns::qtype_name(q.qtype)).unwrap_or_default(),
+        rcode: if resp.is_some() { "REFUSED" } else { "" }.into(),
+        answers: Vec::new(),
+        verdict: Verdict::Block,
+        reason: Some(format!("not a standard query ({why})")),
+        latency_ms: 0,
+        server: server.to_string(),
+        transport,
+        upstream: None,
+    }));
+    let ip = server.ip().to_string();
+    shared.alert(
+        "hardcoded_dns",
+        Severity::Info,
+        uid,
+        &ip,
+        &ip,
+        format!("App bypasses the system resolver and queries {server} directly"),
+        serde_json::json!({ "qname": q.map(|q| q.name.clone()), "refused": why }),
+    );
     resp
 }
 
@@ -493,6 +543,69 @@ mod tests {
             assert!(dns::answers_query(&q, &r));
         }
         assert_eq!(shared.dns_upstreams.idle.lock()[&server].len(), 1);
+    }
+
+    /// A resolver on loopback that counts what it receives and answers
+    /// every message with a response to it.
+    async fn counting_resolver() -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = n.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            while let Ok((len, from)) = s.recv_from(&mut buf).await {
+                seen.fetch_add(1, Relaxed);
+                let mut resp = buf[..len].to_vec();
+                if resp.len() > 2 {
+                    resp[2] |= 0x80;
+                }
+                let _ = s.send_to(&resp, from).await;
+            }
+        });
+        (addr, n)
+    }
+
+    #[tokio::test]
+    async fn uninspectable_messages_to_hardcoded_resolvers_are_refused() {
+        let (server, received) = counting_resolver().await;
+        let shared = test_shared(Config::default());
+        let q = dns::build_query(4, "tunnel.example", dns::TYPE_TXT);
+        let mut response = q.clone();
+        response[2] |= 0x80; // QR
+        let mut notify = q.clone();
+        notify[2] = (notify[2] & 0x87) | (4 << 3); // opcode NOTIFY
+        for (msg, rcode) in [(&response, "REFUSED"), (&notify, "REFUSED")] {
+            let r = answer(&shared, msg, Some(10123), Some(server), "tcp")
+                .await
+                .unwrap();
+            assert_eq!(dns::parse(&r).unwrap().rcode, dns::RCODE_REFUSED);
+            let events = shared.events.poll(100, Duration::ZERO);
+            assert!(
+                events.iter().any(|e| matches!(e, Event::Dns(d)
+                    if d.verdict == Verdict::Block && d.rcode == rcode
+                        && d.qname == "tunnel.example"
+                        && d.reason.as_deref().is_some_and(|r| r.starts_with("not a standard query")))),
+                "{events:?}"
+            );
+        }
+        // Too short for a DNS header: no answer at all (connection closed).
+        assert!(
+            answer(&shared, b"\x01\x02junk", Some(10123), Some(server), "tcp")
+                .await
+                .is_none()
+        );
+        let events = shared.events.poll(100, Duration::ZERO);
+        assert!(events.iter().any(|e| matches!(e, Event::Dns(d)
+            if d.verdict == Verdict::Block && d.qname.is_empty())));
+        assert!(events
+            .iter()
+            .all(|e| !matches!(e, Event::Alert(a) if a.kind != "hardcoded_dns")));
+        // Nothing reached the server; a real query still does.
+        assert_eq!(received.load(Relaxed), 0);
+        let r = answer(&shared, &q, Some(10123), Some(server), "tcp").await;
+        assert!(r.is_some());
+        assert_eq!(received.load(Relaxed), 1);
     }
 
     #[tokio::test]
