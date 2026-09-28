@@ -38,6 +38,9 @@ base64 = "0.22"
 # both; see the header of its Cargo.toml.
 [patch.crates-io]
 netstack-smoltcp = { path = "vendor/netstack-smoltcp" }
+# boringtun builds staticlib + cdylib too, which cargo-ndk would ship as a
+# stray .so; vendor/boringtun is the same source built as an rlib only.
+boringtun = { path = "vendor/boringtun" }
 
 [profile.release]
 lto = "fat"
