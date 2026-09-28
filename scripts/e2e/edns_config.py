@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Prints the engine config of an encrypted upstream DNS e2e phase.
 
-Usage: edns_config.py PHASE CA_PEM_FILE DOT_PORT DOH_PORT PLAIN_PORT
+Usage: edns_config.py PHASE CA_PEM_FILE DOT_PORT DOH_PORT PLAIN_PORT [SOCKS_PORT]
+
+Phase socks5-dot: local DoT through a SOCKS5 proxy on SOCKS_PORT
+(send_domain on), with JA4 matches blocked.
 """
 import json, sys
 
@@ -14,6 +17,7 @@ local_dot = {"host": "dns.vigil.test", "addrs": ["127.0.0.1"], "port": dot_port}
 wrong_name = {"host": "wrong.vigil.test", "addrs": ["127.0.0.1"], "port": dot_port}
 edns = {
     "local-dot": {"mode": "dot", "servers": [local_dot]},
+    "socks5-dot": {"mode": "dot", "servers": [local_dot]},
     "local-doh": {"mode": "doh", "servers": [
         {"url": f"https://dns.vigil.test:{doh_port}/dns-query", "addrs": ["127.0.0.1"]}]},
     "fail-closed": {"mode": "dot", "servers": [wrong_name]},
@@ -29,4 +33,8 @@ if not phase.startswith("live-"):
     edns["extra_root_ca_pem"] = ca
     # The plain resolver records every query it gets (cleartext leak check).
     config["upstream_dns"] = [f"127.0.0.1:{plain_port}"]
+if phase == "socks5-dot":
+    config["upstream"] = {"mode": "socks5", "fail_closed": True,
+                          "socks5": {"server": f"127.0.0.1:{sys.argv[6]}", "send_domain": True}}
+    config["block_ja4_matches"] = True
 print(json.dumps(config))

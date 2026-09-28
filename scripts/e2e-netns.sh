@@ -15,7 +15,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
-trap 'kill ${cli_pid:-} ${rst_pid:-} ${edns_pid:-} 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'kill ${cli_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} 2>/dev/null || true; rm -rf "$work"' EXIT
 export PATH="$HOME/.cargo/bin:$PATH"
 (cd "$root/core" && cargo build -q -p vigil-cli)
 cli="$root/core/target/debug/vigil-cli"
@@ -28,16 +28,11 @@ ads.vigil-test.example
 blocked-sni.vigil-test.example
 192.0.2.0/24
 FEED
-sock="$work/tun.sock"
-
-if [[ " $stages " == *" direct "* ]]; then
-cat > "$work/threat.txt" <<'FEED'
-quic-probe.vigil-test.example
-FEED
 # JA4 feed: the exact fingerprint of this machine's curl with --tls-max 1.2
 # (captured locally, so it differs from plain curl's) and of the ClientHello
 # that `vigil-cli quic-probe` sends. Block mode is on; allowlisted names are
-# exempt, which exercises the alert-only path in the same run.
+# exempt, which exercises the alert-only path in the same run. The edns stage
+# blocks the TLS 1.2 fingerprint with SOCKS5 send_domain (lazy connect).
 python3 "$root/scripts/e2e/capture_hello.py" 18766 "$work/hello12.bin" -- \
   curl -s --max-time 5 --tls-max 1.2 --resolve ja4-capture.vigil-test.example:18766:127.0.0.1 \
   https://ja4-capture.vigil-test.example:18766/
@@ -49,6 +44,12 @@ $ja4_curl12  curl TLS1.2 (e2e)
 $ja4_quic # vigil quic-probe (e2e)
 FEED
 echo "e2e: JA4 feed: $ja4_curl12 $ja4_quic"
+sock="$work/tun.sock"
+
+if [[ " $stages " == *" direct "* ]]; then
+cat > "$work/threat.txt" <<'FEED'
+quic-probe.vigil-test.example
+FEED
 echo '{"stats_interval_ms": 1000, "beacon": {"min_interval_s": 1.0, "min_events": 5, "max_jitter": 0.25},
   "block_ja4_matches": true, "allow_domains": ["example.org", "www.cloudflare.com"]}' > "$work/config.json"
 export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
@@ -95,8 +96,26 @@ for phase in local-dot local-doh fail-closed fallback live-dot live-doh; do
   kill -INT $cli_pid; wait $cli_pid || true
   python3 "$root/scripts/e2e/check_edns.py" "$work/edns-events.jsonl" "$phase" "$hits" | tee -a "$results"
 done
+# Combined: encrypted DNS and JA4 blocking with a SOCKS5 upstream (send_domain,
+# so relayed connections are made lazily). DoT must reach the local server
+# through the proxy; a JA4-blocked connection must never reach the proxy.
+phase=socks5-dot
+socks_log="$work/edns-socks.log"; : > "$socks_log"
+python3 "$root/scripts/e2e/socks5_server.py" 127.0.0.1 18767 "$socks_log" &
+socks_pid=$!
+python3 "$root/scripts/e2e/edns_config.py" "$phase" "$testdata/ca.pem" 18853 18443 18053 18767 > "$work/edns.json"
+: > "$hits"
+rm -f "$sock"
+"$cli" run --fd-socket "$sock" --config "$work/edns.json" --feed test:tracking:"$work/feed.txt" \
+  --feed ja4-e2e:ja4:"$work/ja4.txt" > "$work/edns-events.jsonl" 2> "$work/edns-cli.log" &
+cli_pid=$!
+unshare -rnm bash "$root/scripts/e2e/inside-edns.sh" "$sock" "$results" "$phase" || true
+sleep 1
+kill -INT $cli_pid; wait $cli_pid || true
+kill $socks_pid 2>/dev/null || true
+python3 "$root/scripts/e2e/check_edns.py" "$work/edns-events.jsonl" "$phase" "$hits" "$socks_log" | tee -a "$results"
 kill $edns_pid 2>/dev/null || true
-unset cli_pid edns_pid
+unset cli_pid edns_pid socks_pid
 fi
 
 if [[ " $stages " == *" socks5 "* ]]; then
