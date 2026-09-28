@@ -13,6 +13,9 @@ val rustAbis = (findProperty("vigil.abis") as String? ?: "arm64-v8a,armeabi-v7a,
 
 android {
     namespace = "dev.vigil.inspector"
+    // API 37 is out; moving to it (with targetSdk 37 after reviewing the
+    // Android 17 behaviour changes) unblocks the pinned AndroidX versions below.
+    //noinspection GradleDependency
     compileSdk = 36
     ndkVersion = "27.2.12479018"
 
@@ -20,6 +23,7 @@ android {
         applicationId = "dev.vigil.inspector"
         // getConnectionOwnerUid (per-app attribution) requires Android 10.
         minSdk = 29
+        //noinspection OldTargetApi: see compileSdk
         targetSdk = 36
         // versionCode = major * 10000 + minor * 100 + patch, kept as a literal
         // so F-Droid's update checker can read it. The APK is universal (no
@@ -80,8 +84,8 @@ android {
     lint {
         abortOnError = true
         warningsAsErrors = false
-        // Dependency versions are pinned to what AGP 8.7 / compileSdk 35 supports.
-        disable += listOf("GradleDependency", "AndroidGradlePluginVersion", "NewerVersionAvailable", "ChromeOsAbiSupport")
+        // The APK ships no 32-bit x86 library (see rustAbis), which ChromeOS on x86 would want.
+        disable += "ChromeOsAbiSupport"
     }
 }
 
@@ -127,6 +131,10 @@ val cargoBuild = tasks.register<Exec>("cargoBuild") {
 tasks.named("preBuild") { dependsOn(cargoBuild) }
 
 dependencies {
+    // Newest releases that support compileSdk 36. Newer ones declare
+    // minCompileSdk 37: Compose BOM 2026.08.00+ (UI 1.12), core 1.19,
+    // lifecycle 2.11 (its compose artifacts; lifecycle versions are aligned),
+    // navigation-compose 2.10.
     val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -135,11 +143,16 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    //noinspection GradleDependency: needs compileSdk 37
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.activity:activity-compose:1.13.0")
+    //noinspection GradleDependency: needs compileSdk 37
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
+    //noinspection GradleDependency: needs compileSdk 37
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    //noinspection GradleDependency: needs compileSdk 37
     implementation("androidx.lifecycle:lifecycle-service:2.10.0")
+    //noinspection GradleDependency: needs compileSdk 37
     implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
 
