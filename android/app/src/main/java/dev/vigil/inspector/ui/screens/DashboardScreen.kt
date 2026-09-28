@@ -134,7 +134,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         if (missing.isNotEmpty()) {
             item {
                 Warning(
-                    "${missing.size} threat feed${if (missing.size > 1) "s" else ""} not downloaded yet",
+                    "${missing.size} feed${if (missing.size > 1) "s" else ""} not downloaded yet",
                     when (feedWork) {
                         FeedWork.RUNNING -> "Downloading feeds…"
                         FeedWork.WAITING -> "Feeds will download as soon as the device is online."
