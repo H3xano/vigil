@@ -11,12 +11,12 @@
 //! One driver task owns the UDP socket: it feeds received datagrams through
 //! boringtun into smoltcp, polls smoltcp, encrypts what smoltcp emits, and
 //! runs the WireGuard timers (handshake, keepalive, rekey). Streams and
-//! sockets lock the shared state briefly and wake the driver.
+//! sockets lock the smoltcp state briefly and wake the driver; the Noise
+//! state has its own lock, so encryption and decryption (driver only) run
+//! without holding the streams up.
 
 use super::super::sock;
-use crate::config::upstream::{
-    decode_key, literal_socket_addr, split_host_port, Cidr, WireGuardConfig,
-};
+use crate::config::upstream::{decode_key, Cidr, WireGuardConfig};
 use crate::platform::Platform;
 use boringtun::noise::{errors::WireGuardError, Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
@@ -30,7 +30,7 @@ use std::future::poll_fn;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -70,6 +70,8 @@ const REBIND_DOWN: Duration = Duration::from_secs(30);
 /// Retry delay after the socket could not be created or the endpoint not
 /// resolved.
 const OPEN_RETRY: Duration = Duration::from_secs(5);
+/// Time allowed to look up the endpoint's name.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Room for a WireGuard header and tag around any IP packet.
 const WG_BUF: usize = 65_536 + 256;
 /// Datagrams handled per wakeup before yielding.
@@ -133,19 +135,31 @@ struct TcpTrack {
     orphaned: Option<Instant>,
 }
 
-/// Everything behind the lock: the Noise state, the smoltcp interface and
-/// its sockets.
+/// The smoltcp interface and its sockets (the lock streams take).
 struct Stack {
-    tunn: Tunn,
     iface: Interface,
     dev: QueueDevice,
     sockets: SocketSet<'static>,
     tcp: HashMap<SocketHandle, TcpTrack>,
     ports: HashSet<u16>,
     next_port: u16,
+}
+
+/// The Noise state, behind its own lock: encryption and decryption run
+/// there without blocking the streams (only the driver and `stats` take it).
+struct Noise {
+    tunn: Tunn,
     buf: Vec<u8>,
     last_timer: Instant,
     hs: Handshakes,
+}
+
+impl Noise {
+    fn session_valid(&self) -> bool {
+        self.tunn
+            .time_since_last_handshake()
+            .is_some_and(|age| age < SESSION_MAX_AGE)
+    }
 }
 
 /// Handshake bookkeeping for the up/down state.
@@ -200,12 +214,6 @@ impl Stack {
         ))
     }
 
-    fn session_valid(&self) -> bool {
-        self.tunn
-            .time_since_last_handshake()
-            .is_some_and(|age| age < SESSION_MAX_AGE)
-    }
-
     /// Polls smoltcp and updates the TCP bookkeeping. Must follow every
     /// change of socket or device state that should take effect.
     fn poll(&mut self) {
@@ -246,17 +254,24 @@ struct Net {
     sock: Option<Arc<UdpSocket>>,
     endpoint: Option<SocketAddr>,
     last_open: Option<Instant>,
+    /// The last attempt to open the socket failed. Only then does a missing
+    /// socket make the tunnel down: while it is being re-created (roaming)
+    /// the session stays usable and packets wait in the queues.
+    open_failed: bool,
     last_error: Option<String>,
 }
 
 /// A running WireGuard tunnel with its client stack.
 pub(crate) struct WgTunnel {
     stack: Mutex<Stack>,
+    noise: Mutex<Noise>,
     net: Mutex<Net>,
     /// Wakes the driver (new data to send, window updates, closes).
     notify: Arc<Notify>,
     /// Re-create the UDP socket (network change or send failure).
     rebind: AtomicBool,
+    /// Counts changes between down and not down (see [`Self::health_epoch`]).
+    epoch: AtomicU64,
     allowed: Vec<Cidr>,
     endpoint_spec: String,
     platform: Arc<dyn Platform>,
@@ -336,13 +351,15 @@ impl WgTunnel {
         }
         let t = Arc::new(Self {
             stack: Mutex::new(Stack {
-                tunn,
                 iface,
                 dev,
                 sockets: SocketSet::new(Vec::new()),
                 tcp: HashMap::new(),
                 ports: HashSet::new(),
                 next_port: 49_152 + (seed % 16_000) as u16,
+            }),
+            noise: Mutex::new(Noise {
+                tunn,
                 buf: vec![0u8; WG_BUF],
                 last_timer: Instant::now(),
                 hs: Handshakes::default(),
@@ -350,6 +367,7 @@ impl WgTunnel {
             net: Mutex::new(Net::default()),
             notify: Arc::new(Notify::new()),
             rebind: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
             allowed,
             endpoint_spec: cfg.endpoint.clone(),
             platform,
@@ -366,11 +384,20 @@ impl WgTunnel {
     }
 
     /// The handshake has been failing (or the endpoint is unusable) for a
-    /// while. An idle tunnel without a session is *not* down.
+    /// while. An idle tunnel without a session is *not* down, nor is one
+    /// whose socket is being re-created after a network change.
     pub fn is_down(&self) -> bool {
-        let failing = self.stack.lock().hs.failing();
+        let failing = self.noise.lock().hs.failing();
         let net = self.net.lock();
-        failing || (net.sock.is_none() && net.last_open.is_some())
+        failing || (net.sock.is_none() && net.open_failed)
+    }
+
+    /// Changes whenever the tunnel goes down or comes back. Connections
+    /// pooled by the engine (DNS sockets, encrypted DNS sessions) are keyed
+    /// on it, so ones opened direct while the tunnel was down (fail-open)
+    /// are not reused once it is back, nor tunnelled ones while it is down.
+    pub fn health_epoch(&self) -> u64 {
+        self.epoch.load(Relaxed)
     }
 
     /// Network changed: re-create the socket and re-resolve the endpoint.
@@ -382,9 +409,9 @@ impl WgTunnel {
 
     pub fn status(&self) -> WgStatus {
         let (age, tx, rx, valid, pending) = {
-            let st = self.stack.lock();
-            let (age, tx, rx, _, _) = st.tunn.stats();
-            (age, tx, rx, st.session_valid(), st.hs.pending_since)
+            let n = self.noise.lock();
+            let (age, tx, rx, _, _) = n.tunn.stats();
+            (age, tx, rx, n.session_valid(), n.hs.pending_since)
         };
         let down = self.is_down();
         let net = self.net.lock();
@@ -544,95 +571,119 @@ impl WgTunnel {
     }
 
     /// Timers, smoltcp poll and encryption of everything smoltcp emitted.
-    /// Returns how long the driver may sleep.
-    fn pump(&self, sock: Option<&UdpSocket>) -> Duration {
-        let mut g = self.stack.lock();
-        let st = &mut *g;
+    /// smoltcp's output is taken out of the stack lock (into `out`, the
+    /// driver's reusable queue) and encrypted under the Noise lock only, so
+    /// streams are not held up by the encryption. Returns how long the
+    /// driver may sleep.
+    fn pump(&self, sock: Option<&UdpSocket>, out: &mut VecDeque<Vec<u8>>) -> Duration {
+        let delay = {
+            let mut g = self.stack.lock();
+            let st = &mut *g;
+            st.poll();
+            if sock.is_some() {
+                std::mem::swap(&mut st.dev.tx, out);
+            }
+            st.iface
+                .poll_delay(smoltcp::time::Instant::now(), &st.sockets)
+                .map(|d| Duration::from_micros(d.total_micros()))
+                .unwrap_or(TIMER_TICK)
+                .min(TIMER_TICK)
+        };
         let Some(sock) = sock else {
             // No socket yet (or being re-created): keep smoltcp's packets
             // queued rather than letting boringtun emit a handshake that
             // would be lost (it would only retry after REKEY_TIMEOUT).
-            st.poll();
             return TIMER_TICK;
         };
+        let mut g = self.noise.lock();
+        let n = &mut *g;
         let now = Instant::now();
-        if now.duration_since(st.last_timer) >= TIMER_TICK {
-            st.last_timer = now;
-            match st.tunn.update_timers(&mut st.buf) {
-                TunnResult::WriteToNetwork(p) => self.send_datagram(sock, &mut st.hs, p),
+        if now.duration_since(n.last_timer) >= TIMER_TICK {
+            n.last_timer = now;
+            match n.tunn.update_timers(&mut n.buf) {
+                TunnResult::WriteToNetwork(p) => self.send_datagram(sock, &mut n.hs, p),
                 TunnResult::Err(WireGuardError::ConnectionExpired) => {}
                 TunnResult::Err(e) => log::debug!("wireguard timers: {e:?}"),
                 _ => {}
             }
-            st.hs.settle(st.tunn.time_since_last_handshake());
-            if st.hs.failing() && st.hs.last_init.map_or(true, |t| t.elapsed() >= RETRY_DOWN) {
+            n.hs.settle(n.tunn.time_since_last_handshake());
+            if n.hs.failing() && n.hs.last_init.map_or(true, |t| t.elapsed() >= RETRY_DOWN) {
                 // Keep trying while down, so the tunnel comes back on its own.
                 if let TunnResult::WriteToNetwork(p) =
-                    st.tunn.format_handshake_initiation(&mut st.buf, true)
+                    n.tunn.format_handshake_initiation(&mut n.buf, true)
                 {
-                    self.send_datagram(sock, &mut st.hs, p);
+                    self.send_datagram(sock, &mut n.hs, p);
                 }
             }
         }
-        st.poll();
-        while let Some(pkt) = st.dev.tx.pop_front() {
-            match st.tunn.encapsulate(&pkt, &mut st.buf) {
-                TunnResult::WriteToNetwork(p) => self.send_datagram(sock, &mut st.hs, p),
+        while let Some(pkt) = out.pop_front() {
+            match n.tunn.encapsulate(&pkt, &mut n.buf) {
+                TunnResult::WriteToNetwork(p) => self.send_datagram(sock, &mut n.hs, p),
                 TunnResult::Err(e) => log::debug!("wireguard encapsulate: {e:?}"),
                 _ => {}
             }
         }
-        let delay = st
-            .iface
-            .poll_delay(smoltcp::time::Instant::now(), &st.sockets)
-            .map(|d| Duration::from_micros(d.total_micros()))
-            .unwrap_or(TIMER_TICK);
-        delay.min(TIMER_TICK)
+        delay
     }
 
-    /// Reads and decrypts every queued datagram, then lets smoltcp process
-    /// the packets.
-    fn receive(&self, sock: &UdpSocket, rbuf: &mut [u8], endpoint: Option<SocketAddr>) {
-        let mut g = self.stack.lock();
-        let st = &mut *g;
-        let from = endpoint.map(|e| e.ip());
-        for _ in 0..RECV_BATCH {
-            let n = match sock.try_recv(rbuf) {
-                Ok(n) => n,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    if e.kind() != io::ErrorKind::ConnectionRefused {
-                        self.rebind.store(true, Relaxed);
+    /// Reads and decrypts queued datagrams (a batch) under the Noise lock,
+    /// then hands the inner packets to smoltcp's queue (the next pump
+    /// processes them). `inner` is the driver's reusable queue.
+    fn receive(
+        &self,
+        sock: &UdpSocket,
+        rbuf: &mut [u8],
+        endpoint: Option<SocketAddr>,
+        inner: &mut VecDeque<Vec<u8>>,
+    ) {
+        {
+            let mut g = self.noise.lock();
+            let n = &mut *g;
+            let from = endpoint.map(|e| e.ip());
+            for _ in 0..RECV_BATCH {
+                let len = match sock.try_recv(rbuf) {
+                    Ok(len) => len,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        if e.kind() != io::ErrorKind::ConnectionRefused {
+                            self.rebind.store(true, Relaxed);
+                        }
+                        self.set_error(format!("receive: {e}"));
+                        break;
                     }
-                    self.set_error(format!("receive: {e}"));
-                    break;
-                }
-            };
-            match st.tunn.decapsulate(from, &rbuf[..n], &mut st.buf) {
-                TunnResult::WriteToNetwork(p) => {
-                    self.send_datagram(sock, &mut st.hs, p);
-                    // Flush packets queued while the handshake was pending.
-                    while let TunnResult::WriteToNetwork(p) =
-                        st.tunn.decapsulate(None, &[], &mut st.buf)
-                    {
-                        self.send_datagram(sock, &mut st.hs, p);
+                };
+                match n.tunn.decapsulate(from, &rbuf[..len], &mut n.buf) {
+                    TunnResult::WriteToNetwork(p) => {
+                        self.send_datagram(sock, &mut n.hs, p);
+                        // Flush packets queued while the handshake was pending.
+                        while let TunnResult::WriteToNetwork(p) =
+                            n.tunn.decapsulate(None, &[], &mut n.buf)
+                        {
+                            self.send_datagram(sock, &mut n.hs, p);
+                        }
                     }
-                }
-                TunnResult::WriteToTunnelV4(p, src) => {
-                    if self.accepts(src.into()) && st.dev.rx.len() < MAX_QUEUE {
-                        st.dev.rx.push_back(p.to_vec());
+                    TunnResult::WriteToTunnelV4(p, src) => {
+                        if self.accepts(src.into()) {
+                            inner.push_back(p.to_vec());
+                        }
                     }
-                }
-                TunnResult::WriteToTunnelV6(p, src) => {
-                    if self.accepts(src.into()) && st.dev.rx.len() < MAX_QUEUE {
-                        st.dev.rx.push_back(p.to_vec());
+                    TunnResult::WriteToTunnelV6(p, src) => {
+                        if self.accepts(src.into()) {
+                            inner.push_back(p.to_vec());
+                        }
                     }
+                    TunnResult::Done => {}
+                    TunnResult::Err(e) => log::debug!("wireguard decapsulate: {e:?}"),
                 }
-                TunnResult::Done => {}
-                TunnResult::Err(e) => log::debug!("wireguard decapsulate: {e:?}"),
             }
+            n.hs.settle(n.tunn.time_since_last_handshake());
         }
-        st.hs.settle(st.tunn.time_since_last_handshake());
+        if inner.is_empty() {
+            return;
+        }
+        let mut st = self.stack.lock();
+        let room = MAX_QUEUE.saturating_sub(st.dev.rx.len());
+        st.dev.rx.extend(inner.drain(..).take(room));
     }
 
     /// Cryptokey routing: inner packets must come from AllowedIPs.
@@ -640,25 +691,24 @@ impl WgTunnel {
         self.routes(src)
     }
 
-    /// Resolves the endpoint and opens a protected UDP socket to it.
-    async fn open_socket(&self) -> io::Result<(UdpSocket, SocketAddr)> {
-        let ep = match literal_socket_addr(&self.endpoint_spec) {
-            Some(a) => a,
-            None => {
-                let (host, port) = split_host_port(&self.endpoint_spec)
-                    .ok_or_else(|| io::Error::other("bad endpoint"))?;
-                let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
-                    .await
-                    .map_err(|e| io::Error::new(e.kind(), format!("resolve {host}: {e}")))?
-                    .collect();
-                // Prefer IPv4: more networks route it.
-                addrs
-                    .iter()
-                    .find(|a| a.is_ipv4())
-                    .or(addrs.first())
-                    .copied()
-                    .ok_or_else(|| io::Error::other(format!("resolve {host}: no address")))?
-            }
+    /// Resolves the endpoint (within [`RESOLVE_TIMEOUT`]; the last address
+    /// is kept when the lookup fails, e.g. on a network whose DNS is not up
+    /// yet) and opens a protected UDP socket to it.
+    async fn open_socket(&self, last: Option<SocketAddr>) -> io::Result<(UdpSocket, SocketAddr)> {
+        let ep = match super::resolve(&self.endpoint_spec, RESOLVE_TIMEOUT).await {
+            // Prefer IPv4: more networks route it.
+            Ok(addrs) => addrs
+                .iter()
+                .find(|a| a.is_ipv4())
+                .copied()
+                .unwrap_or(addrs[0]),
+            Err(e) => match last {
+                Some(a) => {
+                    log::info!("wireguard: {e}; keeping endpoint {a}");
+                    a
+                }
+                None => return Err(e),
+            },
         };
         let s = sock::connect_udp(self.platform.clone(), ep).await?;
         Ok((s, ep))
@@ -666,13 +716,32 @@ impl WgTunnel {
 
     /// After a new socket: announce ourselves from the new address.
     fn after_rebind(&self, sock: &UdpSocket) {
-        let mut g = self.stack.lock();
-        let st = &mut *g;
-        if st.session_valid() {
+        let mut g = self.noise.lock();
+        let n = &mut *g;
+        if n.session_valid() {
             // A keepalive is enough for the peer to learn the new endpoint.
-            if let TunnResult::WriteToNetwork(p) = st.tunn.encapsulate(&[], &mut st.buf) {
-                self.send_datagram(sock, &mut st.hs, p);
+            if let TunnResult::WriteToNetwork(p) = n.tunn.encapsulate(&[], &mut n.buf) {
+                self.send_datagram(sock, &mut n.hs, p);
             }
+        }
+    }
+}
+
+impl Drop for WgTunnel {
+    /// The last reference is gone (a replaced tunnel's last connection
+    /// ended): one final pump, so the FIN or RST queued by that
+    /// connection's close still reaches the peer. The driver cannot do it:
+    /// it only holds a weak reference and exits.
+    fn drop(&mut self) {
+        let Some(sock) = self.net.get_mut().sock.clone() else {
+            return;
+        };
+        if !self.noise.get_mut().session_valid() {
+            return;
+        }
+        let mut out = VecDeque::new();
+        for _ in 0..2 {
+            self.pump(Some(&sock), &mut out);
         }
     }
 }
@@ -681,14 +750,25 @@ impl WgTunnel {
 /// ends once the tunnel is replaced and its last connection is gone.
 async fn drive(weak: Weak<WgTunnel>, notify: Arc<Notify>) {
     let mut rbuf = vec![0u8; 65_536];
+    let mut queue = VecDeque::new();
     let mut sock: Option<Arc<UdpSocket>> = None;
     let mut endpoint = None;
     let mut next_open = Instant::now();
+    let mut was_down = false;
     loop {
         let Some(t) = weak.upgrade() else {
             return;
         };
-        let down_long = t.is_down()
+        let down = t.is_down();
+        if down != was_down {
+            was_down = down;
+            t.epoch.fetch_add(1, Relaxed);
+            log::info!(
+                "wireguard: tunnel {}",
+                if down { "down" } else { "back up" }
+            );
+        }
+        let down_long = down
             && t.net
                 .lock()
                 .last_open
@@ -699,7 +779,7 @@ async fn drive(weak: Weak<WgTunnel>, notify: Arc<Notify>) {
             next_open = Instant::now();
         }
         if sock.is_none() && Instant::now() >= next_open {
-            let r = t.open_socket().await;
+            let r = t.open_socket(endpoint).await;
             let mut net = t.net.lock();
             net.last_open = Some(Instant::now());
             match r {
@@ -708,6 +788,7 @@ async fn drive(weak: Weak<WgTunnel>, notify: Arc<Notify>) {
                     let s = Arc::new(s);
                     net.sock = Some(s.clone());
                     net.endpoint = Some(ep);
+                    net.open_failed = false;
                     drop(net);
                     t.after_rebind(&s);
                     sock = Some(s);
@@ -715,12 +796,13 @@ async fn drive(weak: Weak<WgTunnel>, notify: Arc<Notify>) {
                 }
                 Err(e) => {
                     net.last_error = Some(format!("endpoint {}: {e}", t.endpoint_spec));
+                    net.open_failed = true;
                     log::warn!("wireguard: endpoint {}: {e}", t.endpoint_spec);
                     next_open = Instant::now() + OPEN_RETRY;
                 }
             }
         }
-        let delay = t.pump(sock.as_deref());
+        let delay = t.pump(sock.as_deref(), &mut queue);
         drop(t);
         match &sock {
             Some(s) => {
@@ -730,7 +812,7 @@ async fn drive(weak: Weak<WgTunnel>, notify: Arc<Notify>) {
                     r = s.readable() => {
                         if r.is_ok() {
                             if let Some(t) = weak.upgrade() {
-                                t.receive(s, &mut rbuf, endpoint);
+                                t.receive(s, &mut rbuf, endpoint, &mut queue);
                             }
                         }
                     }
@@ -782,8 +864,9 @@ impl AsyncRead for WgTcpStream {
                 .recv_slice(buf.initialize_unfilled())
                 .map_err(|e| io::Error::other(format!("wireguard: recv: {e}")))?;
             buf.advance(n);
-            // The window opened: let smoltcp tell the peer.
-            st.poll();
+            // The window opened: the driver polls smoltcp, which tells the
+            // peer (not done here: a full poll under the stack lock on
+            // every read of every stream would serialise them).
             drop(g);
             self.tun.notify.notify_one();
             return Poll::Ready(Ok(()));
@@ -939,6 +1022,8 @@ mod tests {
     struct Peer {
         addr: SocketAddr,
         public: String,
+        /// Connections the peer saw closed by the client (FIN).
+        fins: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     fn keypair(seed: u8) -> ([u8; 32], [u8; 32]) {
@@ -952,20 +1037,28 @@ mod tests {
         let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         udp.set_nonblocking(true).unwrap();
         let addr = udp.local_addr().unwrap();
+        let fins = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let f = fins.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            rt.block_on(peer_loop(udp, sk, client_public));
+            rt.block_on(peer_loop(udp, sk, client_public, f));
         });
         Peer {
             addr,
             public: b64(&pk),
+            fins,
         }
     }
 
-    async fn peer_loop(sock: std::net::UdpSocket, sk: [u8; 32], client: [u8; 32]) {
+    async fn peer_loop(
+        sock: std::net::UdpSocket,
+        sk: [u8; 32],
+        client: [u8; 32],
+        fins: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         let sock = UdpSocket::from_std(sock).unwrap();
         let mut tunn = Tunn::new(
             StaticSecret::from(sk),
@@ -1038,6 +1131,7 @@ mod tests {
                     }
                 }
                 if s.state() == tcp::State::CloseWait {
+                    fins.fetch_add(1, Relaxed);
                     s.close();
                 }
             }
@@ -1157,6 +1251,150 @@ mod tests {
         assert!(st.sockets.iter().count() <= 1, "lingering sockets");
     }
 
+    async fn echo_once(t: &Arc<WgTunnel>) -> WgTcpStream {
+        let mut s = tokio::time::timeout(
+            Duration::from_secs(10),
+            t.connect_tcp("10.9.0.1:7".parse().unwrap()),
+        )
+        .await
+        .expect("connect timed out")
+        .unwrap();
+        s.write_all(b"hi").await.unwrap();
+        let mut b = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut b))
+            .await
+            .unwrap()
+            .unwrap();
+        s
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roaming_is_not_down() {
+        let (csk, cpk) = keypair(3);
+        let peer = start_peer(cpk).await;
+        let t = WgTunnel::start(&client_cfg(&peer, csk), Arc::new(NullPlatform)).unwrap();
+        let s = echo_once(&t).await;
+        // A network change: nothing may count the tunnel down meanwhile.
+        let watch = {
+            let t = t.clone();
+            tokio::spawn(async move {
+                let until = Instant::now() + Duration::from_millis(300);
+                while Instant::now() < until {
+                    assert!(!t.is_down(), "down while roaming");
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+        };
+        t.roam();
+        drop(echo_once(&t).await);
+        watch.await.unwrap();
+        // The state while the socket is being re-created (a slow endpoint
+        // lookup) with a valid session: up, not down.
+        let old = t.net.lock().sock.take();
+        assert!(!t.is_down());
+        assert_eq!(t.status().state, "up");
+        // Only a failed attempt to re-create it makes the tunnel down.
+        t.net.lock().open_failed = true;
+        assert!(t.is_down());
+        let mut net = t.net.lock();
+        net.open_failed = false;
+        net.sock = old;
+        drop(net);
+        drop(s);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replaced_tunnel_closes_its_last_connection() {
+        let (csk, cpk) = keypair(3);
+        let peer = start_peer(cpk).await;
+        let t = WgTunnel::start(&client_cfg(&peer, csk), Arc::new(NullPlatform)).unwrap();
+        let s = echo_once(&t).await;
+        let fins = peer.fins.load(Relaxed);
+        // The dialer lets go of the tunnel (config change); the connection
+        // keeps it alive until it ends.
+        drop(t);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(s);
+        for _ in 0..80 {
+            if peer.fins.load(Relaxed) > fins {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the peer never saw the FIN of the replaced tunnel's last connection");
+    }
+
+    /// Lock contention benchmark (run with `cargo test --release -- --ignored
+    /// wg_bench --nocapture`): a bulk echo on some tunnelled streams while
+    /// small round trips on another are timed. The in-process test peer is
+    /// single-threaded and caps the bulk rate; the round-trip latencies
+    /// show how long streams wait behind the driver.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn wg_bench_latency_under_load() {
+        const BULK: usize = 64 << 20;
+        const BULK_STREAMS: usize = 3;
+        let (csk, cpk) = keypair(3);
+        let peer = start_peer(cpk).await;
+        let t = WgTunnel::start(&client_cfg(&peer, csk), Arc::new(NullPlatform)).unwrap();
+        let dst: SocketAddr = "10.9.0.1:7".parse().unwrap();
+        // The test peer listens with one socket at a time: connect in turn.
+        let mut probe = t.connect_tcp(dst).await.unwrap();
+        let mut streams = Vec::new();
+        for _ in 0..BULK_STREAMS {
+            streams.push(t.connect_tcp(dst).await.unwrap());
+        }
+        let started = Instant::now();
+        let mut bulk = Vec::new();
+        for s in streams {
+            bulk.push(tokio::spawn(async move {
+                let (mut r, mut w) = tokio::io::split(s);
+                let writer = tokio::spawn(async move {
+                    let chunk = vec![7u8; 16 * 1024];
+                    let mut sent = 0;
+                    while sent < BULK {
+                        w.write_all(&chunk).await.unwrap();
+                        sent += chunk.len();
+                    }
+                    w
+                });
+                let mut b = vec![0u8; 64 * 1024];
+                let mut got = 0;
+                while got < BULK {
+                    let n = r.read(&mut b).await.unwrap();
+                    assert!(n > 0);
+                    got += n;
+                }
+                writer.await.unwrap();
+            }));
+        }
+        let mut rtts = Vec::new();
+        let mut b = [0u8; 64];
+        while bulk.iter().any(|h| !h.is_finished()) {
+            let t0 = Instant::now();
+            probe.write_all(&[1u8; 64]).await.unwrap();
+            probe.read_exact(&mut b).await.unwrap();
+            rtts.push(t0.elapsed());
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let elapsed = started.elapsed();
+        for h in bulk {
+            h.await.unwrap();
+        }
+        rtts.sort();
+        let pct = |p: usize| rtts[(rtts.len() * p / 100).min(rtts.len() - 1)];
+        let mb = (BULK * BULK_STREAMS) as f64 / 1e6;
+        eprintln!(
+            "wg_bench: {mb:.0} MB echoed in {elapsed:.2?} ({:.1} MB/s); probe RTT p50 {:.2?} p90 {:.2?} p99 {:.2?} max {:.2?} ({} samples)",
+            mb / elapsed.as_secs_f64(),
+            pct(50),
+            pct(90),
+            pct(99),
+            rtts[rtts.len() - 1],
+            rtts.len()
+        );
+    }
+
     #[tokio::test]
     async fn dead_peer_marks_the_tunnel_down() {
         let (csk, _) = keypair(3);
@@ -1164,6 +1402,7 @@ mod tests {
         let peer = Peer {
             addr: dead.local_addr().unwrap(),
             public: b64(&keypair(9).1),
+            fins: Default::default(),
         };
         let t = WgTunnel::start(&client_cfg(&peer, csk), Arc::new(NullPlatform)).unwrap();
         let connect = t.connect_tcp("10.9.0.1:7".parse().unwrap());
@@ -1179,9 +1418,18 @@ mod tests {
             .unwrap();
         assert_eq!(n, 148);
         assert_eq!(b[0], 1);
-        t.stack.lock().hs.pending_since = Some(Instant::now() - DOWN_AFTER);
+        let epoch = t.health_epoch();
+        t.noise.lock().hs.pending_since = Some(Instant::now() - DOWN_AFTER);
         assert!(t.is_down());
         assert_eq!(t.status().state, "down");
+        // The driver notices within a tick: pooled connections are renewed.
+        for _ in 0..40 {
+            if t.health_epoch() != epoch {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_ne!(t.health_epoch(), epoch);
         // Everything inside the tunnel is routed there; AllowedIPs narrows it.
         assert!(t.routes("8.8.8.8".parse().unwrap()));
     }

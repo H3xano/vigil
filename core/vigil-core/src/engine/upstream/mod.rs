@@ -141,9 +141,19 @@ impl Upstream {
         self.state.read().dialer.clone()
     }
 
-    /// Identifies the current dialer; changes whenever the path does.
+    /// Identifies the current dialer; changes whenever the path does, and
+    /// in fail-open WireGuard mode whenever the tunnel goes down or comes
+    /// back (pooled DNS connections opened direct while it was down are
+    /// then not reused through the tunnel's recovery, nor tunnelled ones
+    /// while it is down).
     pub fn generation(&self) -> u64 {
-        self.state.read().dialer.generation
+        let st = self.state.read();
+        let d = &st.dialer;
+        let epoch = match &d.path {
+            Path::Wireguard(t) if !d.fail_closed => t.health_epoch(),
+            _ => 0,
+        };
+        (d.generation << 32) | (epoch & 0xffff_ffff)
     }
 
     /// Installs `cfg` (validated). Must run inside the engine's runtime:
