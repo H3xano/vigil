@@ -13,6 +13,7 @@
 //!             └─ other ─────► dropped (counted)
 //! ```
 
+pub mod capture;
 mod dns;
 mod dns_upstream;
 mod sock;
@@ -152,6 +153,9 @@ struct BeaconMeta {
 
 struct OpenFlow {
     counters: Arc<FlowCounters>,
+    /// Protocol and sockets (app, remote) plus UID, so packet capture can
+    /// attribute the packets of flows already open when it is enabled.
+    capture_key: Option<(u8, SocketAddr, SocketAddr, Option<u32>)>,
     /// Set for allowed flows that may be watched for in-flow beaconing
     /// (not to an ignored or allowlisted name).
     beacon: Option<Box<BeaconMeta>>,
@@ -247,6 +251,8 @@ pub(crate) struct Shared {
     /// preload installs a feed only if nothing touched its id meanwhile, so
     /// it never undoes a later `load_feed_file`/`remove_feed` from the app.
     feed_loads: Mutex<HashMap<String, u64>>,
+    /// Packet capture (off unless the config enables it).
+    pub capture: capture::Capture,
 }
 
 impl Shared {
@@ -276,6 +282,7 @@ impl Shared {
             app_rules_changed: watch::Sender::new(0),
             shut_down: AtomicBool::new(false),
             feed_loads: Mutex::new(HashMap::new()),
+            capture: capture::Capture::default(),
         }
     }
 
@@ -352,7 +359,31 @@ impl Shared {
     }
 
     pub fn emit(&self, e: Event) {
+        if let Event::Flow(f) = &e {
+            if self.capture.is_on() {
+                if let Some((proto, app, remote, uid)) = capture_key(f) {
+                    self.capture.bind_flow(proto, app, remote, f.id, uid);
+                }
+            }
+        }
         self.events.push(e);
+    }
+
+    /// Applies the `capture` section; when capture has just been enabled,
+    /// binds the flows already open so their packets are attributed too.
+    fn apply_capture(&self, cfg: &Config) {
+        if self.capture.apply(&cfg.capture) {
+            let open: Vec<_> = self
+                .open_flows
+                .lock()
+                .flows
+                .iter()
+                .filter_map(|(id, o)| o.capture_key.map(|k| (*id, k)))
+                .collect();
+            for (id, (proto, app, remote, uid)) in open {
+                self.capture.bind_flow(proto, app, remote, id, uid);
+            }
+        }
     }
 
     /// Emits a `flow` event and tracks the flow until [`finish_flow`]. After
@@ -400,6 +431,7 @@ impl Shared {
     fn open_flow_inner(&self, ev: FlowEvent, counters: &Arc<FlowCounters>, cut: Option<CutTarget>) {
         let id = ev.id;
         let beacon = self.beacon_meta(&ev);
+        let key = capture_key(&ev);
         // Emitting under the lock orders `flow` before any `flow_end`
         // emitted by `close_all_flows`.
         let mut open = self.open_flows.lock();
@@ -413,6 +445,7 @@ impl Shared {
                 id,
                 OpenFlow {
                     counters: counters.clone(),
+                    capture_key: key,
                     beacon,
                     cut,
                 },
@@ -627,10 +660,12 @@ impl Shared {
         dst: SocketAddr,
     ) -> Option<u32> {
         let me = self.clone();
-        tokio::task::spawn_blocking(move || me.platform.owner_uid(proto, src, dst))
+        let uid = tokio::task::spawn_blocking(move || me.platform.owner_uid(proto, src, dst))
             .await
             .ok()
-            .flatten()
+            .flatten();
+        self.capture.bind_uid(proto, src, dst, uid);
+        uid
     }
 
     /// Queues a packet for the TUN writer, dropping it if the queue is full.
@@ -657,6 +692,7 @@ impl Shared {
             dropped_events: self.events.dropped(),
             dns_cache_size: self.dns_cache.len() as u64,
             upstream: self.upstream.status(),
+            capture: self.capture.stats(),
             ..self.encrypted_dns.stats.snapshot()
         }
     }
@@ -785,6 +821,8 @@ impl Engine {
             // A WireGuard tunnel spawns its driver on the runtime.
             let _guard = runtime.enter();
             shared.upstream.apply(&upstream, &shared.platform);
+            let cfg = shared.config();
+            shared.apply_capture(&cfg);
         }
         let main = runtime.spawn(run(shared.clone(), tun, tun_rx));
         runtime.spawn(supervise(shared.clone(), main));
@@ -817,6 +855,7 @@ impl Engine {
             self.shared
                 .upstream
                 .apply(&config.upstream, &self.shared.platform);
+            self.shared.apply_capture(&config);
         }
         self.shared.policy.write().apply_config(&config);
         *self.shared.config.write() = Arc::new(config);
@@ -882,6 +921,7 @@ impl Engine {
             return;
         };
         self.shared.shut_down.store(true, Relaxed);
+        self.shared.capture.stop_stream();
         runtime.shutdown_timeout(Duration::from_secs(2));
         // Only now, with no task left to open one, end the open flows.
         self.shared.close_all_flows(SHUTDOWN_REASON);
@@ -891,6 +931,18 @@ impl Engine {
             message: String::new(),
         }));
         self.shared.events.close();
+    }
+
+    /// Writes the captured packets matching `filter` to `path` as PCAPng.
+    /// Works after [`shutdown`](Self::shutdown) too (the packets stay in
+    /// memory until the engine is dropped). Blocks for the file write: call
+    /// from a background thread.
+    pub fn export_pcap(
+        &self,
+        filter: &capture::CaptureFilter,
+        path: &std::path::Path,
+    ) -> io::Result<capture::ExportSummary> {
+        self.shared.capture.export(filter, path)
     }
 
     /// Whether [`shutdown`](Self::shutdown) has run.
@@ -1020,6 +1072,7 @@ async fn run(
             };
             s.stats.packets_in.fetch_add(1, Relaxed);
             s.stats.bytes_in.fetch_add(p.len() as u64, Relaxed);
+            s.capture.record(&p, capture::Dir::ToApp);
             if let Err(e) = writer_tun.send(&p).await {
                 log::warn!("tun write ({} bytes): {e}", p.len());
             }
@@ -1078,6 +1131,7 @@ async fn read_tun(
         let pkt = &buf[..n];
         shared.stats.packets_out.fetch_add(1, Relaxed);
         shared.stats.bytes_out.fetch_add(n as u64, Relaxed);
+        shared.capture.record(pkt, capture::Dir::FromApp);
         dispatch(shared, &gate, stack_in, pkt);
     }
 }
@@ -1203,7 +1257,21 @@ async fn housekeeping(shared: Arc<Shared>) {
         drop(stale);
         shared.dns_upstreams.expire();
         shared.encrypted_dns.expire();
+        shared.capture.prune();
     }
+}
+
+/// The capture binding of a `flow` event: protocol, app socket, remote
+/// socket, UID.
+fn capture_key(f: &FlowEvent) -> Option<(u8, SocketAddr, SocketAddr, Option<u32>)> {
+    let proto = match f.proto {
+        "tcp" => PROTO_TCP,
+        "udp" => PROTO_UDP,
+        _ => return None,
+    };
+    let app: SocketAddr = f.src.parse().ok()?;
+    let remote = SocketAddr::new(f.dst_ip.parse().ok()?, f.dst_port);
+    Some((proto, app, remote, f.uid))
 }
 
 #[cfg(test)]
@@ -1344,6 +1412,77 @@ mod tests {
         assert_eq!(s.flow_beacon.len(), 1);
         s.finish_flow(6, None);
         assert!(s.flow_beacon.is_empty());
+    }
+
+    #[tokio::test]
+    async fn capture_binds_flows_uids_and_open_flows() {
+        let s = test_shared(Config::default());
+        let flow = |id, src: &str, dst: &str, port| FlowEvent {
+            id,
+            proto: "tcp",
+            uid: Some(10123),
+            src: src.into(),
+            dst_ip: dst.into(),
+            dst_port: port,
+            ..Default::default()
+        };
+        let c = FlowCounters::new();
+        // Opened while capture is off: bound when it is turned on.
+        s.open_flow(flow(1, "10.111.222.1:40000", "192.0.2.1", 443), &c);
+        let mut cfg = Config::default();
+        cfg.capture.enabled = true;
+        s.apply_capture(&cfg);
+        // Opened while on (IPv6), and a UID lookup (DNS, no flow).
+        s.open_flow(flow(2, "[fd76:6967:696c::1]:40001", "2001:db8::1", 443), &c);
+        s.lookup_uid(
+            PROTO_UDP,
+            "10.111.222.1:5353".parse().unwrap(),
+            "10.111.222.2:53".parse().unwrap(),
+        )
+        .await;
+        let old = packet::build_tcp(
+            "10.111.222.1:40000".parse().unwrap(),
+            "192.0.2.1:443".parse().unwrap(),
+            5,
+            5,
+            packet::TCP_ACK,
+            b"x",
+        )
+        .unwrap();
+        let new = packet::build_tcp(
+            "[2001:db8::1]:443".parse().unwrap(),
+            "[fd76:6967:696c::1]:40001".parse().unwrap(),
+            5,
+            5,
+            packet::TCP_ACK,
+            b"y",
+        )
+        .unwrap();
+        s.capture.record(&old, capture::Dir::FromApp);
+        s.capture.record(&new, capture::Dir::ToApp);
+        let path = std::env::temp_dir().join(format!("vigil-engine-cap-{}", std::process::id()));
+        let export = |flows: Vec<u64>| {
+            s.capture
+                .export(
+                    &capture::CaptureFilter {
+                        flow_ids: flows,
+                        ..Default::default()
+                    },
+                    &path,
+                )
+                .unwrap()
+                .packets
+        };
+        assert_eq!(export(vec![1]), 1);
+        assert_eq!(export(vec![2]), 1);
+        assert_eq!(export(vec![1, 2]), 2);
+        assert_eq!(export(vec![]), 2);
+        std::fs::remove_file(&path).unwrap();
+        let st = s.snapshot().capture;
+        assert!(st.enabled && st.packets == 2 && st.stream.is_none());
+        let json = serde_json::to_value(s.snapshot()).unwrap();
+        assert_eq!(json["capture"]["enabled"], true);
+        assert_eq!(json["capture"]["stream"], serde_json::Value::Null);
     }
 
     #[test]

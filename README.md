@@ -15,7 +15,7 @@ vigil uses Android's `VpnService` as a *local loop*. The TUN interface feeds
 raw IP packets to a Rust engine that terminates every flow in user space,
 inspects it, and relays it to the internet over ordinary sockets. Nothing is
 tunnelled anywhere. No traffic data leaves the device unless you enable SIEM
-export; vigil's only own network use is the daily download of enabled threat
+export or PCAP-over-IP streaming (or export a capture file); vigil's only own network use is the daily download of enabled threat
 feeds from their publishers (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 
 ## What it does
@@ -33,6 +33,7 @@ feeds from their publishers (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 | **Behavioural detection** | **Beaconing** (near-constant-interval check-ins), apps **bypassing the system resolver** with hard-coded DNS servers, **encrypted DNS** use (DoH/DoT/DoQ), optional **new-destination** alerts, and foreground/background tagging. |
 | **Encrypted upstream DNS** | Optional DNS over TLS or DNS over HTTPS (HTTP/2) from vigil's resolver to Quad9, Cloudflare, Google, Mullvad or a custom server, so inspecting DNS does not mean giving up Private DNS. Fails closed unless a plain-DNS fallback is allowed. |
 | **SIEM streaming** | ECS-shaped JSON over RFC 5424 syslog (UDP, TCP or TLS with optional **mutual TLS** from the Android KeyChain), HTTP NDJSON, **Splunk HEC** or **Elasticsearch `_bulk`**. |
+| **Packet capture** | Optional: the raw packets of every app, as they crossed the VPN interface, kept in a bounded in-memory buffer and exported as **PCAPng** for Wireshark from a connection, an alert or an app (packets annotated with app UID and connection id), or streamed live over **PCAP-over-IP** (`wireshark -k -i TCP@phone:57012`). Off by default; nothing touches storage unless you export. |
 | **Faithful relaying** | Upstream connection failures reach the app as real refusals, because the SYN is held until the upstream connect succeeds. There is no fake handshake followed by a reset. |
 
 ## Architecture in one picture

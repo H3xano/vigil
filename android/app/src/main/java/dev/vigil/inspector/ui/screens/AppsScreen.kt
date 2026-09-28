@@ -176,6 +176,11 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                 item { AppDomainRulesCard(vm, pkg, info.label, AppRules.domainRules(settings, pkg)) }
             }
             item {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    ExportAppPacketsButton(vm, nav, info.uid, info.label)
+                }
+            }
+            item {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     StatTile("Destinations", destinations.size.toString(), Modifier.weight(1f), caption = windowLabel(days))
                     StatTile("Traffic", formatBytes(destinations.sumOf { it.bytes }), Modifier.weight(1f), caption = windowLabel(days))

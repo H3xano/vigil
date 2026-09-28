@@ -44,6 +44,8 @@ data class EngineConfig(
      * Afterwards it is pushed with `nativeSetDeviceState` (null: omitted).
      */
     @SerialName("device_state") val deviceState: DeviceState? = null,
+    /** Packet capture: in-memory ring for PCAPng export, optional PCAP-over-IP server. */
+    val capture: CaptureConfig = CaptureConfig(),
 ) {
     fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
 
@@ -60,6 +62,36 @@ data class EngineConfig(
 
         /** The engine's default too; sent explicitly with a feed list. */
         const val FEEDS_PRELOAD_TIMEOUT_MS = 10_000L
+    }
+}
+
+/** Mirror of the Rust `CaptureConfig` (core/vigil-core/src/config/capture.rs). */
+@Serializable
+data class CaptureConfig(
+    val enabled: Boolean = false,
+    /** Ring size: packet data plus 16 bytes per packet; the oldest packets are overwritten. */
+    @SerialName("buffer_bytes") val bufferBytes: Long = DEFAULT_BUFFER_BYTES,
+    val snaplen: Int = DEFAULT_SNAPLEN,
+    val stream: CaptureStreamConfig = CaptureStreamConfig(),
+) {
+    companion object {
+        const val DEFAULT_BUFFER_BYTES = 16L * 1024 * 1024
+        const val MAX_BUFFER_BYTES = 128L * 1024 * 1024
+        const val DEFAULT_SNAPLEN = 65_535
+    }
+}
+
+/** PCAP-over-IP server: listens on [bind] (an address; empty = not listening). */
+@Serializable
+data class CaptureStreamConfig(
+    val enabled: Boolean = false,
+    val port: Int = DEFAULT_PORT,
+    val bind: String = "",
+    /** Client addresses or CIDR ranges allowed to connect; empty = anyone who can reach the port. */
+    val allow: List<String> = emptyList(),
+) {
+    companion object {
+        const val DEFAULT_PORT = 57012
     }
 }
 

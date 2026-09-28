@@ -10,17 +10,18 @@
 # Further stages exercise encrypted upstream DNS (DoT/DoH to local test
 # servers and public presets) and the upstream paths: a local SOCKS5 proxy
 # (scripts/e2e/upstream-socks5.sh) and a kernel WireGuard peer in a nested
-# namespace (scripts/e2e/upstream-wireguard.sh). E2E_STAGES selects stages
-# (default "direct beacon apprules edns socks5 wireguard"). The apprules stage
-# checks per-app conditions and domain rules with a switched device state.
+# namespace (scripts/e2e/upstream-wireguard.sh), and packet capture (PCAPng
+# export and PCAP-over-IP). E2E_STAGES selects stages
+# (default "direct beacon apprules capture edns socks5 wireguard"). The apprules
+# stage checks per-app conditions and domain rules with a switched device state.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
-trap 'kill ${cli_pid:-} ${beacon_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'kill ${cli_pid:-} ${beacon_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} ${stream_pid:-} ${http_pid:-} 2>/dev/null || true; [ -n "${E2E_KEEP:-}" ] || rm -rf "$work"' EXIT
 export PATH="$HOME/.cargo/bin:$PATH"
 (cd "$root/core" && cargo build -q -p vigil-cli)
 cli="$root/core/target/debug/vigil-cli"
-stages="${E2E_STAGES:-direct beacon apprules edns socks5 wireguard}"
+stages="${E2E_STAGES:-direct beacon apprules capture edns socks5 wireguard}"
 results="$work/results.txt"; : > "$results"
 
 cat > "$work/feed.txt" <<'FEED'
@@ -126,6 +127,37 @@ kill -INT $cli_pid; wait $cli_pid || true
 kill $beacon_pid 2>/dev/null || true
 unset cli_pid beacon_pid
 python3 "$root/scripts/e2e/check_apprules.py" "$work/apprules-events.jsonl" "$apprules_port" | tee -a "$results"
+fi
+
+if [[ " $stages " == *" capture "* ]]; then
+echo "--- packet capture (PCAPng export, PCAP-over-IP)"
+# Capture on, with the PCAP-over-IP server on loopback (allowlisted). A
+# client on the host records the stream; the CLI exports the ring as
+# PCAPng when it stops. Both must hold the namespace's DNS and HTTP
+# packets, the export with flow and direction annotations.
+stream_port=18790
+export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+export VIGIL_CAPTURE_HTTP_PORT=18791
+mkdir -p "$work/www" && echo "capture e2e" > "$work/www/index.html"
+python3 -m http.server --bind "$VIGIL_HOST_IP" --directory "$work/www" "$VIGIL_CAPTURE_HTTP_PORT" >/dev/null 2>&1 &
+http_pid=$!
+for _ in $(seq 50); do (exec 3<>"/dev/tcp/$VIGIL_HOST_IP/$VIGIL_CAPTURE_HTTP_PORT") 2>/dev/null && break; sleep 0.1; done
+echo "{\"stats_interval_ms\": 500, \"capture\": {\"enabled\": true, \"buffer_bytes\": 4194304,
+  \"stream\": {\"enabled\": true, \"port\": $stream_port, \"bind\": \"127.0.0.1\", \"allow\": [\"127.0.0.1\"]}}}" > "$work/capture.json"
+rm -f "$sock" "$work/stream.ready"
+"$cli" run --fd-socket "$sock" --config "$work/capture.json" --pcap-on-exit "$work/capture.pcapng" \
+  > "$work/capture-events.jsonl" 2> "$work/capture-cli.log" &
+cli_pid=$!
+python3 "$root/scripts/e2e/pcap_stream_client.py" 127.0.0.1 "$stream_port" "$work/stream.pcap" "$work/stream.ready" &
+stream_pid=$!
+unshare -rnm bash "$root/scripts/e2e/inside-capture.sh" "$sock" "$results" "$work/stream.ready" || true
+sleep 1
+kill -INT $cli_pid; wait $cli_pid || true
+wait $stream_pid || true
+kill $http_pid 2>/dev/null || true
+unset cli_pid stream_pid http_pid
+python3 "$root/scripts/e2e/check_pcap.py" "$work/capture.pcapng" "$work/stream.pcap" "$work/capture-events.jsonl" \
+  "$work/capture-cli.log" "$stream_port" | tee -a "$results"
 fi
 
 if [[ " $stages " == *" edns "* ]]; then

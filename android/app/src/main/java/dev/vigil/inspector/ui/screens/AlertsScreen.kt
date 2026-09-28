@@ -45,6 +45,7 @@ import dev.vigil.inspector.data.AlertMutes
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.export.ExportRecords
 import dev.vigil.inspector.processing.AlertNotifier
+import dev.vigil.inspector.ui.CaptureExport
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.HelpIcon
@@ -235,6 +236,7 @@ private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: 
                 }, Modifier.fillMaxWidth()) { Text("View connection") }
             }
             if (a.pkg != "unknown") OutlinedButton(onClick = { nav.openApp(a.pkg) }, Modifier.fillMaxWidth()) { Text("Open app") }
+            CaptureExport.forAlert(a.ts, a.kind, a.uid, a.target, flowId)?.let { ExportPacketsButton(vm, nav, "Export packets (PCAPng)", it) }
             if (muted) {
                 TextButton(onClick = { vm.unmuteAlerts(a.kind, a.pkg, a.target) }) { Text("Unmute") }
             } else {

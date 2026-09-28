@@ -99,6 +99,40 @@ class EngineJsonTest {
     }
 
     @Test
+    fun captureStatsAndExportSummary() {
+        // Wire format of the Rust CaptureStats / ExportSummary (engine/capture).
+        val events = EngineJson.parseBatch(
+            """[{"type":"stats","ts":7,"capture":{"enabled":true,"packets":120,"bytes":64000,"dropped":3,
+                "buffered_packets":117,"buffered_bytes":63000,"buffer_bytes":16777216,
+                "stream":{"listening":"192.168.1.23:57012","clients":1,"sent":90,"dropped":2,"rejected":1,"error":null}}},
+                {"type":"stats","ts":8}]""",
+        )
+        val cap = (events[0] as StatsEvent).capture!!
+        assertEquals(120L, cap.packets)
+        assertEquals(16_777_216L, cap.bufferBytes)
+        assertEquals("192.168.1.23:57012", cap.stream!!.listening)
+        assertEquals(1L, cap.stream.rejected)
+        assertEquals(null, (events[1] as StatsEvent).capture)
+        val sum = EngineJson.json.decodeFromString(
+            PcapExportSummary.serializer(),
+            """{"packets":12,"bytes":3400,"first_ts":1700000000000,"last_ts":1700000001000,"truncated_by_ring":true}""",
+        )
+        assertEquals(12L, sum.packets)
+        assertTrue(sum.truncatedByRing)
+        val empty = EngineJson.json.decodeFromString(
+            PcapExportSummary.serializer(),
+            """{"packets":0,"bytes":0,"first_ts":null,"last_ts":null,"truncated_by_ring":false}""",
+        )
+        assertEquals(null, empty.firstTs)
+        // Filter JSON as the engine's CaptureFilter reads it.
+        assertEquals("""{"flow_ids":[17],"uids":[]}""", PcapFilter(flowIds = listOf(17)).toJson())
+        assertEquals(
+            """{"flow_ids":[],"uids":[10123],"since_ms":1000,"until_ms":2000}""",
+            PcapFilter(uids = listOf(10123), sinceMs = 1000, untilMs = 2000).toJson(),
+        )
+    }
+
+    @Test
     fun garbageYieldsEmptyBatch() {
         assertTrue(EngineJson.parseBatch("not json").isEmpty())
         assertTrue(EngineJson.parseBatch("{}").isEmpty())

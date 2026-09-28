@@ -13,4 +13,5 @@ public final class VigilNative {
     public static native boolean nativeRemoveFeed(long handle, String id);
     public static native String nativeStats(long handle);
     public static native String nativeInspectFeedFile(String path);
+    public static native String nativeExportPcap(long handle, String filterJson, String path);
 }

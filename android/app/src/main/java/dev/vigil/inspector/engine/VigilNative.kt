@@ -43,6 +43,13 @@ object VigilNative {
 
     @JvmStatic external fun nativeStats(handle: Long): String?
 
+    /**
+     * Writes the captured packets matching [filterJson] (see [PcapFilter]) to
+     * [path] as PCAPng; returns a JSON [PcapExportSummary] or null on error.
+     * Works after [nativeShutdown] until [nativeStop]. Blocks for the write.
+     */
+    @JvmStatic external fun nativeExportPcap(handle: Long, filterJson: String, path: String): String?
+
     /** Parses a feed file without an engine; returns a JSON summary or null. */
     @JvmStatic external fun nativeInspectFeedFile(path: String): String?
 }

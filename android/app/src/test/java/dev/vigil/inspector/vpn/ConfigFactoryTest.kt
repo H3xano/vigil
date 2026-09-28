@@ -2,6 +2,7 @@ package dev.vigil.inspector.vpn
 
 import dev.vigil.inspector.data.AppDomainRule
 import dev.vigil.inspector.data.AppRule
+import dev.vigil.inspector.data.CaptureSettings
 import dev.vigil.inspector.data.EncryptedDnsSettings
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.FeedKinds
@@ -241,6 +242,36 @@ class ConfigFactoryTest {
         assertTrue(start, start.contains("\"device_state\":$DEVICE_STATE_JSON"))
     }
 
+    fun captureSection() {
+        val wifi = "192.168.1.23"
+        // Off by default: the engine's defaults, spelled out.
+        val off = ConfigFactory.build(Settings(), emptyList(), emptyList(), wifiAddress = wifi).toJson()
+        assertTrue(off, off.contains(CAPTURE_OFF_JSON))
+        val on = Settings(
+            capture = CaptureSettings(
+                enabled = true, bufferMb = 32, streamEnabled = true,
+                streamAllow = listOf("192.168.1.10", " 10.0.0.0/8 ", "bogus", "10.0.0.0/33", "192.168.1.10"),
+            ),
+        )
+        val json = ConfigFactory.build(on, emptyList(), emptyList(), wifiAddress = wifi).toJson()
+        assertTrue(json, json.contains(CAPTURE_JSON))
+        // Without Wi-Fi the stream does not listen (bind ""); capture still records.
+        val noWifi = ConfigFactory.captureConfig(on.capture, null)
+        assertTrue(noWifi.enabled && noWifi.stream.enabled)
+        assertEquals("", noWifi.stream.bind)
+        assertEquals("0.0.0.0", ConfigFactory.captureConfig(on.capture.copy(streamBind = CaptureSettings.BIND_ALL), wifi).stream.bind)
+        assertEquals("127.0.0.1", ConfigFactory.captureConfig(on.capture.copy(streamBind = CaptureSettings.BIND_LOOPBACK), null).stream.bind)
+        assertFalse(ConfigFactory.captureConfig(on.capture.copy(streamEnabled = false), wifi).stream.enabled)
+        assertFalse(ConfigFactory.captureConfig(on.capture.copy(enabled = false), wifi).enabled)
+        // Out-of-range values never reach the engine (it would reject the config).
+        val odd = ConfigFactory.captureConfig(on.capture.copy(bufferMb = 4096, streamPort = 80), wifi)
+        assertEquals(128L * 1024 * 1024, odd.bufferBytes)
+        assertEquals(57012, odd.stream.port)
+        assertTrue(CaptureSettings.isValidAllowEntry("2001:db8::/32"))
+        assertFalse(CaptureSettings.isValidAllowEntry("192.168.1.0/"))
+        assertFalse(CaptureSettings.isValidAllowEntry("host.example"))
+    }
+
     private companion object {
         /** `"{" + APP_RULES_JSON + "}"` is parsed by the Rust test `app_rules_json_contract`. */
         const val APP_RULES_JSON = "\"app_rules\":[{\"uid\":10123,\"block_wifi\":true,\"block_cellular\":false,\"block_background\":true,\"block_screen_off\":false}," +
@@ -251,6 +282,14 @@ class ConfigFactoryTest {
         /** nativeSetDeviceState payloads, also parsed by `app_rules_json_contract`. */
         const val DEVICE_STATE_JSON = "{\"network\":\"wifi\",\"screen_on\":false,\"foreground_uids\":[10123,10200]}"
         const val DEVICE_STATE_UNKNOWN_FG_JSON = "{\"network\":\"cellular\",\"screen_on\":true}"
+
+        /** Also parsed by the Rust test `capture_json_contract` (config/capture.rs). */
+        const val CAPTURE_JSON = "\"capture\":{\"enabled\":true,\"buffer_bytes\":33554432,\"snaplen\":65535," +
+            "\"stream\":{\"enabled\":true,\"port\":57012,\"bind\":\"192.168.1.23\",\"allow\":[\"192.168.1.10\",\"10.0.0.0/8\"]}}"
+
+        /** Also parsed by the Rust test `capture_json_contract`. */
+        const val CAPTURE_OFF_JSON = "\"capture\":{\"enabled\":false,\"buffer_bytes\":16777216,\"snaplen\":65535," +
+            "\"stream\":{\"enabled\":false,\"port\":57012,\"bind\":\"\",\"allow\":[]}}"
 
         /** Start-config feed list (engine `feeds`; see docs/EVENTS.md). */
         /** Also parsed by the Rust test `feeds_json_contract`. */

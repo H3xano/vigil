@@ -34,6 +34,22 @@ class EngineHandle(private var handle: Long) {
         }
     }
 
+    /**
+     * Exports the captured packets matching [filter] to [path] (PCAPng).
+     * Null if the handle is closed, the export failed, or the native library
+     * predates packet capture.
+     */
+    @WorkerThread // writes up to the ring size (128 MiB at most) to disk
+    fun exportPcap(filter: PcapFilter, path: String): PcapExportSummary? = lock.read {
+        if (handle == 0L) return@read null
+        val json = try {
+            VigilNative.nativeExportPcap(handle, filter.toJson(), path)
+        } catch (e: UnsatisfiedLinkError) {
+            null
+        } ?: return@read null
+        runCatching { EngineJson.json.decodeFromString(PcapExportSummary.serializer(), json) }.getOrNull()
+    }
+
     /** Waits for a blocking poll to return (write lock) and frees the engine. */
     @WorkerThread
     fun close() = lock.write {

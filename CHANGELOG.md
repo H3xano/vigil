@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased (after 0.4.0)
+
+New features:
+
+- **Packet capture:** an optional in-memory ring of the raw packets apps send
+  and receive, exported as PCAPng (per connection, alert or app, with
+  `uid=… flow=…` comments and directions) or streamed live to Wireshark
+  (PCAP-over-IP, off by default, Wi-Fi address only by default, allowlist).
+  New JNI call `nativeExportPcap`; new config section `capture`.
+- **Per-app firewall conditions:** block an app on Wi-Fi, on mobile data, in
+  the background or while the screen is off, and allow or block a domain for
+  one app only. Open connections are cut when a condition starts to apply.
+  New JNI call `nativeSetDeviceState`; new config fields `app_rules`,
+  `app_domain_rules`, `device_state`. One-tap block on the Apps list.
+- **Spyware and stalkerware indicator packs:** the MVT packs (Pegasus,
+  Predator, NoviSpy and others) and Echap's stalkerware lists, downloaded from
+  their publishers; hits are blocked and alerts name the spyware. A local
+  **health check** compares installed apps (packages, signing certificates)
+  and the recorded history against them and produces an exportable report.
+- **Tracker labels:** destinations labelled with the tracker company and
+  category (AdGuard companiesdb, CC BY-SA 4.0); per-app tracker summaries,
+  tracker counts on the Apps list, a "Top tracker companies" card, and
+  `vigil.tracker.*` in SIEM records.
+
+Fixes from the post-0.4.0 review:
+
+- Engine: connections reset by the app during the handshake were leaked
+  (netstack sockets back in LISTEN); a panic or a dead engine task now reports
+  an error and restarts the session instead of black-holing the device; the
+  UDP flow cap now stops evicted flows; DNS over TCP to a hard-coded resolver
+  now obeys app blocks and IP feeds, and unparseable messages are refused;
+  half-closed relays end when the app resets; SYN+RST and IPv6 TCP with
+  extension headers are dropped; DoH chunk overflow on 32-bit; DNS cache
+  sweep; HTTP leading CRLF; SVCB hints bounds; feeds are loaded before the
+  first packet (new start-config fields `feeds`, `feeds_preload_timeout_ms`).
+- Upstream: WireGuard no longer goes direct (fail-open) while re-binding on a
+  network change; SOCKS5 timeouts and resets mean "proxy unavailable", not
+  "UDP unsupported"; `via` is always the path taken; proxy name lookups are
+  bounded and cached; WireGuard encrypts outside the stack lock (p50 latency
+  under load 540 → 120 µs); a replaced tunnel closes its last connection.
+- Service and data: foreground status kept on a quick Stop→Start; warning
+  for always-on lockdown with an excluded proxy app; NAT64 route changes
+  restart the session; bounded ASN/TAXII parsing; credentials never follow
+  redirects to other hosts or plain HTTP; unreadable settings fail closed
+  instead of dropping the WireGuard/SOCKS5 upstream; foreground detection no
+  longer marks the visible app as background; VACUUM only while idle.
+- UI and export: SIEM batches refused with 400/413 are split instead of
+  dropped, Splunk HEC configuration errors keep records queued; syslog
+  header uses the event time; secret fields use password keyboards; drafts
+  and dialogs survive rotation; safer back navigation; no duplicate screens;
+  queued snackbars; lighter Overview. UX: "why blocked" sheet with Always
+  allow, tappable DNS rows, Live/Paused and app filter in Activity, alert
+  mutes and filters, Undo after blocking, host or whole-site choice,
+  onboarding ends by starting inspection.
+- **Breaking for SIEM dashboards:** `tls.version` is now `1.3` with
+  `tls.version_protocol: tls`; `host.os.version` is the Android release (API
+  level in `vigil.android.api_level`); alerts use
+  `event.category: [intrusion_detection, network]` with `event.type` `denied`
+  or `info` (not `indicator`) and gain `rule.name` and `destination.*`.
+
 ## 0.4.0 (2026-09-28): GitHub pre-release
 
 - Connections show which path they took (direct, WireGuard, SOCKS5) and

@@ -1,5 +1,6 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.engine.EngineHandle
 import dev.vigil.inspector.engine.StatsEvent
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -19,7 +20,12 @@ data class NetworkInfo(
     val nat64Prefixes: List<String> = emptyList(),
     /** Handle of the underlying network; a change makes a WireGuard upstream roam. */
     val networkId: String = "",
+    /** IPv4 address of the underlying network when it is Wi-Fi or Ethernet (PCAP-over-IP listens there). */
+    val wifiAddress: String? = null,
 )
+
+/** The running session's engine, for calls from the UI (packet export). */
+class ActiveEngine(val session: Long, val handle: EngineHandle)
 
 /** Process-wide observable state of the inspector service. */
 object ServiceState {
@@ -27,6 +33,12 @@ object ServiceState {
     val stats = MutableStateFlow<StatsEvent?>(null)
     val network = MutableStateFlow(NetworkInfo())
     val loadedFeeds = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /**
+     * The running session's engine (null when stopped). The handle stays
+     * safe to use after the session ends: its calls then return null.
+     */
+    val engine = MutableStateFlow<ActiveEngine?>(null)
 
     /**
      * Set when the engine rejected a settings change (the previous

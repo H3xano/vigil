@@ -1,10 +1,12 @@
 //! Engine configuration, supplied as JSON by the host (Android app or CLI).
 
 pub mod app_rules;
+pub mod capture;
 pub mod upstream;
 
 use crate::proto::dns::SinkholeMode;
 pub use app_rules::{AppDomainRule, AppRule, DeviceState, DomainAction, NetworkType};
+pub use capture::CaptureConfig;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -84,6 +86,8 @@ pub struct Config {
     /// [`MAX_FEEDS_PRELOAD_TIMEOUT_MS`]). Feeds not loaded by then finish
     /// loading in the background.
     pub feeds_preload_timeout_ms: u64,
+    /// Packet capture (in-memory ring, PCAPng export, PCAP-over-IP).
+    pub capture: CaptureConfig,
 }
 
 /// A feed file to load at start: the arguments of `nativeLoadFeedFile`.
@@ -522,6 +526,7 @@ impl Default for Config {
             upstream: UpstreamConfig::default(),
             feeds: Vec::new(),
             feeds_preload_timeout_ms: 10_000,
+            capture: CaptureConfig::default(),
         }
     }
 }
@@ -623,6 +628,7 @@ impl Config {
         self.upstream.validate().map_err(ConfigError::Invalid)?;
         app_rules::validate(&self.app_rules, &self.app_domain_rules)
             .map_err(ConfigError::Invalid)?;
+        self.capture.validate().map_err(ConfigError::Invalid)?;
         Ok(())
     }
 

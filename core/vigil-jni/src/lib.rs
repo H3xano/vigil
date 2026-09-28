@@ -20,6 +20,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 use vigil_core::config::DeviceState;
+use vigil_core::engine::capture::CaptureFilter;
 use vigil_core::{Config, Engine, FeedCategory, Platform};
 
 struct JniPlatform {
@@ -333,6 +334,45 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeStats<'
 ) -> jstring {
     let out = guard(None, || {
         running(handle).and_then(|e| serde_json::to_string(&e.stats()).ok())
+    });
+    match out {
+        Some(j) => new_jstring(&mut env, &j),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Writes the captured packets matching `filter_json` (`{"flow_ids",
+/// "uids", "since_ms", "until_ms"}`, all optional) to `path` as PCAPng.
+/// Returns a JSON summary `{packets, bytes, first_ts, last_ts,
+/// truncated_by_ring}`, or null on error (bad handle or filter, I/O). Works
+/// after `nativeShutdown` too (until `nativeStop`). Blocks for the write:
+/// call from a background thread.
+#[no_mangle]
+pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeExportPcap<'l>(
+    mut env: JNIEnv<'l>,
+    _c: JClass<'l>,
+    handle: jlong,
+    filter_json: JString<'l>,
+    path: JString<'l>,
+) -> jstring {
+    let out = guard(None, || {
+        let e = engine(handle)?;
+        let filter = jstr(&mut env, &filter_json)?;
+        let path = jstr(&mut env, &path)?;
+        let filter: CaptureFilter = match serde_json::from_str(&filter) {
+            Ok(f) => f,
+            Err(err) => {
+                log::warn!("pcap export: bad filter: {err}");
+                return None;
+            }
+        };
+        match e.export_pcap(&filter, std::path::Path::new(&path)) {
+            Ok(summary) => serde_json::to_string(&summary).ok(),
+            Err(err) => {
+                log::warn!("pcap export: {err}");
+                None
+            }
+        }
     });
     match out {
         Some(j) => new_jstring(&mut env, &j),

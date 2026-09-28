@@ -33,6 +33,24 @@ public final class Smoke {
         return out;
     }
 
+    static int u32(byte[] b, int o) {
+        return (b[o] & 0xff) | (b[o + 1] & 0xff) << 8 | (b[o + 2] & 0xff) << 16 | (b[o + 3] & 0xff) << 24;
+    }
+
+    /** PCAPng: SHB, IDB with link type RAW (101), then at least one EPB; block lengths consistent. */
+    static boolean checkPcapng(byte[] f) {
+        if (f.length < 28 || u32(f, 0) != 0x0A0D0D0A || u32(f, 8) != 0x1A2B3C4D) return false;
+        int pos = 0, epbs = 0, idbs = 0;
+        while (pos + 12 <= f.length) {
+            int type = u32(f, pos), len = u32(f, pos + 4);
+            if (len < 12 || len % 4 != 0 || pos + len > f.length || u32(f, pos + len - 4) != len) return false;
+            if (type == 1) { idbs++; if ((f[pos + 8] & 0xff | (f[pos + 9] & 0xff) << 8) != 101) return false; }
+            if (type == 6) epbs++;
+            pos += len;
+        }
+        return pos == f.length && idbs == 1 && epbs > 0;
+    }
+
     public static void main(String[] args) throws Exception {
         System.load(args[0]);
         int fd = Integer.parseInt(args[1]);
@@ -40,7 +58,8 @@ public final class Smoke {
         Files.writeString(feed, "0.0.0.0 blocked.vigil-test.example\n||c2.vigil-test.example^\n198.51.100.0/24\n");
         check("version", VigilNative.nativeVersion().matches("\\d+\\.\\d+\\.\\d+"));
         check("inspect-feed", VigilNative.nativeInspectFeedFile(feed.toString()).contains("\"domains\":2"));
-        long h = VigilNative.nativeStart(fd, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"]}", new Bridge());
+        String capture = ",\"capture\":{\"enabled\":true,\"buffer_bytes\":1048576}";
+        long h = VigilNative.nativeStart(fd, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"]" + capture + "}", new Bridge());
         check("start", h != 0);
         check("invalid-config-start-refused", VigilNative.nativeStart(fd, "{\"mtu\":100}", new Bridge()) == 0);
         check("bad-config-rejected", !VigilNative.nativeUpdateConfig(h, "{not json"));
@@ -51,7 +70,7 @@ public final class Smoke {
         // name blocked for this app only.
         check("config-update", VigilNative.nativeUpdateConfig(h, "{\"stats_interval_ms\":500,\"upstream_dns\":[\"127.0.0.1:9\"],\"sinkhole\":\"nxdomain\","
             + "\"app_rules\":[{\"uid\":10123,\"block_cellular\":true}],"
-            + "\"app_domain_rules\":[{\"uid\":10123,\"domain\":\"appblocked.vigil-test.example\",\"action\":\"block\"}]}"));
+            + "\"app_domain_rules\":[{\"uid\":10123,\"domain\":\"appblocked.vigil-test.example\",\"action\":\"block\"}]" + capture + "}"));
         check("device-state", VigilNative.nativeSetDeviceState(h, "{\"network\":\"wifi\",\"screen_on\":true,\"foreground_uids\":null}"));
         check("device-state-rejected", !VigilNative.nativeSetDeviceState(h, "{\"network\":\"satellite\"}")
             && !VigilNative.nativeSetDeviceState(h, "not json") && !VigilNative.nativeSetDeviceState(0, "{}"));
@@ -79,6 +98,18 @@ public final class Smoke {
         check("app-domain-rule", ev.contains("\"reason\":\"app domain rule (appblocked.vigil-test.example)\""));
         check("condition-not-met-not-blocked", !ev.contains("app rule: "));
         check("stats-json", VigilNative.nativeStats(h).contains("\"dns_queries\""));
+        check("stats-capture", VigilNative.nativeStats(h).contains("\"capture\":{\"enabled\":true"));
+        Path pcap = Files.createTempFile("capture", ".pcapng");
+        String sum = VigilNative.nativeExportPcap(h, "{}", pcap.toString());
+        check("export-pcap", sum != null && !sum.contains("\"packets\":0,") && checkPcapng(Files.readAllBytes(pcap)));
+        String byUid = VigilNative.nativeExportPcap(h, "{\"uids\":[10123]}", pcap.toString());
+        byte[] uidFile = Files.readAllBytes(pcap);
+        check("export-pcap-by-uid", byUid != null && !byUid.contains("\"packets\":0,")
+            && new String(uidFile, java.nio.charset.StandardCharsets.ISO_8859_1).contains("uid=10123"));
+        check("export-pcap-empty-filter-match", VigilNative.nativeExportPcap(h, "{\"flow_ids\":[999999]}", pcap.toString()).contains("\"packets\":0,"));
+        check("export-pcap-bad-filter", VigilNative.nativeExportPcap(h, "{\"uids\":\"x\"}", pcap.toString()) == null
+            && VigilNative.nativeExportPcap(0, "{}", pcap.toString()) == null
+            && VigilNative.nativeExportPcap(h, "{}", "/nonexistent-dir/x.pcapng") == null);
         check("uid-upcalls", uidCalls.get() >= 2);
         check("protect-upcalls", protectCalls.get() >= 1);
         check("remove-feed", VigilNative.nativeRemoveFeed(h, "smoke") && !VigilNative.nativeRemoveFeed(h, "smoke"));
@@ -101,6 +132,9 @@ public final class Smoke {
             && VigilNative.nativeLoadFeedFile(h, "x", "malware", feed.toString()) == null
             && !VigilNative.nativeRemoveFeed(h, "x")
             && !VigilNative.nativeSetDeviceState(h, "{}"));
+        check("export-after-shutdown", VigilNative.nativeExportPcap(h, "{}", pcap.toString()) != null
+            && checkPcapng(Files.readAllBytes(pcap)));
+        Files.delete(pcap);
         VigilNative.nativeStop(h);
         check("shutdown-null-handle", !VigilNative.nativeShutdown(0));
 
