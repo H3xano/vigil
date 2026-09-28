@@ -63,6 +63,10 @@ pub struct FlowEvent {
     pub verdict: Option<Verdict>,
     pub reason: Option<String>,
     pub tags: Vec<&'static str>,
+    /// Upstream path of the flow's connection: "direct", "wireguard" or
+    /// "socks5". None when no upstream connection was attempted (blocked
+    /// before connecting).
+    pub via: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -137,6 +141,45 @@ pub struct StatsEvent {
     pub dropped_packets: u64,
     pub dropped_events: u64,
     pub dns_cache_size: u64,
+    pub upstream: UpstreamStatus,
+}
+
+/// State of the upstream path (in `stats` events).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct UpstreamStatus {
+    /// "direct", "wireguard" or "socks5".
+    pub mode: &'static str,
+    /// "up"; "connecting" (WireGuard handshake in progress); "idle" (no
+    /// session or proxy contact yet, nothing pending); "down" (handshakes
+    /// failing, proxy unreachable or the path could not be set up).
+    pub state: &'static str,
+    pub fail_closed: bool,
+    /// WireGuard peer address in use, or the SOCKS5 server as configured.
+    pub endpoint: Option<String>,
+    /// Seconds since the last completed WireGuard handshake.
+    pub handshake_age_s: Option<u64>,
+    /// WireGuard payload bytes sent / received through the tunnel.
+    pub tx_bytes: Option<u64>,
+    pub rx_bytes: Option<u64>,
+    pub last_error: Option<String>,
+    /// SOCKS5 UDP relaying: "unknown", "supported", "unsupported", "blocked".
+    pub udp: Option<&'static str>,
+}
+
+impl Default for UpstreamStatus {
+    fn default() -> Self {
+        Self {
+            mode: "direct",
+            state: "up",
+            fail_closed: true,
+            endpoint: None,
+            handshake_age_s: None,
+            tx_bytes: None,
+            rx_bytes: None,
+            last_error: None,
+            udp: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

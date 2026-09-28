@@ -7,7 +7,8 @@
 //! RST, so refused/unreachable destinations look to the app exactly as they
 //! would without vigil in the path.
 
-use super::{dns, sock, FlowCounters, FlowKey, GaugeGuard, Shared};
+use super::upstream::{self, UpstreamTcp};
+use super::{dns, FlowCounters, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, Event, FlowEndEvent, FlowEvent, Severity, Verdict};
 use crate::packet::{self, TcpInfo, PROTO_TCP};
 use crate::policy::{Decision, Policy, DOT_PORT};
@@ -29,7 +30,7 @@ const COPY_BUF: usize = 16 * 1024;
 
 pub(crate) enum MetaKind {
     Relay {
-        upstream: tokio::net::TcpStream,
+        upstream: UpstreamTcp,
         event: Box<FlowEvent>,
     },
     /// DNS over TCP, answered by vigil's resolver: `upstream` is `None` for
@@ -234,15 +235,19 @@ async fn gate(shared: &Arc<Shared>, syn: &TcpInfo) -> GateResult {
         emit_closed_flow(shared, ev, None);
         return GateResult::Reject;
     }
-    let connect = sock::connect_tcp(shared.platform.clone(), dst);
+    ev.via = Some(shared.upstream.via());
+    let connect = upstream::connect_relay(shared, dst);
     match tokio::time::timeout(Duration::from_millis(cfg.tcp_connect_timeout_ms), connect).await {
-        Ok(Ok(upstream)) => GateResult::Admit(
-            uid,
-            MetaKind::Relay {
-                upstream,
-                event: Box::new(ev),
-            },
-        ),
+        Ok(Ok(upstream)) => {
+            ev.via = Some(upstream.via());
+            GateResult::Admit(
+                uid,
+                MetaKind::Relay {
+                    upstream,
+                    event: Box::new(ev),
+                },
+            )
+        }
         Ok(Err(e)) => {
             ev.verdict = Some(Verdict::Allow);
             emit_closed_flow(shared, ev, Some(format!("connect: {e}")));
@@ -460,7 +465,7 @@ enum RelayEnd {
 async fn relay(
     shared: &Arc<Shared>,
     client: netstack_smoltcp::TcpStream,
-    upstream: tokio::net::TcpStream,
+    upstream: UpstreamTcp,
     mut ev: FlowEvent,
 ) {
     let _active = GaugeGuard::new(&shared.stats.tcp_active);
@@ -564,9 +569,9 @@ async fn relay(
     if reset_client {
         client_abort.abort();
     }
-    if let Ok(upstream) = ur.reunite(uw) {
+    if let Some(mut upstream) = ur.reunite(uw) {
         if reset_upstream {
-            sock::set_reset_on_close(&upstream);
+            upstream.set_reset_on_close();
         }
         drop(upstream);
     }

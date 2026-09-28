@@ -26,6 +26,12 @@ aes = "0.8"
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# Upstream chaining (engine/upstream): WireGuard Noise/crypto (BSD-3-Clause),
+# a client-side smoltcp stack for the tunnel (same version netstack-smoltcp
+# uses; "async" adds socket wakers), and base64 for WireGuard keys.
+boringtun = { version = "0.7.1", default-features = false }
+smoltcp = { version = "0.12", default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "async"] }
+base64 = "0.22"
 
 # netstack-smoltcp has no way to abort a connection (so resets would reach
 # apps as FINs) and reports peer resets as EOF. vendor/netstack-smoltcp adds
