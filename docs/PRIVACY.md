@@ -12,11 +12,39 @@
   seen, for the optional new-network alerts. Like learned destinations they
   are kept for at least 90 days.
 - For plain HTTP: only the method and the `Host` header. **Paths, query
-  strings, headers and bodies are never recorded.**
+  strings, headers and bodies are never recorded** (unless you turn on
+  packet capture, below).
 
 Everything stays in the app's private storage. It is excluded from cloud
 backups and device transfer, and pruned after the retention period (7 days by
-default). No traffic data leaves the device unless you enable SIEM export.
+default). No traffic data leaves the device unless you enable SIEM export,
+PCAP-over-IP streaming, or export a capture file.
+
+## Packet capture (off by default)
+
+With Settings → Packet capture → Record packets, the engine keeps the most
+recent raw packets of every app (as they crossed vigil's VPN interface) in
+memory, up to the buffer size you choose (16 MB by default), overwriting the
+oldest. Such packets contain everything that is not encrypted: **plain HTTP
+requests and responses in full (URLs, form data, cookies, pages), DNS lookups
+and answers**, and the handshakes of encrypted connections. HTTPS, QUIC and
+other encrypted contents stay encrypted.
+
+- The packets are held in memory only, and discarded when capture is turned
+  off or inspection stops or restarts. They are never written to storage,
+  never backed up and never exported automatically.
+- An export ("Export packets" on a connection, an alert or an app, or
+  "Export all") writes a PCAPng file to the place you pick. vigil writes it
+  to a temporary file in its private cache first and deletes that after
+  copying. Where the file goes from there is up to you.
+- **PCAP-over-IP streaming** (off by default, needs capture) serves the
+  packets live, unencrypted and unauthenticated, to up to two clients that
+  connect to the port (57012 by default). Anyone on the network who can reach
+  that port receives them. vigil listens on the Wi-Fi address only by default
+  (never on the cellular network; "all networks" and "this device" are
+  options) and accepts an allowlist of client addresses, which you should
+  set to your computer's. Use it on a trusted network and turn it off when
+  done.
 Feed downloads and export use vigil's own sockets, which bypass its tunnel.
 
 ## What vigil downloads
@@ -93,3 +121,11 @@ the CLI, descriptor passing.
 
 A malicious app cannot use vigil to reach anything it couldn't reach itself:
 relayed connections go only to the destination the app addressed.
+
+vigil accepts incoming connections only for PCAP-over-IP streaming, and only
+while it is on. The server reads nothing from clients (it only discards
+what they send) and sends a fixed header plus packets, so a client can do no
+more than receive the capture; clients not on the allowlist, and a third
+client, are disconnected at once. Other apps on the phone can connect to it
+as well when it listens on "this device" (loopback) or on an address they
+can reach.

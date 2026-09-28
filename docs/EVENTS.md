@@ -12,7 +12,7 @@ prints them as JSON lines; the app polls them in batches (JSON arrays).
 | `flow_end` | `id`, `ts`, `tx` (bytes sent by the app), `rx`, `duration_ms`, `error` |
 | `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` (app → vigil: `udp`/`tcp`), `upstream` (vigil → resolver: `udp`, `tcp`, `dot`, `doh`; null when no resolver was asked) |
 | `alert` | `ts`, `kind`, `severity` (`info`, `low`, `medium`, `high`), `uid`, `target`, `message`, `detail` |
-| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size, encrypted upstream DNS counters (below), `upstream` (see below) |
+| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size, encrypted upstream DNS counters (below), `upstream` (see below), `capture` (see below) |
 | `engine` | `state` (`started`, `stopped`, `error`), `message` |
 
 The engine emits exactly one `flow_end` for every `flow`, with the same
@@ -205,6 +205,24 @@ address wins.
 In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 (other fields null).
 
+### Packet capture (`stats.capture`)
+
+```json
+"capture": {"enabled": true, "packets": 5120, "bytes": 3480210, "dropped": 0,
+            "buffered_packets": 5120, "buffered_bytes": 3562130, "buffer_bytes": 16777216,
+            "stream": {"listening": "192.168.1.23:57012", "clients": 1, "sent": 4800,
+                       "dropped": 0, "rejected": 0, "error": null}}
+```
+
+| field | meaning |
+|---|---|
+| `enabled` | `capture.enabled` is in effect. While false every other field is 0 and `stream` null. |
+| `packets`, `bytes` | Packets (and their original bytes) recorded since capture was turned on in this session. |
+| `dropped` | Packets overwritten in the ring (the oldest) to make room. |
+| `buffered_packets`, `buffered_bytes` | What the ring holds now (`buffered_bytes` includes 16 bytes per packet). |
+| `buffer_bytes` | The ring's size. |
+| `stream` | PCAP-over-IP, null unless `capture.stream.enabled`: `listening` (`address:port`, null while not listening), `clients` (connected, at most 2), `sent` (packets queued to clients, summed over clients), `dropped` (packets a slow client did not get), `rejected` (connections refused: allowlist or client limit), `error` (why it is not listening, e.g. `no address to listen on`, `listen on 192.168.1.23:57012: Address in use (os error 98)`; retried every 5 s). |
+
 ### Alert kinds
 
 | kind | severity | raised when |
@@ -321,10 +339,40 @@ added after 0.1.0:
 | `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
 | `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; unknown names load as `tracking`) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
 | `feeds_preload_timeout_ms` | integer | 10000 | How long packet processing waits for `feeds` at start (at most 60000). Feeds not loaded by then finish loading in the background while traffic flows. |
+| `capture` | object | off | Packet capture for PCAPng export and PCAP-over-IP. See "`capture`" below. |
 
 The four caps, `feeds` and `feeds_preload_timeout_ms` are read when the
 engine starts; a later config update does not resize the caps or reload
 the feeds.
+
+### `capture`
+
+Records the raw IP packets crossing the TUN, as apps sent them and as vigil
+wrote them back, in a ring in memory (see ARCHITECTURE.md, "Packet
+capture"), for `nativeExportPcap`; optionally streams them live.
+
+```json
+"capture": {
+  "enabled": true, "buffer_bytes": 16777216, "snaplen": 65535,
+  "stream": {"enabled": true, "port": 57012, "bind": "192.168.1.23", "allow": ["192.168.1.10"]}
+}
+```
+
+| field | type | default | meaning |
+|---|---|---|---|
+| `enabled` | bool | `false` | Record packets. Turning it off discards the ring (and stops the stream). |
+| `buffer_bytes` | integer, 65536..=134217728 | 16777216 | Ring size: packet data plus 16 bytes per packet; the oldest packets are overwritten. A new size applies at once and keeps the newest packets that fit. |
+| `snaplen` | integer, 64..=65535 | 65535 | Bytes kept of each packet (the original length is recorded). |
+| `stream.enabled` | bool | `false` | PCAP-over-IP server (needs `enabled`). Each client receives a classic PCAP header (µs timestamps, link type 101, raw IP) and then every packet recorded from then on; nothing it sends is read. At most 2 clients; each has a bounded queue (8192 packets, 8 MiB), and a client that reads too slowly loses packets. |
+| `stream.port` | integer | 57012 | TCP port (must be positive while `stream.enabled`). |
+| `stream.bind` | IP address string | `""` | Address to listen on; empty: not listening. The app sends the Wi-Fi (or Ethernet) IPv4 address by default, `0.0.0.0` for "all networks", `127.0.0.1` for "this device", and `""` while there is no Wi-Fi. A bind that fails is retried every 5 s. |
+| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any. IPv4-mapped IPv6 peers are matched as IPv4. |
+
+Changes apply at once through `nativeUpdateConfig`: enabling allocates the
+ring (flows already open are attributed from then on), a changed `stream`
+section restarts the server (clients are disconnected). Validation rejects
+the values outside the ranges above, a `bind` that is not an IP address and
+allowlist entries that are not an address or CIDR.
 
 ### `beacon`
 
@@ -488,7 +536,8 @@ false (and the running config is kept) when the JSON does not parse or:
   not base64 of 32 bytes, an endpoint or server is not `host:port`, an
   address or AllowedIPs entry is not a CIDR, there is no tunnel address or
   more than one per family, the WireGuard MTU is outside 576..=65535, or
-  SOCKS5 credentials are too long or a password has no username.
+  SOCKS5 credentials are too long or a password has no username;
+- `capture` is invalid (see its section above).
 
 UDP flows end `udp_idle_timeout_s` after the last datagram *received from
 the server*; outbound datagrams alone do not keep a flow alive. A flow
@@ -505,8 +554,46 @@ shorter). The app's next datagram starts a new flow on a fresh socket.
 | `nativeShutdown(handle): Boolean` | Stops the engine (TUN loop, relays, runtime), then queues a `flow_end` for every open flow and a final `engine` event with `state: stopped`. The handle stays valid: `nativePollEvents` keeps returning the remaining events and, once the queue is empty, returns null immediately instead of waiting. `nativeUpdateConfig` and `nativeRemoveFeed` return false, `nativeStats` and `nativeLoadFeedFile` return null. A second call is a no-op returning true; false only for a null handle. |
 | `nativeStop(handle)` | Stops the engine if it is still running (same events as above, which are then lost with the handle) and frees the handle. Must be called exactly once, also after `nativeShutdown`. |
 
+| `nativeExportPcap(handle, filterJson, path): String?` | Writes the captured packets matching the filter to `path` (created or truncated) as PCAPng; see "Packet capture export" below. Returns the summary JSON, or null for a null handle, a filter that does not parse, or an I/O error. Works after `nativeShutdown` too (the ring lives until `nativeStop`). Blocks for the write (up to the ring size): call it off the main thread. |
+
 To keep the final `flow_end` events, call `nativeShutdown`, drain
 `nativePollEvents` until it returns null, then call `nativeStop`.
+
+### Packet capture export
+
+Filter (every field optional, conditions AND-combined, `{}` = everything
+the ring holds):
+
+```json
+{"flow_ids": [17, 18], "uids": [10123], "since_ms": 1759052000000, "until_ms": 1759052060000}
+```
+
+`flow_ids` are the `id`s of `flow` events of the running session and `uids`
+the app UIDs; a packet matches when its 5-tuple was bound to one of them
+(packets that cannot be attributed match only a filter without `flow_ids`
+and `uids`). `since_ms`/`until_ms` bound the packet time (inclusive).
+
+Summary:
+
+```json
+{"packets": 42, "bytes": 18830, "first_ts": 1759052001234, "last_ts": 1759052003456, "truncated_by_ring": false}
+```
+
+`bytes` sums the captured bytes written, `first_ts`/`last_ts` are the first
+and last packet times in ms (null without packets), and
+`truncated_by_ring` says that matching packets may already have been
+overwritten: the ring has dropped packets, and the requested window (or,
+for `flow_ids` without `since_ms`, the first binding of those flows) starts
+before the oldest packet still held.
+
+The file is PCAPng: a section header (`shb_userappl` = `vigil <version>`),
+one interface description (`if_name` = `vigil`, link type 101 = raw IPv4/IPv6,
+`if_tsresol` = 6, µs) and an Enhanced Packet Block per packet in time order,
+with `epb_flags` direction bits (outbound = sent by an app, inbound =
+written to the app by vigil) and, when known, an `opt_comment`
+`uid=<uid> flow=<id>` (either part may be absent; DNS queries to the
+virtual resolver carry the UID only). Wireshark shows the comment as
+`frame.comment`.
 
 ## SIEM records (app → collector)
 

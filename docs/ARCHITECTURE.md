@@ -12,6 +12,7 @@
 | Attribution | `getConnectionOwnerUid` on Android 10+ only | `sock_diag` and `/proc/net` are blocked by SELinux for apps on modern Android, so the pre-API-29 fallback in the sketch does not work there. |
 | Upcalls | Events are **polled** by Kotlin (a JSON batch per call, blocking up to 500 ms; once the first event arrives the poll collects for up to 20 ms more, so a busy engine wakes the JVM at most about 50 times a second). The only JVM upcalls are UID lookup and `protect`, made off the packet path. | No JNI callbacks on hot paths, and a slow consumer drops events instead of stalling traffic. |
 | SYN handling | The SYN is held while vigil attributes the flow, checks policy and **connects upstream first** | Refused or unreachable destinations reach the app as a real RST. |
+| Packet capture | An in-memory ring in the engine, attributed at export time; PCAP-over-IP served by the engine | The packet path stays a copy with no lookups, and only an explicit export touches storage. Streaming from Rust avoids a JNI crossing per packet. |
 | Parsers | Hand-written, bounds-checked zero-copy readers instead of `nom` | They are small and dependency-free, and garbage-input tests show they never panic. |
 | Feeds | Sorted string arena plus binary search per label | About 8 bytes of overhead per entry and no per-name allocation, streamed from disk. Better suited to phones than a trie or HashSet. |
 | Upstream chaining | One dialer (`engine/upstream`) for every upstream socket: direct, WireGuard (boringtun + a client-side smoltcp interface) or SOCKS5 | Android allows one VPN, so users of a real VPN could not run vigil. Terminating flows in user space already gives vigil its own upstream sockets; only their egress changes, so inspection is identical in every mode. |
@@ -123,6 +124,58 @@
    120 alerts per minute. The beacon detector's table (20 000 series) is
    pruned at most once a minute when full; until then new targets are not
    tracked.
+
+## Packet capture (`engine/capture`)
+
+Off by default (`capture` in the config, Settings → Packet capture). While
+off, the only cost is one relaxed atomic load per packet.
+
+- **Hooks.** The TUN read loop records every packet it reads (what apps
+  sent, including what vigil then drops, such as ICMP or blocked SYNs)
+  before dispatching it, and the TUN writer every packet it writes
+  (what vigil sent to apps: relayed data, DNS answers, RSTs). So the
+  capture shows the app's side of each connection, exactly as the apps saw
+  it; vigil's own upstream sockets (and anything encrypted by a WireGuard
+  or SOCKS5 upstream) are not captured.
+- **Ring.** One byte buffer of `buffer_bytes` (16 MiB by default, 128 MiB
+  at most) holding variable-length records (a 16-byte header with the
+  timestamp in µs, original and captured length, direction, then the
+  packet cut at `snaplen`), the oldest overwritten first. Memory is exactly
+  the buffer (allocated zeroed, so pages are committed as it fills), with no
+  per-packet allocation. The clock is read under the ring's lock, so the
+  ring is in time order across the reader and writer tasks.
+- **Attribution, lazily.** The packet path does no lookups. The engine
+  records *bindings* instead: a 5-tuple → UID at every UID lookup (the SYN
+  gate, UDP flow set-up, each DNS query) and 5-tuple → flow id at every
+  `flow` event (flows already open when capture is turned on are bound
+  then). An export matches each packet's 5-tuple and time against them:
+  the latest binding made before the packet, except that a
+  connection-opening SYN (seen before its flow exists) takes the first one
+  after it. Bindings older than the oldest packet held are pruned by
+  housekeeping (at most 65 536 5-tuples).
+- **Export** (`Engine::export_pcap`, JNI `nativeExportPcap`, `vigil-cli run
+  --pcap-on-exit`): the ring is copied out under its lock (one memcpy),
+  then filtered (flow ids, UIDs, time; AND-combined) and written as PCAPng
+  outside it: a section header, one interface (LINKTYPE_RAW, µs
+  timestamps) and an Enhanced Packet Block per packet, with the direction
+  in `epb_flags` (outbound = sent by the app) and a `uid=… flow=…` comment
+  when known. The app has the engine write to a private cache file and
+  copies it to the document the user picked (Storage Access Framework).
+- **PCAP-over-IP** (`capture.stream`): a TCP server in the engine (the
+  packets are there; streaming them through the JVM would cost a JNI
+  crossing per packet or a polling delay). It listens on the address the
+  app passes (the Wi-Fi IPv4 address by default, never cellular; `0.0.0.0`
+  or `127.0.0.1` on request), retrying every 5 s while the bind fails. Each
+  client gets a classic PCAP header (LINKTYPE_RAW) and then every packet
+  recorded from then on. The packet path only `try_send`s into a bounded
+  queue per client (8192 packets / 8 MiB); a slow client loses packets
+  (`stats.capture.stream.dropped`) and never slows traffic. At most two
+  clients; others, and addresses outside the allowlist, are disconnected at
+  once. The sockets belong to the app process, which is excluded from its
+  own VPN, so they use the Wi-Fi network directly.
+
+A capture lives as long as the engine session: turning capture off, and
+every session restart (routes, excluded app, worker threads), discards it.
 
 ## Upstream paths (`engine/upstream`)
 

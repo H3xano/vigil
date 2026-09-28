@@ -44,8 +44,8 @@ app. Every one was green at the 0.1.0 commit.
 
 ```sh
 cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 130 unit tests
-scripts/e2e-netns.sh          # 171 checks: direct, beacon (in-flow beaconing), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
-scripts/jni-smoke.sh          # 28 checks, no root
+scripts/e2e-netns.sh          # direct, beacon (in-flow beaconing), capture (PCAPng export, PCAP-over-IP), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+scripts/jni-smoke.sh          # 34 checks, no root
 cd android && ./gradlew lintDebug testDebugUnitTest   # 116 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
@@ -302,6 +302,8 @@ core/vigil-core/src/
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
   engine/dns_upstream.rs  encrypted upstream DNS (DoT, DoH over HTTP/2 or 1.1), TLS config
   engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
+  engine/capture/   packet capture: ring.rs (byte ring), pcap.rs (PCAPng/PCAP writers), stream.rs
+                    (PCAP-over-IP server), mod.rs (hooks, flow/UID bindings, export)
   engine/upstream/  the dialer for every upstream socket (relays, UDP flows, plain DNS, DoT/DoH):
                     mod.rs direct + dispatch, wireguard.rs (boringtun + client smoltcp), socks5.rs
   proto/{dns,tls,quic,http}.rs   parsers (pure); tls.rs also computes JA4
@@ -333,9 +335,11 @@ android/app/src/main/java/dev/vigil/inspector/
 
 - `core/vigil-core/src/config.rs` (+ `config/upstream.rs`) ↔
   `engine/EngineConfig.kt` ↔ `vpn/ConfigFactory.kt` (the Rust test
-  `upstream_json_contract` parses the JSON asserted in `ConfigFactoryTest`)
+  `upstream_json_contract` parses the JSON asserted in `ConfigFactoryTest`;
+  `config/capture.rs` and its test `capture_json_contract` likewise)
 - `core/vigil-core/src/event.rs` ↔ `engine/EngineEvent.kt` ↔ `docs/EVENTS.md`
 - JNI signatures in `vigil-jni/src/lib.rs` ↔ `engine/VigilNative.kt` ↔
-  `scripts/jni-smoke/…/VigilNative.java`
+  `scripts/jni-smoke/…/VigilNative.java` (+ `EngineHandle` wrappers such as
+  `exportPcap`)
 - The method names `ownerUid` and `protect` (looked up from native code) ↔
   `PlatformBridge.kt` and the ProGuard keep rules.
