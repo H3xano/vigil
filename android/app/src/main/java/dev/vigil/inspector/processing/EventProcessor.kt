@@ -3,6 +3,7 @@ package dev.vigil.inspector.processing
 import android.util.Log
 import androidx.room.withTransaction
 import dev.vigil.inspector.data.AlertEntity
+import dev.vigil.inspector.data.AlertMutes
 import dev.vigil.inspector.data.AppInfo
 import dev.vigil.inspector.data.AppResolver
 import dev.vigil.inspector.data.DestinationEntity
@@ -124,7 +125,11 @@ class EventProcessor(
             for (u in updates.values) db.flows().progress(session, u.id, u.tx, u.rx)
             for (e in ends) db.flows().finish(session, e.id, e.ts, e.tx, e.rx, e.durationMs, e.error)
         }
-        if (settings.value.notifyAlerts) alerts.filter { it.severity == "high" || it.severity == "medium" }.forEach(notifier::notify)
+        val s = settings.value
+        if (s.notifyAlerts) {
+            alerts.filter { (it.severity == "high" || it.severity == "medium") && !AlertMutes.isMuted(s.alertMutes, it) }
+                .forEach(notifier::notify)
+        }
         engineError?.let(onEngineError)
     }
 

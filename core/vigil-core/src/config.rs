@@ -776,6 +776,13 @@ mod tests {
         assert_eq!(c.feeds_preload_timeout_ms, 5000);
         let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
+        // FEEDS_JSON in ConfigFactoryTest.kt, verbatim.
+        let c = Config::from_json(
+            r#"{"feeds":[{"id":"urlhaus","category":"malware","path":"/data/feeds/urlhaus.txt"},{"id":"iptoasn","category":"asn","path":"/data/feeds/iptoasn.txt"},{"id":"ja4-foxio","category":"ja4","path":"/data/feeds/ja4-foxio.txt"}],"feeds_preload_timeout_ms":10000}"#,
+        )
+        .unwrap();
+        assert_eq!(c.feeds.len(), 3);
+        assert_eq!(c.feeds[2].category(), FeedCategory::Ja4);
     }
 
     #[test]

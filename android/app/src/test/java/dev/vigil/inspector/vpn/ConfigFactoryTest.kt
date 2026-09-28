@@ -201,6 +201,7 @@ class ConfigFactoryTest {
 
     private companion object {
         /** Start-config feed list (engine `feeds`; see docs/EVENTS.md). */
+        /** Also parsed by the Rust test `feeds_json_contract`. */
         const val FEEDS_JSON = "\"feeds\":[{\"id\":\"urlhaus\",\"category\":\"malware\",\"path\":\"/data/feeds/urlhaus.txt\"}," +
             "{\"id\":\"iptoasn\",\"category\":\"asn\",\"path\":\"/data/feeds/iptoasn.txt\"}," +
             "{\"id\":\"ja4-foxio\",\"category\":\"ja4\",\"path\":\"/data/feeds/ja4-foxio.txt\"}]"

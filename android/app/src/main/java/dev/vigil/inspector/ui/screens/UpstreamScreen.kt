@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.Socks5Settings
+import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.data.WgQuick
 import dev.vigil.inspector.engine.UpstreamStatus
@@ -61,6 +62,7 @@ import kotlinx.coroutines.withContext
 fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val stats by vm.stats.collectAsStateWithLifecycle()
+    val upstreamWarning by ServiceState.upstreamWarning.collectAsStateWithLifecycle()
     val status by vm.status.collectAsStateWithLifecycle()
     val saved = settings.upstream
     val context = LocalContext.current
@@ -113,6 +115,14 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
             )
             if (saved.mode != UpstreamSettings.MODE_DIRECT && status is VpnStatus.Running) {
                 stats?.upstream?.takeIf { it.mode == saved.mode }?.let { UpstreamStatusCard(it) }
+                upstreamWarning?.let {
+                    Text(
+                        it,
+                        Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
             }
 
             when (draft.mode) {

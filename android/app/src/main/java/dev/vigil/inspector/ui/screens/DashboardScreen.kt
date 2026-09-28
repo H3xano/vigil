@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.ui.FeedWork
+import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.AppIcon
@@ -68,6 +69,8 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
     val feeds by vm.feeds.collectAsStateWithLifecycle()
     val feedWork by vm.feedWork.collectAsStateWithLifecycle()
     val configError by vm.configError.collectAsStateWithLifecycle()
+    val upstreamWarning by ServiceState.upstreamWarning.collectAsStateWithLifecycle()
+    val loadProblem by vm.app.settings.loadProblem.collectAsStateWithLifecycle()
     val usageAccess = usageAccessGranted(vm)
     // Per-second stats and throughput are read inside StatusCard only, so
     // they do not recompose the whole Overview.
@@ -93,6 +96,12 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         // Actionable warnings.
         configError?.let { msg ->
             item { ConfigErrorCard(msg) { vm.dismissConfigError() } }
+        }
+        loadProblem?.let { msg ->
+            item { Warning("Settings could not be read", msg, "Dismiss and start anyway") { vm.app.settings.acknowledgeLoadProblem() } }
+        }
+        upstreamWarning?.let { msg ->
+            item { Warning("Route through VPN / proxy", msg, "Open settings") { nav.navigate("upstream") } }
         }
         network.privateDnsStrictHost?.let { host ->
             item {
