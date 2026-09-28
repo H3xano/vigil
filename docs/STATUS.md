@@ -1,7 +1,7 @@
 # Project status and handoff
 
-Last updated: 2026-09-28, version 0.3.0 (encrypted DNS, JA4/TAXII,
-WireGuard/SOCKS5 chaining), GitHub pre-release.
+Last updated: 2026-09-28, version 0.4.0 (ASN enrichment, in-flow beaconing
+and upload alerts, 2× less CPU, toolchain upgrade), GitHub pre-release.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -25,7 +25,7 @@ systematic device testing in backlog item 1 is still to do.
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, this file | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
-| Release | [v0.3.0](https://github.com/H3xano/vigil/releases/tag/v0.3.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
+| Release | [v0.4.0](https://github.com/H3xano/vigil/releases/tag/v0.4.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
 
 Measured numbers (see the README "Performance" section):
 
@@ -104,7 +104,7 @@ Costs and caveats: arm64 `libvigil.so` grew from 1.44 MB to 3.16 MB
 Still needs a device: a real WireGuard provider `.conf` (roaming, battery
 with keepalive) and Orbot on 127.0.0.1:9050 with Orbot excluded from the VPN.
 
-## New after 0.3.0 (2026-09-28, unreleased)
+## New in 0.4.0 (released 2026-09-28 as a pre-release)
 
 Built in parallel by three agents, then a toolchain upgrade on the merged
 tree. Every suite passes (numbers in DEVELOPMENT.md).

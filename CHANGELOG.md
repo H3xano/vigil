@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-09-28): GitHub pre-release
 
 - Connections show which path they took (direct, WireGuard, SOCKS5) and
   lookups which DNS transport answered (UDP, TCP, DoT, DoH).

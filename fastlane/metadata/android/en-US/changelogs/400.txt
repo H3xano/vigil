@@ -1,0 +1,5 @@
+New in 0.4.0:
+• About half the CPU per GB relayed, and connections are released as soon as they close; one engine thread by default to save battery ("Maximum throughput" setting for fast links).
+• Network (ASN) labels from an offline table; optional alerts when an app contacts a network it never used.
+• Beaconing detection inside long-lived connections; alerts for unusual background uploads.
+• Each connection shows its path (direct, WireGuard, SOCKS5) and DNS transport.
