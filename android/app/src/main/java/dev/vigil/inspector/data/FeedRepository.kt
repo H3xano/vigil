@@ -267,8 +267,9 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         dir.listFiles { f -> f.name.endsWith(".tmp") }?.forEach { it.delete() }
         val now = System.currentTimeMillis()
         var failures = 0
-        // Indexes first: they add the feeds of new packs, which the second pass then downloads.
-        for (pass in listOf(true, false)) for (f in dao.list().filter { it.enabled && (it.kind == FeedKinds.SPYWARE_INDEX) == pass }) {
+        // Indexes first: they add the feeds of new packs, which the second pass then downloads,
+        // threat lists before the large labelling data (a run stopped early still protects).
+        for (pass in listOf(true, false)) for (f in dao.list().filter { it.enabled && (it.kind == FeedKinds.SPYWARE_INDEX) == pass }.sortedBy(::downloadPriority)) {
             coroutineContext.ensureActive()
             val fresh = f.lastUpdated != null && now - f.lastUpdated < maxAgeFor(f, maxAgeMs, force) && fileFor(f.id).exists()
             if (!fresh && refreshLocked(f).isFailure) failures++
@@ -493,6 +494,21 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
     }
 
     companion object {
+        /**
+         * Download order within a refresh: threat lists, then spyware packs,
+         * other blocklists and JA4, then the large labelling data (tracker
+         * labels, the ASN table), so a run stopped early has fetched what
+         * protects first.
+         */
+        fun downloadPriority(feed: FeedEntity): Int = when {
+            feed.kind == FeedKinds.SPYWARE_INDEX -> 0
+            feed.kind == FeedKinds.ASN -> 5
+            feed.kind == FeedKinds.TRACKERS -> 4
+            feed.kind in FeedKinds.SPYWARE_KINDS -> 2
+            feed.category in setOf("malware", "phishing", "c2") -> 1
+            else -> 3
+        }
+
         /**
          * How old a downloaded copy may be before a refresh fetches it again.
          * The ASN table changes slowly and is large: weekly, and at most daily
