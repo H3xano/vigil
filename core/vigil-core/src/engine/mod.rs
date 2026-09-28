@@ -42,7 +42,7 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, watch, Notify, Semaphore};
 
 const TUN_QUEUE: usize = 4096;
 const STACK_QUEUE: usize = 2048;
@@ -155,6 +155,52 @@ struct OpenFlow {
     /// Set for allowed flows that may be watched for in-flow beaconing
     /// (not to an ignored or allowlisted name).
     beacon: Option<Box<BeaconMeta>>,
+    /// Set for allowed relays and UDP flows, which end when a per-app rule
+    /// starts to block them (see `Shared::recheck_open_flows`).
+    cut: Option<CutTarget>,
+}
+
+/// What per-app rules need to re-check an open flow.
+struct CutTarget {
+    uid: u32,
+    /// The name the app sent (SNI, QUIC, HTTP Host), if any.
+    name: Option<String>,
+    cut: Arc<FlowCut>,
+}
+
+/// Ends an open relay or UDP flow from outside its task: set when a change
+/// of the device state or of the per-app rules blocks the flow's app (or
+/// its name for that app). The flow resets both sides and reports
+/// `blocked: <reason>` as its `flow_end` error.
+pub(crate) struct FlowCut {
+    notify: Notify,
+    reason: Mutex<Option<String>>,
+}
+
+impl FlowCut {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            notify: Notify::new(),
+            reason: Mutex::new(None),
+        })
+    }
+
+    /// Cuts the flow (the first reason wins).
+    pub fn cut(&self, reason: String) {
+        let mut r = self.reason.lock();
+        if r.is_none() {
+            *r = Some(reason);
+            // Stores a permit when the flow is not waiting yet.
+            self.notify.notify_one();
+        }
+    }
+
+    /// Resolves once the flow is cut, with the `flow_end` error to report.
+    pub async fn cut_error(&self) -> String {
+        self.notify.notified().await;
+        let reason = self.reason.lock().clone().unwrap_or_default();
+        format!("blocked: {reason}")
+    }
 }
 
 #[derive(Default)]
@@ -193,6 +239,9 @@ pub(crate) struct Shared {
     /// How upstream sockets reach the internet (direct, WireGuard, SOCKS5).
     pub upstream: upstream::Upstream,
     open_flows: Mutex<OpenFlows>,
+    /// Bumped whenever the device state or the per-app rules change, so
+    /// UDP flows held blocked by an app condition re-decide.
+    pub app_rules_changed: watch::Sender<u64>,
     shut_down: AtomicBool,
     /// Per feed id, how many loads or removals have begun. The start-time
     /// preload installs a feed only if nothing touched its id meanwhile, so
@@ -224,6 +273,7 @@ impl Shared {
             encrypted_dns: dns_upstream::EncryptedUpstream::default(),
             upstream: upstream::Upstream::default(),
             open_flows: Mutex::new(OpenFlows::default()),
+            app_rules_changed: watch::Sender::new(0),
             shut_down: AtomicBool::new(false),
             feed_loads: Mutex::new(HashMap::new()),
         }
@@ -309,6 +359,45 @@ impl Shared {
     /// shutdown the flow is ended immediately, so every `flow` still gets
     /// its `flow_end`.
     pub fn open_flow(&self, ev: FlowEvent, counters: &Arc<FlowCounters>) {
+        self.open_flow_inner(ev, counters, None);
+    }
+
+    /// [`open_flow`](Self::open_flow) for an allowed flow that per-app rules
+    /// may cut later: `cut` fires when they come to block it. Checked once
+    /// more right away, for a state change since the flow was decided.
+    pub fn open_cuttable_flow(
+        &self,
+        ev: FlowEvent,
+        counters: &Arc<FlowCounters>,
+        cut: &Arc<FlowCut>,
+    ) {
+        let Some(uid) = ev.uid else {
+            return self.open_flow_inner(ev, counters, None);
+        };
+        let name = match ev.domain_source {
+            Some("sni" | "http" | "quic") => ev.domain.clone(),
+            _ => None,
+        };
+        let recheck = {
+            let policy = self.policy.read();
+            policy
+                .has_app_rules()
+                .then(|| policy.recheck_open(Some(uid), name.as_deref()))
+                .flatten()
+        };
+        let target = CutTarget {
+            uid,
+            name,
+            cut: cut.clone(),
+        };
+        self.open_flow_inner(ev, counters, Some(target));
+        if let Some(r) = recheck {
+            self.stats.blocked.fetch_add(1, Relaxed);
+            cut.cut(r.describe());
+        }
+    }
+
+    fn open_flow_inner(&self, ev: FlowEvent, counters: &Arc<FlowCounters>, cut: Option<CutTarget>) {
         let id = ev.id;
         let beacon = self.beacon_meta(&ev);
         // Emitting under the lock orders `flow` before any `flow_end`
@@ -325,6 +414,7 @@ impl Shared {
                 OpenFlow {
                     counters: counters.clone(),
                     beacon,
+                    cut,
                 },
             );
         }
@@ -338,7 +428,9 @@ impl Shared {
             return None;
         }
         if let (Some("sni" | "http" | "quic"), Some(d)) = (ev.domain_source, ev.domain.as_deref()) {
-            if self.config().beacon.is_ignored(d) || self.policy.read().is_allowlisted(d) {
+            if self.config().beacon.is_ignored(d)
+                || self.policy.read().is_allowlisted_for(ev.uid, d)
+            {
                 return None;
             }
         }
@@ -359,6 +451,36 @@ impl Shared {
                 self.flow_beacon.forget(id);
             }
             self.emit(Event::FlowEnd(o.counters.end_event(id, error)));
+        }
+    }
+
+    /// After a change of the device state or the per-app rules: cuts every
+    /// open relay and UDP flow that the per-app rules now block, and wakes
+    /// UDP flows held blocked by an app condition so they re-decide.
+    /// One HashMap lookup per open flow; nothing when no per-app rule exists.
+    pub fn recheck_open_flows(&self) {
+        self.app_rules_changed
+            .send_modify(|n| *n = n.wrapping_add(1));
+        let policy = self.policy.read();
+        if !policy.has_app_rules() {
+            return;
+        }
+        let mut cuts = Vec::new();
+        {
+            let open = self.open_flows.lock();
+            for t in open.flows.values().filter_map(|o| o.cut.as_ref()) {
+                if let Some(r) = policy.recheck_open(Some(t.uid), t.name.as_deref()) {
+                    cuts.push((t.cut.clone(), r.describe()));
+                }
+            }
+        }
+        drop(policy);
+        if !cuts.is_empty() {
+            log::info!("per-app rules cut {} open flows", cuts.len());
+        }
+        for (cut, reason) in cuts {
+            self.stats.blocked.fetch_add(1, Relaxed);
+            cut.cut(reason);
         }
     }
 
@@ -698,7 +820,18 @@ impl Engine {
         }
         self.shared.policy.write().apply_config(&config);
         *self.shared.config.write() = Arc::new(config);
+        // Per-app rules (and blocked apps) also apply to open connections.
+        self.shared.recheck_open_flows();
         Ok(())
+    }
+
+    /// Installs the device state that per-app conditions are evaluated
+    /// against (network type, screen, foreground apps). Open connections of
+    /// apps that the new state blocks are reset (TCP) or ended (UDP); new
+    /// ones, UDP datagrams and DNS lookups follow the new state at once.
+    pub fn set_device_state(&self, state: crate::config::DeviceState) {
+        self.shared.policy.write().set_state(&state);
+        self.shared.recheck_open_flows();
     }
 
     /// Parses and installs (or replaces) a feed. CPU-heavy for large lists;
@@ -1089,6 +1222,25 @@ mod tests {
             Arc::new(Shared::new(config, Arc::new(NullPlatform), tx)),
             rx,
         )
+    }
+
+    /// Attributes every connection to one UID.
+    struct FixedUid(u32);
+
+    impl Platform for FixedUid {
+        fn owner_uid(&self, _: u8, _: SocketAddr, _: SocketAddr) -> Option<u32> {
+            Some(self.0)
+        }
+
+        fn protect(&self, _: RawFd) -> bool {
+            true
+        }
+    }
+
+    /// A `Shared` whose platform attributes every connection to `uid`.
+    pub(crate) fn test_shared_uid(config: Config, uid: u32) -> Arc<Shared> {
+        let (tx, _rx) = mpsc::channel(64);
+        Arc::new(Shared::new(config, Arc::new(FixedUid(uid)), tx))
     }
 
     fn flow_ids(events: &[Event]) -> (Vec<u64>, Vec<u64>) {

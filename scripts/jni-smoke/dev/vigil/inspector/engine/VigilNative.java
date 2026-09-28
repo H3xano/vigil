@@ -8,6 +8,7 @@ public final class VigilNative {
     public static native void nativeStop(long handle);
     public static native String nativePollEvents(long handle, int max, int timeoutMs);
     public static native boolean nativeUpdateConfig(long handle, String configJson);
+    public static native boolean nativeSetDeviceState(long handle, String stateJson);
     public static native String nativeLoadFeedFile(long handle, String id, String category, String path);
     public static native boolean nativeRemoveFeed(long handle, String id);
     public static native String nativeStats(long handle);

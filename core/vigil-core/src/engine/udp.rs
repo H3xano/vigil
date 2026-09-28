@@ -1,7 +1,7 @@
 //! UDP: per-flow NAT over protected sockets, with QUIC SNI extraction.
 
 use super::tcp::{check_ja4, decide_named, emit_closed_flow, mark_blocked, observe_allowed};
-use super::{dns, upstream, FlowCounters, FlowKey, GaugeGuard, Shared};
+use super::{dns, upstream, FlowCounters, FlowCut, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, FlowEvent, Verdict};
 use crate::intel::is_special;
 use crate::packet::{self, UdpInfo, PROTO_UDP};
@@ -296,8 +296,28 @@ async fn flow(
         mark_blocked(shared, &mut ev, &reason);
         emit_closed_flow(shared, ev, None);
         // Keep absorbing the flow's datagrams so retries don't produce a
-        // stream of new flow events.
-        while let Ok(Some(_)) = tokio::time::timeout(idle, rx.recv()).await {}
+        // stream of new flow events. A block by an app condition ends when
+        // the device state (or the rules) change, so the app's next
+        // datagram is decided again (e.g. once it is in the foreground).
+        if reason.is_conditional() {
+            let mut changed = shared.app_rules_changed.subscribe();
+            loop {
+                tokio::select! {
+                    r = tokio::time::timeout(idle, rx.recv()) => {
+                        if !matches!(r, Ok(Some(_))) {
+                            break;
+                        }
+                    }
+                    r = changed.changed() => {
+                        if r.is_err() || shared.policy.read().app_block(uid).is_none() {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            while let Ok(Some(_)) = tokio::time::timeout(idle, rx.recv()).await {}
+        }
         return;
     }
 
@@ -329,7 +349,8 @@ async fn flow(
         shared,
         id: Some(ev.id),
     };
-    shared.open_flow(ev.clone(), &counters);
+    let cut = FlowCut::new();
+    shared.open_cuttable_flow(ev.clone(), &counters, &cut);
     observe_allowed(shared, &ev);
 
     let mut error = None;
@@ -376,6 +397,12 @@ async fn flow(
                 }
             }
             _ = tokio::time::sleep_until(deadline) => break,
+            e = cut.cut_error() => {
+                // Blocked by a per-app rule: the app's next datagram starts
+                // a new flow, which is refused.
+                error = Some(e);
+                break;
+            }
         }
     }
     end.finish(error);
@@ -509,6 +536,99 @@ mod tests {
             ends,
             vec![(1, Some("timeout".into())), (2, Some(EVICTED.into()))]
         );
+    }
+
+    /// Waits for the next `flow` or `flow_end` event.
+    async fn next_flow_event(shared: &Shared) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let found = shared
+                .events
+                .poll(1, Duration::from_millis(50))
+                .into_iter()
+                .find(|e| matches!(e, Event::Flow(_) | Event::FlowEnd(_)));
+            if let Some(e) = found {
+                return e;
+            }
+            assert!(Instant::now() < deadline, "no flow event");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_app_conditions_end_and_hold_udp_flows() {
+        use super::super::tests::test_shared_uid;
+        use crate::config::{AppRule, DeviceState, NetworkType};
+        let state = |network| DeviceState {
+            network,
+            ..Default::default()
+        };
+        let shared = test_shared_uid(
+            Config {
+                app_rules: vec![AppRule {
+                    uid: 10123,
+                    block_wifi: true,
+                    ..Default::default()
+                }],
+                device_state: Some(state(NetworkType::Cellular)),
+                ..Default::default()
+            },
+            10123,
+        );
+        let send = || {
+            let (u, pkt) = udp(41000, "192.0.2.1:9999");
+            on_packet(&shared, u, &pkt[u.payload_offset..u.payload_end]);
+        };
+        send();
+        let Event::Flow(f) = next_flow_event(&shared).await else {
+            panic!("expected a flow")
+        };
+        assert_eq!((f.uid, f.verdict), (Some(10123), Some(Verdict::Allow)));
+        // On Wi-Fi the app is blocked: its open flow ends.
+        shared.policy.write().set_state(&state(NetworkType::Wifi));
+        shared.recheck_open_flows();
+        let Event::FlowEnd(end) = next_flow_event(&shared).await else {
+            panic!("expected the flow's end")
+        };
+        assert_eq!(end.id, f.id);
+        assert_eq!(end.error.as_deref(), Some("blocked: app rule: wifi"));
+        for _ in 0..100 {
+            if shared.udp_flows.lock().len() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Its next datagram is refused, and the flow held blocked...
+        send();
+        let Event::Flow(b) = next_flow_event(&shared).await else {
+            panic!("expected a blocked flow")
+        };
+        assert_eq!(b.verdict, Some(Verdict::Block));
+        assert_eq!(b.reason.as_deref(), Some("app rule: wifi"));
+        let Event::FlowEnd(_) = next_flow_event(&shared).await else {
+            panic!("blocked flows end at once")
+        };
+        send();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(shared.udp_flows.lock().len(), 1, "held, not a new flow");
+        // ...until the condition lifts: then the next datagram is allowed.
+        shared
+            .policy
+            .write()
+            .set_state(&state(NetworkType::Cellular));
+        shared.recheck_open_flows();
+        for _ in 0..100 {
+            if shared.udp_flows.lock().len() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(shared.udp_flows.lock().len(), 0, "blocked flow released");
+        send();
+        let Event::Flow(a) = next_flow_event(&shared).await else {
+            panic!("expected a flow")
+        };
+        assert_eq!(a.verdict, Some(Verdict::Allow));
     }
 
     #[test]

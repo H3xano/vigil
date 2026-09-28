@@ -8,7 +8,7 @@
 //! would without vigil in the path.
 
 use super::upstream::{self, UpstreamTcp};
-use super::{dns, FlowCounters, FlowKey, GaugeGuard, Shared};
+use super::{dns, FlowCounters, FlowCut, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, Event, FlowEndEvent, FlowEvent, Severity, Verdict};
 use crate::packet::{self, TcpInfo, PROTO_TCP};
 use crate::policy::{Decision, Policy, DOT_PORT};
@@ -482,7 +482,7 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
 /// records `ja4_match` on the event and raises a `threat_ja4` alert (one per
 /// fingerprint and app per hour). Returns a block reason when
 /// `block_ja4_matches` is on and the (SNI/QUIC/Host) name is not on the user
-/// allowlist. Called before any client byte is forwarded, so a block resets
+/// allowlist (or the app's own allow rules). Called before any client byte is forwarded, so a block resets
 /// the connection before the handshake reaches the server.
 pub(crate) fn check_ja4(shared: &Shared, ev: &mut FlowEvent) -> Option<crate::policy::BlockReason> {
     let ja4 = ev.ja4.as_deref()?;
@@ -494,7 +494,7 @@ pub(crate) fn check_ja4(shared: &Shared, ev: &mut FlowEvent) -> Option<crate::po
             && ev
                 .domain
                 .as_deref()
-                .is_some_and(|d| policy.is_allowlisted(d));
+                .is_some_and(|d| policy.is_allowlisted_for(ev.uid, d));
         (m, policy.block_ja4 && !allowlisted)
     };
     let dst = format!("{}:{}", ev.dst_ip, ev.dst_port);
@@ -551,6 +551,7 @@ async fn relay(
     let counters = FlowCounters::new();
     let last = AtomicU64::new(0);
     let opened = AtomicBool::new(false);
+    let cut = FlowCut::new();
     let client_abort = client.abort_handle();
     let key = (*client.local_addr(), *client.remote_addr());
     let (mut cr, mut cw) = tokio::io::split(client);
@@ -576,7 +577,7 @@ async fn relay(
                 return Ok(false);
             }
             ev.verdict = Some(Verdict::Allow);
-            shared.open_flow(ev.clone(), &counters);
+            shared.open_cuttable_flow(ev.clone(), &counters, &cut);
             opened.store(true, Relaxed);
             observe_allowed(shared, &ev);
             if let SniffEnd::Failed(err) = sniff_end {
@@ -602,7 +603,9 @@ async fn relay(
         // more: this notices when it is reset (or replaced, see on_syn)
         // while the server side is still open.
         let client_gone = client_abort.closed();
-        tokio::pin!(s2c, c2s, client_gone);
+        // A per-app rule came to block the app (or this name for it).
+        let cut_off = cut.cut_error();
+        tokio::pin!(s2c, c2s, client_gone, cut_off);
         let (mut c2s_done, mut s2c_done) = (false, false);
         let mut idle_check = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -645,6 +648,10 @@ async fn relay(
                     };
                     error.get_or_insert(reason);
                     break RelayEnd::Failed(Side::Client);
+                }
+                e = &mut cut_off => {
+                    error = Some(e);
+                    break RelayEnd::Blocked;
                 }
                 _ = idle_check.tick() => {
                     let idle = started.elapsed().as_secs().saturating_sub(last.load(Relaxed));
@@ -1016,5 +1023,122 @@ mod tests {
         assert!(stack_rx.recv().await.is_some()); // admitted, holds the slot
         gate.on_syn(p2, s2);
         assert!(is_rst(&tun.recv().await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_device_state_change_cuts_open_relays_of_the_app() {
+        use super::super::tests::{next_segment, test_stack};
+        use crate::config::{AppRule, DeviceState};
+        use crate::packet::{build_tcp, TCP_ACK};
+        let (shared, _tun) = test_shared_with_tun(Config {
+            app_rules: vec![AppRule {
+                uid: 10123,
+                block_background: true,
+                ..Default::default()
+            }],
+            device_state: Some(DeviceState {
+                foreground_uids: Some(vec![10123]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let (app, dst): (SocketAddr, SocketAddr) = (
+            "10.0.0.2:40100".parse().unwrap(),
+            "192.0.2.1:80".parse().unwrap(),
+        );
+        let (input, mut out, mut listener) = test_stack();
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = tokio::net::TcpStream::connect(server.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut server_end, _) = server.accept().await.unwrap();
+        input
+            .send(build_tcp(app, dst, 1000, 0, TCP_SYN, &[]).unwrap())
+            .await
+            .unwrap();
+        let (stream, _, _) = listener.next().await.unwrap();
+        let ack = next_segment(&mut out, app).await.seq.wrapping_add(1);
+        let req = b"GET / HTTP/1.1\r\nHost: api.example\r\n\r\n";
+        input
+            .send(build_tcp(app, dst, 1001, ack, TCP_ACK, &[]).unwrap())
+            .await
+            .unwrap();
+        input
+            .send(build_tcp(app, dst, 1001, ack, TCP_ACK, req).unwrap())
+            .await
+            .unwrap();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(Ok(p)) = out.next().await {
+                let ip = packet::parse_ip(&p).unwrap();
+                let _ = seen_tx.send(packet::parse_tcp(&p, &ip).unwrap().flags);
+            }
+        });
+        let ev = FlowEvent {
+            id: shared.next_flow_id(),
+            uid: Some(10123),
+            ..Default::default()
+        };
+        let s = shared.clone();
+        let relay = tokio::spawn(async move {
+            relay(&s, stream, UpstreamTcp::Direct(upstream), ev).await;
+        });
+        // In the foreground: the request is relayed.
+        let mut buf = vec![0u8; req.len()];
+        tokio::time::timeout(Duration::from_secs(2), server_end.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..], &req[..]);
+        let flow = shared
+            .events
+            .poll(100, Duration::ZERO)
+            .into_iter()
+            .find_map(|e| match e {
+                Event::Flow(f) => Some(f),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(flow.verdict, Some(Verdict::Allow));
+        assert_eq!(flow.domain.as_deref(), Some("api.example"));
+        // Another app's state change leaves the relay alone.
+        shared.policy.write().set_state(&DeviceState {
+            foreground_uids: Some(vec![10123, 10200]),
+            ..Default::default()
+        });
+        shared.recheck_open_flows();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!relay.is_finished());
+        // The app goes to the background: both sides are reset.
+        shared.policy.write().set_state(&DeviceState {
+            foreground_uids: Some(vec![10200]),
+            ..Default::default()
+        });
+        shared.recheck_open_flows();
+        tokio::time::timeout(Duration::from_secs(2), relay)
+            .await
+            .expect("relay still running after its app was blocked")
+            .unwrap();
+        assert_eq!(
+            flow_end_error(&shared).as_deref(),
+            Some("blocked: app rule: background")
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let f = tokio::time::timeout_at(deadline, seen_rx.recv())
+                .await
+                .expect("no RST to the app")
+                .unwrap();
+            if f & TCP_RST != 0 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut rest = [0u8; 8];
+        let r = server_end.read(&mut rest).await;
+        assert!(
+            matches!(&r, Err(e) if e.kind() == io::ErrorKind::ConnectionReset),
+            "server side not reset: {r:?}"
+        );
     }
 }

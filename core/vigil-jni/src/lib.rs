@@ -19,6 +19,7 @@ use std::os::fd::RawFd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
+use vigil_core::config::DeviceState;
 use vigil_core::{Config, Engine, FeedCategory, Platform};
 
 struct JniPlatform {
@@ -245,6 +246,35 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeUpdateC
             Ok(()) => JNI_TRUE,
             Err(err) => {
                 log::error!("config rejected: {err}");
+                JNI_FALSE
+            }
+        }
+    })
+}
+
+/// Installs the device state per-app conditions are evaluated against
+/// (`{"network": "wifi"|"cellular"|"other"|"none", "screen_on": bool,
+/// "foreground_uids": [..] | null}`). Open connections the new state blocks
+/// are cut. Cheap: call it whenever the state changes. Returns false if the
+/// JSON is invalid or the engine is not running.
+#[no_mangle]
+pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeSetDeviceState<'l>(
+    mut env: JNIEnv<'l>,
+    _c: JClass<'l>,
+    handle: jlong,
+    state_json: JString<'l>,
+) -> jboolean {
+    guard(JNI_FALSE, || {
+        let (Some(e), Some(json)) = (running(handle), jstr(&mut env, &state_json)) else {
+            return JNI_FALSE;
+        };
+        match DeviceState::from_json(&json) {
+            Ok(state) => {
+                e.set_device_state(state);
+                JNI_TRUE
+            }
+            Err(err) => {
+                log::error!("device state rejected: {err}");
                 JNI_FALSE
             }
         }
