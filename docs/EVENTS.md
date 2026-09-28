@@ -192,7 +192,8 @@ without custom pipelines. A completed flow looks like this:
 }
 ```
 
-DNS records use `dns.question.name/type`, `dns.response_code` and
+A flow whose JA4 is listed also carries `vigil.ja4_match` (`feed`, `rule`,
+`label`). DNS records use `dns.question.name/type`, `dns.response_code` and
 `dns.answers[].data`. Alerts use `event.kind: "alert"`, `event.severity`
 (0–100) and `message`.
 

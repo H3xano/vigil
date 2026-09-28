@@ -14,6 +14,20 @@ object Glossary {
     const val JA4 =
         "A fingerprint of how the app's TLS library opens connections (versions, cipher suites, extensions). " +
             "The same app usually produces the same JA4, and malware families are often recognisable by theirs."
+    const val JA4_MATCH =
+        "The app's TLS or QUIC handshake has a JA4 fingerprint that a threat feed lists, for example as a malware " +
+            "family or attack framework (Sliver, Cobalt Strike…). vigil compares the fingerprint of every connection's " +
+            "ClientHello with the enabled JA4 feeds, without decrypting anything.\n\n" +
+            "A match is a lead, not proof. JA4 describes the TLS library and its settings, not the program: legitimate " +
+            "software built on the same library can produce exactly the same fingerprint (Sliver's, for instance, is " +
+            "also Go's default TLS client). Check which app made the connection and where it went. That is why matches " +
+            "only raise an alert unless you turn on blocking; allowlisted domains are never blocked for their fingerprint."
+    const val TAXII =
+        "TAXII 2.1 is the standard API for sharing threat intelligence as STIX 2.1 objects; MISP, OpenCTI and many " +
+            "commercial platforms serve it. vigil polls the chosen collection with the feed updates, only fetching objects " +
+            "added since the last poll (and a full copy weekly). It uses indicators whose patterns compare a domain, IP " +
+            "address or range, URL (its host) or JA4 fingerprint, plus domain and IP objects; revoked and expired " +
+            "indicators are dropped. Other pattern types (file hashes, email…) are ignored."
     const val ECH =
         "Encrypted Client Hello hides the real site name from the network. Only the provider's public name is visible."
     const val SINKHOLE =

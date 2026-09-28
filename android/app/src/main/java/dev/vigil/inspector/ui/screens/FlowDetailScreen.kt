@@ -84,6 +84,14 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
             Field("TLS version", f.tlsVersion)
             Field("ALPN", f.alpn, help = Glossary.ALPN)
             Field("JA4", f.ja4, mono = true, help = Glossary.JA4)
+            if (f.ja4Feed != null) {
+                Field(
+                    "JA4 match",
+                    (f.ja4Label?.let { "Listed as “$it”" } ?: "Listed") + " by feed ${f.ja4Feed}" +
+                        if (f.isBlocked && f.reason?.startsWith("ja4:") == true) "; connection blocked" else "",
+                    help = Glossary.JA4_MATCH,
+                )
+            }
             Field("ECH", if (f.ech) "Offered — the real destination name is encrypted" else null, help = Glossary.ECH)
             Field("HTTP method", f.httpMethod)
             SectionTitle("Traffic")

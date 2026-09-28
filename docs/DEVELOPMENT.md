@@ -162,9 +162,15 @@ would make the second build trivially identical.
 - **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
   queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
   then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
-- **Room schema changes need a migration** (`data/Database.kt`, `MIGRATION_1_2`
-  is hand-written because AutoMigration would copy whole tables) and the new
-  schema JSON under `app/schemas/` must be committed.
+- **Room schema changes need a migration** (`data/Database.kt`: `MIGRATION_1_2`
+  and `MIGRATION_2_3` are hand-written; AutoMigration would copy whole tables)
+  and the new schema JSON under `app/schemas/` must be committed, with a
+  `MigrationTest` case. The schema is at version 3.
+- **TAXII servers may reuse the `next` token** for every page of one paging
+  session (OASIS medallion does). Only a run of empty pages counts as a loop.
+  To test the TAXII client against a real server, run medallion and
+  `VIGIL_TAXII_URL=http://127.0.0.1:5057/taxii2/ VIGIL_TAXII_USER=… VIGIL_TAXII_PASSWORD=… ./gradlew testDebugUnitTest --tests '*TaxiiLiveTest*' -Pvigil.skipCargo=true`
+  (skipped without the variable).
 - **Debug builds are `dev.vigil.inspector.debug`.** An older release install on
   the emulator is a different package; target the right one with `am start`.
 - Stopping the engine must not race a blocking poll. All native calls go
@@ -180,7 +186,7 @@ core/vigil-core/src/
   engine/dns.rs     DNS answer path, sinkhole, CNAME cloaking, upstream forwarding
   engine/sock.rs    protected sockets on the blocking pool, pooled upstream DNS sockets
   proto/{dns,tls,quic,http}.rs   parsers (pure)
-  intel.rs          DomainSet / IpSet / feed parsing
+  intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
   policy.rs         Policy, feed categories, DoH host list
   detect.rs         beacon detector, alert limiter
   event.rs          event types + bounded queue
@@ -191,7 +197,9 @@ android/app/src/main/java/dev/vigil/inspector/
   vpn/              VigilVpnService, routes, config factory, tile, ServiceState
   engine/           VigilNative, PlatformBridge, EngineHandle, event/config models
   processing/       EventProcessor, ForegroundTracker, AlertNotifier
-  data/             Room DB, settings, app resolver, feed catalog/repository
+  data/             Room DB, settings, app resolver, feed catalog/repository,
+                    JA4 validation and converters (Ja4.kt), STIX pattern reader (Stix.kt),
+                    TAXII 2.1 client and indicator state (Taxii.kt)
   export/           ECS records, syslog/HTTP formats, ExportPipeline (retry), ElasticBulk, SiemExporter
   ui/               MainActivity, ViewModel, theme, components, screens/
 ```
