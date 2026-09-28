@@ -29,7 +29,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.FlowEntity
+import dev.vigil.inspector.engine.PcapFilter
 import dev.vigil.inspector.ui.BlockReasons
+import dev.vigil.inspector.ui.CaptureExport
+import dev.vigil.inspector.ui.PcapRequest
 import dev.vigil.inspector.ui.DomainNames
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
@@ -154,6 +157,10 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                     )
                 }
                 if (f.pkg != "unknown") OutlinedButton(onClick = { nav.openApp(f.pkg) }, Modifier.fillMaxWidth()) { Text("Open $label") }
+                ExportPacketsButton(
+                    vm, nav, "Export packets (PCAPng)",
+                    PcapRequest(PcapFilter(flowIds = listOf(f.engineId)), CaptureExport.fileName("flow-${f.engineId}-${f.domain ?: f.dstIp}"), session = f.session),
+                )
                 OutlinedButton(onClick = {
                     val text = listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")
                     scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("indicators", text))) }

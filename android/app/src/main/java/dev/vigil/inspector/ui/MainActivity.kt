@@ -50,6 +50,7 @@ import dev.vigil.inspector.ui.screens.AlertsScreen
 import dev.vigil.inspector.ui.screens.AppDetailScreen
 import dev.vigil.inspector.ui.screens.DnsScreen
 import dev.vigil.inspector.ui.screens.AppsScreen
+import dev.vigil.inspector.ui.screens.CaptureSettingsScreen
 import dev.vigil.inspector.ui.screens.DashboardScreen
 import dev.vigil.inspector.ui.screens.ExportScreen
 import dev.vigil.inspector.ui.screens.FeedsScreen
@@ -237,6 +238,7 @@ class MainActivity : ComponentActivity() {
                 composable("rules") { RulesScreen(vm, nav) }
                 composable("dns") { DnsScreen(vm, nav) }
                 composable("upstream") { UpstreamScreen(vm, nav) }
+                composable("capture") { CaptureSettingsScreen(vm, nav) }
                 composable("app/{pkg}", arguments = listOf(navArgument("pkg") { type = NavType.StringType })) {
                     AppDetailScreen(vm, nav, it.arguments?.getString("pkg").orEmpty())
                 }

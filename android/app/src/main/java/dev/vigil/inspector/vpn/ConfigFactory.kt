@@ -1,9 +1,12 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.data.CaptureSettings
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.BeaconConfig
+import dev.vigil.inspector.engine.CaptureConfig
+import dev.vigil.inspector.engine.CaptureStreamConfig
 import dev.vigil.inspector.engine.EngineConfig
 import dev.vigil.inspector.engine.FeedFileConfig
 import dev.vigil.inspector.engine.Socks5Config
@@ -22,6 +25,7 @@ object ConfigFactory {
         blockedUids: List<Int>,
         nat64Prefixes: List<String> = emptyList(),
         networkId: String = "",
+        wifiAddress: String? = null,
     ): EngineConfig {
         // DNS precedence when several settings apply:
         // 1. Encrypted DNS (mode dot/doh) answers the virtual resolver's lookups,
@@ -64,6 +68,38 @@ object ConfigFactory {
             // One worker uses 17-34% less CPU per packet than two; two only
             // pay off on links faster than a phone usually has.
             workerThreads = workerThreads(s),
+            capture = captureConfig(s.capture, wifiAddress),
+        )
+    }
+
+    /**
+     * The engine's `capture` section. The stream listens on the Wi-Fi
+     * address ([wifiAddress], the underlying network's IPv4 address when it
+     * is Wi-Fi or Ethernet; without one it does not listen), on every
+     * interface or on loopback only. Invalid allowlist entries and ports
+     * (the settings screen does not save them) are dropped, because the
+     * engine would reject the whole config.
+     */
+    fun captureConfig(c: CaptureSettings, wifiAddress: String?): CaptureConfig {
+        if (!c.enabled) return CaptureConfig()
+        val bind = when (c.streamBind) {
+            CaptureSettings.BIND_ALL -> "0.0.0.0"
+            CaptureSettings.BIND_LOOPBACK -> "127.0.0.1"
+            else -> wifiAddress?.takeIf { IpLiteral.isV4(it) }.orEmpty()
+        }
+        return CaptureConfig(
+            enabled = true,
+            bufferBytes = c.bufferMb.coerceIn(1, 128) * 1024L * 1024L,
+            stream = if (c.streamEnabled) {
+                CaptureStreamConfig(
+                    enabled = true,
+                    port = c.streamPort.takeIf { CaptureSettings.isValidPort(it) } ?: CaptureSettings.DEFAULT_STREAM_PORT,
+                    bind = bind,
+                    allow = c.streamAllow.map { it.trim() }.filter { CaptureSettings.isValidAllowEntry(it) }.distinct().take(32),
+                )
+            } else {
+                CaptureStreamConfig()
+            },
         )
     }
 

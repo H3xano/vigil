@@ -116,7 +116,59 @@ data class StatsEvent(
     @SerialName("encrypted_dns_last_error_ts") val encryptedDnsLastErrorTs: Long = 0,
     @SerialName("encrypted_dns_last_error") val encryptedDnsLastError: String? = null,
     val upstream: UpstreamStatus? = null,
+    /** Packet capture; null from engines before capture support. */
+    val capture: CaptureStats? = null,
 ) : EngineEvent
+
+/** `stats.capture` (see docs/EVENTS.md). */
+@Serializable
+data class CaptureStats(
+    val enabled: Boolean = false,
+    /** Recorded since capture was enabled. */
+    val packets: Long = 0,
+    val bytes: Long = 0,
+    /** Oldest packets overwritten to make room. */
+    val dropped: Long = 0,
+    @SerialName("buffered_packets") val bufferedPackets: Long = 0,
+    @SerialName("buffered_bytes") val bufferedBytes: Long = 0,
+    @SerialName("buffer_bytes") val bufferBytes: Long = 0,
+    /** PCAP-over-IP; null while off. */
+    val stream: CaptureStreamStats? = null,
+)
+
+@Serializable
+data class CaptureStreamStats(
+    /** `address:port` while listening. */
+    val listening: String? = null,
+    val clients: Long = 0,
+    val sent: Long = 0,
+    /** Packets a slow client did not get. */
+    val dropped: Long = 0,
+    /** Connections refused (allowlist, client limit). */
+    val rejected: Long = 0,
+    val error: String? = null,
+)
+
+/** Result of `nativeExportPcap`. */
+@Serializable
+data class PcapExportSummary(
+    val packets: Long = 0,
+    val bytes: Long = 0,
+    @SerialName("first_ts") val firstTs: Long? = null,
+    @SerialName("last_ts") val lastTs: Long? = null,
+    @SerialName("truncated_by_ring") val truncatedByRing: Boolean = false,
+)
+
+/** Filter of `nativeExportPcap` (all conditions AND-combined; empty/null = no condition). */
+@Serializable
+data class PcapFilter(
+    @SerialName("flow_ids") val flowIds: List<Long> = emptyList(),
+    val uids: List<Int> = emptyList(),
+    @SerialName("since_ms") val sinceMs: Long? = null,
+    @SerialName("until_ms") val untilMs: Long? = null,
+) {
+    fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
+}
 
 /** State of the upstream path (WireGuard tunnel or SOCKS5 proxy). */
 @Serializable

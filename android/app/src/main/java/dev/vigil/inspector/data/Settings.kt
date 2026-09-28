@@ -71,6 +71,8 @@ data class Settings(
     val export: ExportSettings = ExportSettings(),
     /** Route relayed traffic through a WireGuard peer or SOCKS5 proxy. */
     val upstream: UpstreamSettings = UpstreamSettings(),
+    /** Packet capture for PCAPng export and PCAP-over-IP (memory only). */
+    val capture: CaptureSettings = CaptureSettings(),
     val deviceId: String = "",
     val onboarded: Boolean = false,
 )

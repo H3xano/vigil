@@ -195,6 +195,17 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SettingRow("Notify on alerts", "Post a notification for medium and high severity alerts.", s.notifyAlerts,
                 onChecked = { v -> vm.updateSettings { it.copy(notifyAlerts = v) } })
 
+            SectionTitle("Packet capture")
+            SettingRow(
+                "Packet capture",
+                when {
+                    !s.capture.enabled -> "Off. Keep recent packets in memory to export them as PCAPng for Wireshark, or stream them live."
+                    s.capture.streamEnabled -> "Recording (${s.capture.bufferMb} MB) · streaming on port ${s.capture.streamPort}"
+                    else -> "Recording the most recent ${s.capture.bufferMb} MB of packets in memory"
+                },
+                onClick = { nav.navigate("capture") },
+            )
+
             SectionTitle("Enterprise")
             SettingRow(
                 "SIEM export",

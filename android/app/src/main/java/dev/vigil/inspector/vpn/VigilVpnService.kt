@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -295,6 +296,7 @@ class VigilVpnService : android.net.VpnService() {
             launch { applyConfigChanges(s) }
             launch { updateNotification(s) }
         }
+        ServiceState.engine.value = ActiveEngine(s.id, s.engine)
         ServiceState.status.value = VpnStatus.Running(s.id)
         Log.i(TAG, "session ${s.id} started (engine ${VigilNative.nativeVersion()})")
     }
@@ -390,6 +392,7 @@ class VigilVpnService : android.net.VpnService() {
      * frees the engine and closes the interface.
      */
     private suspend fun teardown(s: Session) = withContext(NonCancellable) {
+        if (ServiceState.engine.value?.session == s.id) ServiceState.engine.value = null
         s.side?.cancelAndJoin()
         val graceful = s.engine.shutdown()
         s.draining = true
@@ -524,7 +527,7 @@ class VigilVpnService : android.net.VpnService() {
     }
 
     private fun buildConfig(s: Settings, net: NetworkInfo): EngineConfig =
-        ConfigFactory.build(s, net.upstreamDns, app.apps.uidsFor(s.blockedPackages), net.nat64Prefixes, net.networkId)
+        ConfigFactory.build(s, net.upstreamDns, app.apps.uidsFor(s.blockedPackages), net.nat64Prefixes, net.networkId, net.wifiAddress)
 
     /**
      * Pushes engine-relevant setting, network and package changes into the
@@ -593,9 +596,23 @@ class VigilVpnService : android.net.VpnService() {
             privateDnsActive = props?.isPrivateDnsActive == true,
             nat64Prefixes = nat64,
             networkId = network?.networkHandle?.toString().orEmpty(),
+            wifiAddress = wifiAddress(network, props),
         )
         ServiceState.network.value = info
         return info
+    }
+
+    /**
+     * The IPv4 address of [network] if it is Wi-Fi or Ethernet: where the
+     * PCAP-over-IP server listens by default (never on cellular).
+     */
+    private fun wifiAddress(network: Network?, props: LinkProperties?): String? {
+        val caps = network?.let { connectivity.getNetworkCapabilities(it) } ?: return null
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return null
+        return props?.linkAddresses.orEmpty()
+            .map { it.address }
+            .firstOrNull { it is java.net.Inet4Address && !it.isLoopbackAddress }
+            ?.hostAddress
     }
 
     private fun registerNetworkCallback() {
