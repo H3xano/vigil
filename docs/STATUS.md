@@ -74,12 +74,12 @@ backlog item 1 is still to do.
 | Rust engine (`core/vigil-core`) | done | 181 unit tests (1 ignored: `wg_bench`), 209 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / apprules / capture / edns / socks5 / wireguard) |
 | JNI layer (`core/vigil-jni`) | done | 38 checks from a real JVM (`scripts/jni-smoke.sh`) |
 | Android app (`android/`) | done | 212 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
-| Release APK (R8-minified) | builds, runs | reproducible at v0.4.0 (two clean builds identical; not yet re-checked for the unreleased work); the unreleased `main` built as a signed R8 release and installed over the published v0.4.0 on Android 16: schema 4 kept, rows kept, traffic flows, feed preload works, every screen opens, no JNI/serialization errors or crashes in logcat |
+| Release APK (R8-minified) | builds, runs | reproducible (signed and unsigned builds from two clean clones in different paths, identical apart from signatures; no build paths in `libvigil.so`); installed over the published v0.4.0 on Android 16: schema 4 and rows kept, traffic flows, every screen opens, no JNI/serialization errors or crashes in logcat |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.5.0 | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, HEALTH_CHECK, this file; all brought up to date after the post-0.4.0 work | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
-| Release | [v0.4.0](https://github.com/H3xano/vigil/releases/tag/v0.4.0) pre-release, **release-signed** APK (3 ABIs); v0.1.0 was debug-signed | checksum verified after upload; R8 build smoke-tested on the emulator |
+| Release | [v0.5.0](https://github.com/H3xano/vigil/releases/tag/v0.5.0) pre-release, **release-signed** APK (3 ABIs, 13.5 MB), certificate `dc7a34da…8db3bc`; v0.1.0 was debug-signed | checksum verified after an anonymous download |
 
 Measured numbers (see the README "Performance" section):
 
