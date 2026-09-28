@@ -226,7 +226,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         val now = System.currentTimeMillis()
         val previous = TaxiiState.read(stateFor(feed.id))?.takeIf { fileFor(feed.id).exists() }
         val incremental = previous != null && feed.taxiiAddedAfter != null && now - previous.fullSyncAt <= TAXII_FULL_SYNC_MS
-        val state = if (incremental) previous!! else TaxiiState(fullSyncAt = now)
+        val state = if (incremental) previous else TaxiiState(fullSyncAt = now)
         // Cancellation disconnects the current request (see taxiiTransport) and is checked between pages.
         val poll = TaxiiClient(taxiiTransport(feed)).poll(feed.url, collection, if (incremental) feed.taxiiAddedAfter else null) { page ->
             ensureActive()

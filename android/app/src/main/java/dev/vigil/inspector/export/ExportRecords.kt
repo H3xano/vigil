@@ -177,7 +177,6 @@ object WireFormats {
         is JsonObject -> JsonObject(e.mapValues { truncateStrings(it.value, cap) })
         is JsonArray -> JsonArray(e.map { truncateStrings(it, cap) })
         is JsonPrimitive -> if (e.isString && e.content.length > cap) JsonPrimitive(e.content.take(cap) + "…") else e
-        else -> e
     }
 
     private fun markTruncated(r: JsonObject): JsonObject {

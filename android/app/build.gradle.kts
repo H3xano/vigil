@@ -2,7 +2,6 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
@@ -68,9 +67,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -95,7 +91,7 @@ ksp {
 
 // Builds the Rust engine (core/vigil-jni) into src/main/jniLibs with cargo-ndk.
 // Pass -Pvigil.skipCargo=true to use prebuilt libraries.
-val cargoBuild by tasks.registering(Exec::class) {
+val cargoBuild = tasks.register<Exec>("cargoBuild") {
     group = "build"
     description = "Cross-compiles libvigil.so for ${rustAbis.joinToString()}"
     onlyIf { findProperty("vigil.skipCargo") != "true" }
@@ -107,13 +103,14 @@ val cargoBuild by tasks.registering(Exec::class) {
     outputs.dir(jniLibsDir)
     val cargo = listOf(System.getenv("CARGO_HOME")?.let { "$it/bin/cargo" }, "${System.getProperty("user.home")}/.cargo/bin/cargo")
         .firstOrNull { it != null && file(it).exists() } ?: "cargo"
+    val ndkDir = androidComponents.sdkComponents.ndkDirectory
     val args = mutableListOf(cargo, "ndk", "--platform", "29", "-o", jniLibsDir.asFile.absolutePath)
     rustAbis.forEach { args += listOf("-t", it) }
     // --locked: build exactly the dependency versions in Cargo.lock.
     args += listOf("build", "--release", "--locked", "-p", "vigil-jni")
     commandLine(args)
     doFirst {
-        environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+        environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath)
         // Reproducible builds: remap the checkout and cargo-home paths that
         // panic locations embed, and drop the linker's build-id note. Flags
         // already set in CARGO_ENCODED_RUSTFLAGS are kept.
@@ -146,9 +143,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
 
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.room:room-runtime:2.8.5")
+    implementation("androidx.room:room-ktx:2.8.5")
+    ksp("androidx.room:room-compiler:2.8.5")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
