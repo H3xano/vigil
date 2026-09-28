@@ -154,7 +154,56 @@ apksigcopier compare --unsigned vigil-X.Y.Z.apk app-release-unsigned.apk
 `--no-build-cache` matters: `org.gradle.caching` is on, and a cache hit
 would make the second build trivially identical.
 
+## Release checklist
+
+Used for v0.2.0 to v0.4.0 (GitHub pre-releases, release-signed). Do the steps
+in order; run heavy builds and the emulator one at a time (memory, see
+Gotchas).
+
+1. Bump versions: `android/app/build.gradle.kts` (`versionCode` =
+   major×10000 + minor×100 + patch, `versionName`), `core/Cargo.toml`
+   workspace version, then `cargo metadata --offline` to refresh the three
+   vigil entries in `Cargo.lock` (check the lock diff touches only those),
+   and `packaging/fdroid/dev.vigil.inspector.yml` (versionName/Code, commit
+   tag, CurrentVersion/Code, APK name).
+2. Store changelog `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`
+   (≤ 500 characters); rename `## Unreleased` in CHANGELOG.md to
+   `## X.Y.Z (date): GitHub pre-release`; update STATUS.md (header, release
+   row, "New in" section).
+3. Gates: fmt, clippy, `cargo test --locked`, Gradle lint + unit tests.
+   Commit "Version X.Y.Z", push `main`, wait for CI to pass on that commit.
+4. Build from clean clones of that exact commit:
+   signed — clone to `/tmp/vigil-rel`, copy `android/local.properties` and
+   `~/.vigil-release/keystore.properties`, `./gradlew assembleRelease
+   --no-build-cache --no-daemon`; unsigned — clone to a different, deeper
+   path, `assembleRelease -Pvigil.unsignedRelease=true --no-build-cache`.
+   Compare every APK entry except the signature files (must be identical),
+   check `strings libvigil.so | grep -E '/tmp/|/home/'` is empty,
+   `apksigner verify --print-certs` shows `dc7a34da…8db3bc`, and
+   `aapt2 dump badging` shows the new version.
+5. On an emulator (vigil36): install the *previous published* release, start
+   inspection, make traffic, then `adb install -r` the new APK; check the
+   Room `user_version` migrated, row counts survived, traffic flows, every
+   screen opens, and no `UnsatisfiedLink`/`NoSuchMethod`/
+   `SerializationException`/crash in logcat (R8 build).
+6. Tag `git tag -a vX.Y.Z <commit> -m "vigil X.Y.Z"`, push the tag,
+   `gh release create vX.Y.Z --prerelease --title "vigil X.Y.Z" --notes-file …
+   vigil-X.Y.Z.apk vigil-X.Y.Z.apk.sha256` (asset names are what the F-Droid
+   recipe's `Binaries:` expects). Release notes: install/upgrade notes,
+   checksum command, certificate SHA-256, what's new, caveats.
+7. Download the assets anonymously and `sha256sum -c`. Delete the `/tmp`
+   build trees (they contain a copy of `keystore.properties`).
+
 ## Gotchas already paid for
+
+- **Don't `pkill -f <pattern>` from a Bash tool call** whose own command line
+  contains the pattern: it kills the calling shell (exit 144). Use
+  `./gradlew --stop`, or `pgrep -f '^exact command'`.
+- **Sub-agents in worktrees start from the *pushed* `main`**, not local
+  unpushed commits. Push (or tell them) before spawning, or expect to adapt
+  their branch to newer local work when merging.
+- **One emulator at a time**, and never alongside several Gradle/cargo
+  builds; `adb emu kill` when done.
 
 - **The emulator gets OOM-killed** (about 4 GB RSS) if Gradle/cargo builds run
   alongside it on a 14 GB host. Build first, or stop the emulator

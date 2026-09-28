@@ -6,21 +6,67 @@ and upload alerts, 2× less CPU, toolchain upgrade), GitHub pre-release.
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
 non-obvious decisions were made. [DEVELOPMENT.md](DEVELOPMENT.md) covers how
-to rebuild the toolchain and run the tests.
+to rebuild the toolchain, run the tests and cut a release.
+
+## Resume here (handoff of 2026-09-28)
+
+State: `main` = tag `v0.4.0` (`b160031`) plus this docs commit, pushed; CI
+green; v0.4.0 published as a GitHub pre-release. The working tree is clean
+and no worktrees or feature branches are left.
+
+**Waiting on the owner** (ask about these first; none can be done without them):
+
+1. **Back up the release signing key to Bitwarden.** The key exists only in
+   `~/.vigil-release/` (`vigil-release.jks` + `keystore.properties`) on the
+   owner's machine; losing it means users can never upgrade. The Bitwarden
+   CLI is installed at `~/.local/bin/bw` (v2026.9.0, logged out). The owner
+   runs, in their own terminal (never paste the master password in chat):
+   `~/.local/bin/bw login` then
+   `~/.local/bin/bw unlock --raw > ~/.vigil-release/.bw-session && chmod 600 ~/.vigil-release/.bw-session`
+   (`bw config server https://vault.bitwarden.eu` first if on the EU server).
+   Then the assistant creates a secure note "vigil — Android release signing
+   key" (hidden fields: store and key password; alias `vigil`; certificate
+   SHA-256; restore instructions), attaches the `.jks` (needs Premium/Families,
+   else base64 in the note), verifies by downloading it back and comparing
+   bytes and opening it with the password, then runs `bw lock` and deletes the
+   session file.
+2. **F-Droid:** open a merge request adding
+   `packaging/fdroid/dev.vigil.inspector.yml` to gitlab.com/fdroid/fdroiddata
+   as `metadata/dev.vigil.inspector.yml` (needs the owner's GitLab account).
+   The recipe points at v0.4.0 (versionCode 400). Offer to draft the MR text
+   and run `fdroid lint` on the recipe first.
+3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
+   attribution trailers), still reachable by SHA: the request text is in
+   `~/projects/vigil-github-purge-request.md` (outside the repo). After
+   GitHub confirms, check e.g. `https://github.com/H3xano/vigil/commit/547958f`
+   returns 404.
+4. **Physical-phone testing** (backlog 1), especially battery with
+   "Maximum throughput" off vs on, a real WireGuard provider `.conf`, and
+   Orbot. Record the phone model and Android version below.
+
+**Next development candidates** (owner has not chosen yet): the backlog below
+from item 3 on; the owner earlier deferred "the rest" of the competitor-gap
+list (MDM managed configuration + device id in events, PCAP export,
+conditional firewall rules, tracker-company labels).
+
+How recent work was done: features were built in parallel by sub-agents in
+git worktrees (one per area, with a pre-agreed JSON/JNI contract), merged by
+the main session, then an integration pass and the full test matrix
+(including both emulators). See CLAUDE.md for the practical rules.
 
 ## Where things stand
 
-vigil is **feature-complete for a 0.1 release and verified on an Android 15
-emulator**. The owner installed the v0.1.0 APK on their own phone
-(2026-09-27) and reports that it works. That was an informal check; the
-systematic device testing in backlog item 1 is still to do.
+vigil 0.4.0 is **feature-complete for its scope and verified on Android 15
+and Android 16 emulators** (all suites below). The owner installed v0.1.0 on
+their own phone (2026-09-27) and reports that it works; that was an informal
+check, and the systematic device testing in backlog item 1 is still to do.
 
 | Area | State | Verified by |
 |---|---|---|
-| Rust engine (`core/vigil-core`) | done | 113 unit tests, 156 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / edns / socks5 / wireguard) |
+| Rust engine (`core/vigil-core`) | done | 130 unit tests, 171 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / edns / socks5 / wireguard) |
 | JNI layer (`core/vigil-jni`) | done | 28 checks from a real JVM (`scripts/jni-smoke.sh`) |
-| Android app (`android/`) | done | 86 Kotlin unit tests, lint clean; on-device: 28 (`android-e2e.sh`), 21 lifecycle (`android-lifecycle.sh`), 12 DoH/SOCKS5 (`android-features.sh`) |
-| Release APK (R8-minified) | builds, runs | manual smoke test on the emulator (JNI survives R8) |
+| Android app (`android/`) | done | 117 Kotlin unit tests (1 skipped: live TAXII), lint clean incl. `GradleDependency`; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 21 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`) |
+| Release APK (R8-minified) | builds, runs | reproducible (two clean builds identical); smoke-tested on the emulator; upgrade from the previous release tested on Android 16 |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | both jobs pass: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, this file | |
@@ -29,12 +75,14 @@ systematic device testing in backlog item 1 is still to do.
 
 Measured numbers (see the README "Performance" section):
 
-- 1.28 Gbit/s through the engine on an x86_64 host, and no measurable
-  overhead on a 39 Mbit/s internet link.
-- About 12 s of CPU per GB relayed on the host.
-- Engine RSS is 3–4 MB without feeds. The 850 k-domain feed uses 21 MB and
-  parses in 0.44 s on the emulator.
-- `libvigil.so` is 1.4 MB (arm64) and the release APK is 6.8 MB (three ABIs).
+- 2.87 Gbit/s through the engine on an x86_64 host (2 workers), 5.6 s of
+  CPU per GB (was 12.1 at 0.3.0). The host's HPET clock inflates absolute
+  CPU; see DEVELOPMENT.md.
+- 5,000 short TCP connections in about 1 s (5,250 req/s).
+- Engine RSS is about 5 MB without feeds. The 850 k-domain feed uses 21 MB;
+  the ASN table about 10 MB.
+- `libvigil.so` is 3.16 MB (arm64; TLS/HTTP/2 for encrypted DNS ≈ 1.4 MB,
+  boringtun ≈ 0.3 MB) and the release APK is 12.4 MB (three ABIs).
 
 ## Review fixes (2026-09-27, after 0.1.0)
 
@@ -213,9 +261,9 @@ history.
     - Extend `ECH_PUBLIC_NAMES` in `proto/tls.rs` as providers deploy ECH.
     - Handle IP fragments (currently dropped and counted).
     - UI tests (Compose) and a dark-mode screenshot set.
-    - Room migrations: the schema is at version 2 (exported to
-      `android/app/schemas`); every entity change needs a migration and a
-      `MigrationTest` case.
+    - Room migrations: the schema is at version 4 (exported to
+      `android/app/schemas`); every entity change needs a hand-written
+      migration and a `MigrationTest` case.
     - Move UI strings to resources (localisation) and add a theme toggle /
       dynamic colour; both were left out of the review fixes.
     - Persist unsent SIEM alerts across process death (the retry queue is
