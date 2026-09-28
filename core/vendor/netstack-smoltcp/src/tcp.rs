@@ -196,7 +196,9 @@ impl TcpListenerRunner {
             let dst_addr = SocketAddr::new(dst_ip, dst_port);
 
             // TCP first handshake packet, create a new Connection
-            if packet.syn() && !packet.ack() {
+            // vigil patch: not for SYN|RST, which is invalid; it would
+            // replace the live socket of the 4-tuple (remove_stale_sockets).
+            if packet.syn() && !packet.ack() && !packet.rst() {
                 let mut socket = TcpSocket::new(
                     TcpSocketBuffer::new(vec![0u8; tcp_recv_buffer_size as usize]),
                     TcpSocketBuffer::new(vec![0u8; tcp_send_buffer_size as usize]),

@@ -785,6 +785,24 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
             let Some(t) = packet::parse_tcp(pkt, &ip) else {
                 return drop_it();
             };
+            if t.flags & packet::TCP_SYN != 0 && t.flags & packet::TCP_RST != 0 {
+                // Invalid. The gate would not see it (not an initial SYN),
+                // but the stack would take it for one and replace the live
+                // socket of that 4-tuple.
+                return drop_it();
+            }
+            if ip.dst.is_ipv6() && ip.l4_offset != packet::IPV6_HEADER_LEN {
+                // Extension headers (hop-by-hop, routing, destination
+                // options): smoltcp would parse them as the TCP header, so a
+                // gated SYN would hang after vigil connected upstream. Refuse
+                // new connections at once; drop anything else.
+                if t.is_initial_syn() {
+                    if let Some(rst) = packet::build_rst_for(&t) {
+                        shared.send_to_tun(rst);
+                    }
+                }
+                return drop_it();
+            }
             if !stack_accepts(&ip) {
                 // The netstack's own filter (its default IpFilters) drops
                 // these; it is bypassed now that packets skip its Sink.
@@ -1016,6 +1034,76 @@ mod tests {
         );
         assert_eq!(tun_retry_delay(&err(libc::EBADF), 0), None);
         assert_eq!(tun_retry_delay(&err(libc::EIO), 0), None);
+    }
+
+    /// Inserts an IPv6 hop-by-hop options header (PadN only).
+    fn with_hop_by_hop(pkt: &[u8]) -> Vec<u8> {
+        let mut out = pkt[..40].to_vec();
+        let next = out[6];
+        out[6] = 0;
+        let plen = u16::from_be_bytes([out[4], out[5]]) + 8;
+        out[4..6].copy_from_slice(&plen.to_be_bytes());
+        out.extend_from_slice(&[next, 0, 1, 4, 0, 0, 0, 0]);
+        out.extend_from_slice(&pkt[40..]);
+        out
+    }
+
+    #[tokio::test]
+    async fn dispatch_drops_syn_rst_and_ipv6_extension_headers() {
+        use packet::{TCP_RST, TCP_SYN};
+        let (shared, mut tun) = test_shared_with_tun(Config::default());
+        let (stack_tx, mut stack_rx) = mpsc::channel(16);
+        let gate = tcp::Gate::new(shared.clone(), stack_tx.clone());
+        let dropped = || shared.stats.dropped_packets.load(Relaxed);
+        let (src4, dns4) = ("10.111.222.1:40000", "10.111.222.2:53");
+        let tcp = |src: &str, dst: &str, flags| {
+            packet::build_tcp(src.parse().unwrap(), dst.parse().unwrap(), 1, 0, flags, &[]).unwrap()
+        };
+
+        // SYN|RST: neither gated nor passed to the stack.
+        dispatch(
+            &shared,
+            &gate,
+            &stack_tx,
+            &tcp(src4, dns4, TCP_SYN | TCP_RST),
+        );
+        assert_eq!(dropped(), 1);
+        assert!(shared.tcp_keys.lock().is_empty());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(stack_rx.try_recv().is_err());
+
+        // IPv6 SYN behind a hop-by-hop header: refused with a RST.
+        let (src6, dns6) = ("[fd76:6967:696c::1]:40001", "[fd76:6967:696c::2]:53");
+        let syn6 = with_hop_by_hop(&tcp(src6, dns6, TCP_SYN));
+        let ip = packet::parse_ip(&syn6).unwrap();
+        assert_eq!((ip.proto, ip.l4_offset), (packet::PROTO_TCP, 48));
+        dispatch(&shared, &gate, &stack_tx, &syn6);
+        assert_eq!(dropped(), 2);
+        assert!(shared.tcp_keys.lock().is_empty());
+        let rst = tun.try_recv().expect("RST to the app");
+        let rip = packet::parse_ip(&rst).unwrap();
+        let t = packet::parse_tcp(&rst, &rip).unwrap();
+        assert_eq!(t.dst, src6.parse().unwrap());
+        assert_ne!(t.flags & TCP_RST, 0);
+        // Other segments with extension headers are dropped silently.
+        let ack6 = with_hop_by_hop(&tcp(src6, dns6, packet::TCP_ACK));
+        dispatch(&shared, &gate, &stack_tx, &ack6);
+        assert_eq!(dropped(), 3);
+        assert!(tun.try_recv().is_err());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(stack_rx.try_recv().is_err());
+
+        // The same SYNs without the oddities are gated and admitted.
+        dispatch(&shared, &gate, &stack_tx, &tcp(src4, dns4, TCP_SYN));
+        dispatch(&shared, &gate, &stack_tx, &tcp(src6, dns6, TCP_SYN));
+        for _ in 0..2 {
+            let p = tokio::time::timeout(Duration::from_secs(2), stack_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(packet::parse_ip(&p).is_some());
+        }
+        assert_eq!(dropped(), 3);
     }
 
     /// A datagram socket pair stands in for the TUN device.
