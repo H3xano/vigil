@@ -132,7 +132,14 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                 Warning(
                     "Private DNS is set to $host",
                     "Android encrypts DNS lookups before vigil can see them, so domain names come only from TLS/QUIC " +
-                        "handshakes. Set Private DNS to Automatic or Off for full DNS inspection." +
+                        "handshakes. " +
+                        if (settings.encryptedDns.enabled) {
+                            "vigil already sends lookups encrypted (${settings.encryptedDns.summary()}), so you can set " +
+                                "Private DNS to Off or Automatic for full DNS inspection without losing privacy."
+                        } else {
+                            "Set Private DNS to Automatic or Off for full DNS inspection, and turn on Encrypted DNS in " +
+                                "vigil's settings to keep lookups private."
+                        } +
                         if (settings.blockEncryptedDns) " With “Block encrypted DNS” enabled, lookups will fail." else "",
                     "Open settings",
                 ) { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }

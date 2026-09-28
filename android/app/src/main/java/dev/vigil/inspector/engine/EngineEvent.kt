@@ -62,6 +62,8 @@ data class DnsEvent(
     @SerialName("latency_ms") val latencyMs: Long = 0,
     val server: String,
     val transport: String,
+    /** How vigil reached the resolver: "udp", "tcp", "dot" or "doh"; null if none was asked. */
+    val upstream: String? = null,
 ) : EngineEvent
 
 @Serializable
@@ -92,6 +94,13 @@ data class StatsEvent(
     @SerialName("dropped_packets") val droppedPackets: Long = 0,
     @SerialName("dropped_events") val droppedEvents: Long = 0,
     @SerialName("dns_cache_size") val dnsCacheSize: Long = 0,
+    /** Encrypted upstream DNS (all 0 while off). */
+    @SerialName("encrypted_dns_ok") val encryptedDnsOk: Long = 0,
+    @SerialName("encrypted_dns_failed") val encryptedDnsFailed: Long = 0,
+    @SerialName("encrypted_dns_fallback") val encryptedDnsFallback: Long = 0,
+    @SerialName("encrypted_dns_last_ok_ts") val encryptedDnsLastOkTs: Long = 0,
+    @SerialName("encrypted_dns_last_error_ts") val encryptedDnsLastErrorTs: Long = 0,
+    @SerialName("encrypted_dns_last_error") val encryptedDnsLastError: String? = null,
 ) : EngineEvent
 
 @Serializable

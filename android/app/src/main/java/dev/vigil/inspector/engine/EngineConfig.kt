@@ -22,6 +22,8 @@ data class EngineConfig(
     @SerialName("udp_idle_timeout_s") val udpIdleTimeoutS: Long = 60,
     @SerialName("stats_interval_ms") val statsIntervalMs: Long = 2_000,
     @SerialName("worker_threads") val workerThreads: Int = 2,
+    /** Upstream DNS over TLS/HTTPS for the virtual resolver's lookups. */
+    @SerialName("encrypted_dns") val encryptedDns: EncryptedDnsConfig = EncryptedDnsConfig(),
 ) {
     fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
 
@@ -34,6 +36,24 @@ data class EngineConfig(
         val FALLBACK_UPSTREAMS = listOf("1.1.1.1:53", "9.9.9.9:53")
     }
 }
+
+/** Mirror of the Rust `EncryptedDnsConfig` (see docs/EVENTS.md). */
+@Serializable
+data class EncryptedDnsConfig(
+    /** "off", "dot" or "doh". */
+    val mode: String = "off",
+    val servers: List<EncryptedDnsServer> = emptyList(),
+    @SerialName("fallback_plain") val fallbackPlain: Boolean = false,
+)
+
+/** DoH: [url]. DoT: [host] and [port]. [addrs] are the bootstrap addresses. */
+@Serializable
+data class EncryptedDnsServer(
+    val url: String? = null,
+    val host: String? = null,
+    val addrs: List<String> = emptyList(),
+    val port: Int? = null,
+)
 
 @Serializable
 data class BeaconConfig(

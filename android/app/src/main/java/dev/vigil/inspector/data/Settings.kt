@@ -37,6 +37,8 @@ data class Settings(
     /** "network" (resolvers of the underlying network) or "custom". */
     val upstreamMode: String = "network",
     val customUpstreams: List<String> = listOf("1.1.1.1", "9.9.9.9"),
+    /** DNS over TLS / HTTPS to the upstream resolver (off: plain DNS to the resolvers above). */
+    val encryptedDns: EncryptedDnsSettings = EncryptedDnsSettings(),
     val blockedPackages: Set<String> = emptySet(),
     val allowDomains: Set<String> = emptySet(),
     val denyDomains: Set<String> = emptySet(),

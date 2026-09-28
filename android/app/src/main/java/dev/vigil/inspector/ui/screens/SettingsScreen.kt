@@ -124,6 +124,15 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             if (s.upstreamMode == "custom") {
                 SettingRow("Custom resolvers", s.customUpstreams.joinToString(", "), onClick = { editUpstreams = true })
             }
+            SettingRow(
+                "Encrypted DNS",
+                if (s.encryptedDns.enabled) {
+                    s.encryptedDns.summary() + if (s.encryptedDns.fallbackPlain) " · falls back to plain DNS" else ""
+                } else {
+                    "Off: lookups go to the resolver above unencrypted. Use DNS over TLS or HTTPS instead."
+                },
+                onClick = { nav.navigate("dns") },
+            )
 
             SectionTitle("Detection")
             SettingRow(

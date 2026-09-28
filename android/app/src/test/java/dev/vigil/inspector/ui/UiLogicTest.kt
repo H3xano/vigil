@@ -1,5 +1,7 @@
 package dev.vigil.inspector.ui
 
+import dev.vigil.inspector.engine.StatsEvent
+import dev.vigil.inspector.ui.screens.encryptedDnsStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
@@ -13,7 +15,7 @@ import org.junit.Test
 class UiLogicTest {
     @Test
     fun routeWhitelist() {
-        for (r in listOf("dashboard", "activity", "apps", "alerts", "settings", "feeds", "export", "rules")) assertEquals(r, Routes.sanitize(r))
+        for (r in listOf("dashboard", "activity", "apps", "alerts", "settings", "feeds", "export", "rules", "dns")) assertEquals(r, Routes.sanitize(r))
         assertEquals("app/com.android.shell", Routes.sanitize("app/com.android.shell"))
         assertEquals("app/uid:1000", Routes.sanitize("app/uid:1000"))
         assertEquals("app/unknown", Routes.sanitize("app/unknown"))
@@ -70,5 +72,28 @@ class UiLogicTest {
         assertEquals("the final value is never lost", 9, out.last())
         assertEquals(listOf(0, 3, 6, 9), out)
         assertEquals(1320L, currentTime)
+    }
+
+    @Test
+    fun encryptedDnsStatusLine() {
+        val on = dev.vigil.inspector.data.EncryptedDnsSettings(mode = "doh")
+        val now = 100_000L
+        assertNull(encryptedDnsStatus(dev.vigil.inspector.data.EncryptedDnsSettings(), true, null, now))
+        assertEquals(false, encryptedDnsStatus(on, false, null, now)!!.second)
+        assertEquals("Waiting for the first lookup…", encryptedDnsStatus(on, true, StatsEvent(), now)!!.first)
+        val ok = encryptedDnsStatus(on, true, StatsEvent(encryptedDnsOk = 5, encryptedDnsLastOkTs = now - 10_000), now)!!
+        assertEquals("Working: last encrypted answer 10s ago · 5 answered encrypted, 0 failed", ok.first)
+        assertEquals(false, ok.second)
+        val bad = encryptedDnsStatus(
+            on, true,
+            StatsEvent(encryptedDnsOk = 5, encryptedDnsFailed = 2, encryptedDnsFallback = 2, encryptedDnsLastOkTs = now - 60_000,
+                encryptedDnsLastErrorTs = now - 2_000, encryptedDnsLastError = "dns.quad9.net (9.9.9.9:443): timed out"),
+            now,
+        )!!
+        assertEquals(true, bad.second)
+        assertEquals(
+            "Failing (last error now): dns.quad9.net (9.9.9.9:443): timed out · 5 answered encrypted, 2 failed (2 answered over plain DNS)",
+            bad.first,
+        )
     }
 }

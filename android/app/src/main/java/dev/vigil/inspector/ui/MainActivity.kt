@@ -46,6 +46,7 @@ import androidx.navigation.navArgument
 import dev.vigil.inspector.ui.screens.ActivityScreen
 import dev.vigil.inspector.ui.screens.AlertsScreen
 import dev.vigil.inspector.ui.screens.AppDetailScreen
+import dev.vigil.inspector.ui.screens.DnsScreen
 import dev.vigil.inspector.ui.screens.AppsScreen
 import dev.vigil.inspector.ui.screens.DashboardScreen
 import dev.vigil.inspector.ui.screens.ExportScreen
@@ -214,6 +215,7 @@ class MainActivity : ComponentActivity() {
                 composable("feeds") { FeedsScreen(vm, nav) }
                 composable("export") { ExportScreen(vm, nav) }
                 composable("rules") { RulesScreen(vm, nav) }
+                composable("dns") { DnsScreen(vm, nav) }
                 composable("app/{pkg}", arguments = listOf(navArgument("pkg") { type = NavType.StringType })) {
                     AppDetailScreen(vm, nav, it.arguments?.getString("pkg").orEmpty())
                 }

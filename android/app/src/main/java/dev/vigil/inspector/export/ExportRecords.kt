@@ -70,7 +70,7 @@ object ExportRecords {
             "kind" to "event", "category" to listOf("network"), "type" to listOf("protocol"), "action" to d.verdict,
             "reason" to d.reason, "dataset" to "vigil.dns", "duration" to d.latencyMs * 1_000_000,
         ),
-        "vigil" to obj("type" to "dns", "server" to d.server),
+        "vigil" to obj("type" to "dns", "server" to d.server, "upstream" to d.upstream),
         "app" to app(a),
         "network" to obj("transport" to d.transport, "protocol" to "dns"),
         "dns" to obj(
