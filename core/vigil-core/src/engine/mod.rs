@@ -32,7 +32,7 @@ use crate::packet::{self, PROTO_TCP, PROTO_UDP};
 use crate::platform::Platform;
 use crate::policy::{FeedCategory, LoadedFeed, Policy};
 use crate::tun::TunDevice;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -533,7 +533,9 @@ async fn run(
         .enable_icmp(false)
         .mtu(cfg.mtu as usize)
         .stack_buffer_size(STACK_QUEUE)
-        .tcp_buffer_size(STACK_QUEUE)
+        // The only queue between the TUN reader and smoltcp (there used to
+        // be two of STACK_QUEUE each).
+        .tcp_buffer_size(2 * STACK_QUEUE)
         .tcp_recv_buffer_size(TCP_WINDOW)
         .tcp_send_buffer_size(TCP_WINDOW)
         .build()?;
@@ -545,41 +547,36 @@ async fn run(
             }
         });
     }
-    let (mut stack_sink, mut stack_stream) = stack.split();
+    // Packets for the TCP stack go straight into its input queue, and the
+    // TUN writer drains the stack's output itself: no forwarding tasks.
+    let stack_in = stack
+        .tcp_sender()
+        .ok_or_else(|| io::Error::other("tcp stack input missing"))?;
+    let mut stack_out = stack;
 
-    // Packets destined for the TCP stack.
-    let (stack_in_tx, mut stack_in_rx) = mpsc::channel::<Vec<u8>>(STACK_QUEUE);
-    tokio::spawn(async move {
-        while let Some(p) = stack_in_rx.recv().await {
-            if let Err(e) = stack_sink.send(p).await {
-                log::warn!("stack sink: {e}");
-                if e.kind() == io::ErrorKind::BrokenPipe {
-                    break;
-                }
-            }
-        }
-    });
-
-    // Packets produced by the TCP stack.
-    let s = shared.clone();
-    tokio::spawn(async move {
-        while let Some(p) = stack_stream.next().await {
-            match p {
-                Ok(p) => {
-                    if s.tun_tx.send(p).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => log::warn!("stack stream: {e}"),
-            }
-        }
-    });
-
-    // TUN writer.
+    // TUN writer: packets from the TCP stack and from vigil (UDP, DNS, RSTs).
     let s = shared.clone();
     let writer_tun = tun.clone();
     tokio::spawn(async move {
-        while let Some(p) = tun_rx.recv().await {
+        let mut stack_open = true;
+        loop {
+            let p = tokio::select! {
+                p = stack_out.next(), if stack_open => match p {
+                    Some(Ok(p)) => p,
+                    Some(Err(e)) => {
+                        log::warn!("stack stream: {e}");
+                        continue;
+                    }
+                    None => {
+                        stack_open = false;
+                        continue;
+                    }
+                },
+                p = tun_rx.recv() => match p {
+                    Some(p) => p,
+                    None => break,
+                },
+            };
             s.stats.packets_in.fetch_add(1, Relaxed);
             s.stats.bytes_in.fetch_add(p.len() as u64, Relaxed);
             if let Err(e) = writer_tun.send(&p).await {
@@ -591,7 +588,7 @@ async fn run(
     tokio::spawn(tcp::accept_loop(shared.clone(), listener));
     tokio::spawn(housekeeping(shared.clone()));
 
-    let gate = tcp::Gate::new(shared.clone(), stack_in_tx.clone());
+    let gate = tcp::Gate::new(shared.clone(), stack_in.clone());
     let mut buf = vec![0u8; 65_536];
     let mut transient = 0u32;
     loop {
@@ -614,7 +611,7 @@ async fn run(
         let pkt = &buf[..n];
         shared.stats.packets_out.fetch_add(1, Relaxed);
         shared.stats.bytes_out.fetch_add(n as u64, Relaxed);
-        dispatch(&shared, &gate, &stack_in_tx, pkt);
+        dispatch(&shared, &gate, &stack_in, pkt);
     }
 }
 
@@ -664,6 +661,11 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
             let Some(t) = packet::parse_tcp(pkt, &ip) else {
                 return drop_it();
             };
+            if !stack_accepts(&ip) {
+                // The netstack's own filter (its default IpFilters) drops
+                // these; it is bypassed now that packets skip its Sink.
+                return;
+            }
             if t.is_initial_syn() {
                 gate.on_syn(pkt[..ip.end].to_vec(), t);
             } else if stack_in.try_send(pkt[..ip.end].to_vec()).is_err() {
@@ -678,6 +680,17 @@ fn dispatch(shared: &Arc<Shared>, gate: &tcp::Gate, stack_in: &mpsc::Sender<Vec<
         }
         _ => drop_it(),
     }
+}
+
+/// Whether the TCP stack takes packets between these addresses (no
+/// broadcast, multicast or unspecified address; netstack-smoltcp's
+/// `IpFilters::with_non_broadcast`).
+fn stack_accepts(ip: &packet::IpInfo) -> bool {
+    let ok = |a: &std::net::IpAddr| match a {
+        std::net::IpAddr::V4(a) => !(a.is_broadcast() || a.is_multicast() || a.is_unspecified()),
+        std::net::IpAddr::V6(a) => !(a.is_multicast() || a.is_unspecified()),
+    };
+    ok(&ip.src) && ok(&ip.dst)
 }
 
 async fn housekeeping(shared: Arc<Shared>) {

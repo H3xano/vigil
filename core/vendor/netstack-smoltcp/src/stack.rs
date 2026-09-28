@@ -204,6 +204,14 @@ pub struct Stack {
 }
 
 impl Stack {
+    // vigil patch.
+    /// A sender straight into the TCP stack's input queue, bypassing this
+    /// `Sink` (and its IP filters and one-item buffer), so callers can
+    /// `try_send` from any task without a forwarding task in between.
+    pub fn tcp_sender(&self) -> Option<tokio::sync::mpsc::Sender<AnyIpPktFrame>> {
+        self.tcp_tx.as_ref().and_then(|tx| tx.get_ref().cloned())
+    }
+
     fn poll_send(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         let (item, proto) = match self.sink_buf.take() {
             Some(val) => val,
