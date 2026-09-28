@@ -65,7 +65,7 @@ object ExportRecords {
                 "as" to f.asn?.let { obj("number" to it.number, "organization" to it.name.takeIf(String::isNotEmpty)?.let { n -> obj("name" to n) }) },
             ),
             "tls" to if (f.tlsVersion != null || f.ja4 != null) {
-                obj("version" to f.tlsVersion, "next_protocol" to f.alpn, "client" to obj("ja4" to f.ja4, "server_name" to f.domain.takeIf { f.domainSource == "sni" || f.domainSource == "quic" }), "ech" to f.ech)
+                obj("version" to tlsVersionNumber(f.tlsVersion), "version_protocol" to tlsVersionProtocol(f.tlsVersion), "next_protocol" to f.alpn, "client" to obj("ja4" to f.ja4, "server_name" to f.domain.takeIf { f.domainSource == "sni" || f.domainSource == "quic" }), "ech" to f.ech)
             } else null,
             "http" to f.httpMethod?.let { obj("request" to obj("method" to it)) },
         )
@@ -87,16 +87,94 @@ object ExportRecords {
         ),
     )
 
-    fun alert(e: AlertEvent, a: AppInfo) = obj(
-        "@timestamp" to iso(e.ts),
-        "event" to obj(
-            "kind" to "alert", "category" to listOf(if (e.kind.startsWith("threat")) "intrusion_detection" else "network"),
-            "type" to listOf("indicator"), "action" to e.kind, "severity" to severityNumber(e.severity), "dataset" to "vigil.alert",
-        ),
-        "message" to e.message,
-        "vigil" to obj("type" to "alert", "kind" to e.kind, "severity" to e.severity, "target" to e.target, "detail" to e.detail),
-        "app" to app(a),
-    )
+    /** ECS `tls.version`: the number only ("TLS1.3" becomes "1.3"). */
+    fun tlsVersionNumber(v: String?): String? {
+        if (v == null || v == "unknown") return null
+        return v.removePrefix("TLSv").removePrefix("TLS").removePrefix("SSLv").removePrefix("SSL").trim().ifEmpty { null }
+    }
+
+    /** ECS `tls.version_protocol`: "tls" or "ssl". */
+    fun tlsVersionProtocol(v: String?): String? = when {
+        tlsVersionNumber(v) == null -> null
+        v!!.startsWith("SSL") -> "ssl"
+        else -> "tls"
+    }
+
+    /** Alert kinds that report a connection or lookup vigil blocked (threat feeds always block). */
+    private fun alertBlocked(e: AlertEvent): Boolean = when (e.kind) {
+        "threat_domain", "threat_ip" -> true
+        "threat_ja4" -> ((e.detail as? JsonObject)?.get("blocked") as? JsonPrimitive)?.content == "true"
+        else -> false
+    }
+
+    /**
+     * ECS categorisation: every alert is an intrusion_detection finding
+     * about network activity. `event.type` is `denied` when vigil blocked
+     * the connection or lookup, else `info` (both valid for the two
+     * categories; `indicator` belongs to threat-intel documents only).
+     */
+    fun alert(e: AlertEvent, a: AppInfo): JsonObject {
+        val target = alertDestination(e)
+        return obj(
+            "@timestamp" to iso(e.ts),
+            "event" to obj(
+                "kind" to "alert", "category" to listOf("intrusion_detection", "network"),
+                "type" to listOf(if (alertBlocked(e)) "denied" else "info"), "action" to e.kind,
+                "severity" to severityNumber(e.severity), "dataset" to "vigil.alert",
+            ),
+            "message" to e.message,
+            "rule" to obj("name" to e.kind),
+            "vigil" to obj("type" to "alert", "kind" to e.kind, "severity" to e.severity, "target" to e.target, "detail" to e.detail),
+            "app" to app(a),
+            "destination" to target?.let { obj("ip" to it.ip, "port" to it.port, "domain" to it.domain) },
+        )
+    }
+
+    data class AlertTarget(val domain: String?, val ip: String?, val port: Int?)
+
+    private val IPV4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+    private val DOMAIN = Regex("""^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z][a-z0-9-]{0,62}$""", RegexOption.IGNORE_CASE)
+
+    fun isIpLiteral(s: String): Boolean = IPV4.matches(s) || (s.contains(':') && s.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' })
+
+    fun isDomainName(s: String): Boolean = !IPV4.matches(s) && DOMAIN.matches(s)
+
+    /** Splits "ip:port" / "[v6]:port" / a bare address. */
+    private fun addressPort(s: String): Pair<String, Int?> {
+        if (s.startsWith('[')) {
+            val close = s.indexOf(']')
+            if (close > 0) return s.substring(1, close) to s.substring(close + 1).removePrefix(":").toIntOrNull()
+        }
+        if (s.count { it == ':' } == 1) return hostPort(s)
+        return s to null
+    }
+
+    /**
+     * The destination an alert is about, from its detail (`dst`, `dst_ip`,
+     * `domain`, `destination`, `qname`) or its target when that is a
+     * domain or an address (not an AS number or a JA4 fingerprint).
+     */
+    fun alertDestination(e: AlertEvent): AlertTarget? = alertDestination(e.kind, e.target, e.detail)
+
+    fun alertDestination(kind: String, target: String, detail: JsonElement?): AlertTarget? {
+        val d = detail as? JsonObject
+        fun str(k: String) = (d?.get(k) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        var ip: String? = null
+        var port: Int? = null
+        var domain: String? = null
+        str("dst")?.let { addressPort(it) }?.let { (h, p) -> if (isIpLiteral(h)) { ip = h; port = p } }
+        if (ip == null) str("dst_ip")?.takeIf(::isIpLiteral)?.let { ip = it }
+        (str("domain") ?: str("qname"))?.takeIf(::isDomainName)?.let { domain = it }
+        str("destination")?.let { v -> if (isIpLiteral(v)) { if (ip == null) ip = v } else if (domain == null && isDomainName(v)) domain = v }
+        val t = target
+        when {
+            kind == "threat_ja4" || kind == "new_asn" -> {}
+            isIpLiteral(t) -> if (ip == null) ip = t
+            isDomainName(t) -> if (domain == null) domain = t
+        }
+        if (ip == null && domain == null) return null
+        return AlertTarget(domain?.lowercase(), ip, port)
+    }
 
     /** ECS event.severity (0-100) from vigil's severity names. */
     fun severityNumber(s: String) = when (s) {
@@ -107,13 +185,19 @@ object ExportRecords {
     }
 
     /** Adds device metadata; done at send time so records stay small in memory. */
-    fun withDevice(record: JsonObject, deviceId: String, model: String, sdk: Int, appVersion: String): JsonObject =
-        JsonObject(
+    fun withDevice(record: JsonObject, deviceId: String, model: String, osRelease: String, apiLevel: Int, appVersion: String): JsonObject {
+        val vigil = record["vigil"] as? JsonObject ?: JsonObject(emptyMap())
+        return JsonObject(
             record + mapOf(
-                "host" to obj("id" to deviceId, "type" to "mobile", "os" to obj("family" to "android", "version" to sdk.toString()), "hostname" to model),
+                "host" to obj(
+                    "id" to deviceId, "type" to "mobile", "hostname" to model,
+                    "os" to obj("type" to "android", "family" to "android", "name" to "Android", "version" to osRelease),
+                ),
                 "observer" to obj("vendor" to "vigil", "product" to "vigil", "version" to appVersion),
+                "vigil" to JsonObject(vigil + ("android" to obj("api_level" to apiLevel))),
             ),
         )
+    }
 
     /**
      * A deterministic record id: a hash of the device install id and the
@@ -154,6 +238,12 @@ object WireFormats {
 
     /** RFC 5424 allows at most six fractional digits: truncate to microseconds. */
     fun syslogTimestamp(instant: Instant): String = instant.truncatedTo(ChronoUnit.MICROS).toString()
+
+    /** The syslog header time of [record]: its `@timestamp`, or [now] if it has none. */
+    fun recordSyslogTimestamp(record: JsonObject, now: Instant = Instant.now()): String {
+        val ts = (record["@timestamp"] as? JsonPrimitive)?.content?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        return syslogTimestamp(ts ?: now)
+    }
 
     /** Size cap for one UDP syslog datagram (rsyslog's default maximum message size). */
     const val UDP_MAX_BYTES = 8 * 1024

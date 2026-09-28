@@ -18,8 +18,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,6 +31,7 @@ import dev.vigil.inspector.data.ExportSettings
 import dev.vigil.inspector.export.WireFormats
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatRelative
@@ -43,7 +42,7 @@ import kotlinx.coroutines.launch
 private fun defaultPort(transport: String) = if (transport == "tls") 6514 else 514
 
 /** Connection settings are problems-free enough to save. */
-private fun validationError(d: ExportSettings, portText: String): String? = when {
+internal fun validationError(d: ExportSettings, portText: String = d.port.toString()): String? = when {
     d.mode == "syslog" && d.host.isBlank() -> "Enter the collector's host name or address."
     d.mode == "syslog" && portText.toIntOrNull()?.takeIf { it in 1..65535 } == null -> "The port must be between 1 and 65535."
     d.mode == "http" && !(d.url.startsWith("https://") || d.url.startsWith("http://")) -> "The URL must start with https:// or http://."
@@ -57,12 +56,15 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
     val saved = settings.export
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var testResult by remember { mutableStateOf<String?>(null) }
-
     // Connection fields are edited locally and applied with Save, so the
-    // exporter does not reconnect to every half-typed host name.
-    var draft by remember { mutableStateOf(saved) }
-    var portText by remember { mutableStateOf(saved.port.toString()) }
+    // exporter does not reconnect to every half-typed host name. The draft
+    // survives rotation but is never written to the saved-instance Bundle
+    // (it may hold an Authorization token).
+    var testResult by rememberRetained("export.test") { null as String? }
+    var draft by rememberRetained("export.draft") { saved }
+    var portText by rememberRetained("export.port") { saved.port.toString() }
+    // Streaming needs a saved destination that passes validation.
+    val savedValid = validationError(saved) == null
     val candidate = draft.copy(enabled = saved.enabled, level = saved.level, port = portText.toIntOrNull() ?: draft.port)
     val dirty = candidate != saved
     val error = validationError(candidate, portText)
@@ -77,8 +79,14 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             SettingRow(
                 "Stream events",
-                "Send structured events (ECS-style JSON) to your collector. No traffic data leaves the device while this is off.",
+                if (savedValid || saved.enabled) {
+                    "Send structured events (ECS-style JSON) to your collector. No traffic data leaves the device while this is off."
+                } else {
+                    "Set up and save a destination below first."
+                },
                 saved.enabled, onChecked = { v -> updateSaved { it.copy(enabled = v) } },
+                // Turning off is always possible.
+                enabled = savedValid || saved.enabled,
             )
             Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Fields follow the Elastic Common Schema (ECS).", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
@@ -127,7 +135,7 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
                     draft.clientCertAlias ?: "None: tap to choose a certificate installed on this device",
                     onClick = {
                         val activity = context as? Activity ?: return@SettingRow
-                        KeyChain.choosePrivateKeyAlias(activity, { alias -> if (alias != null) draft = draft.copy(clientCertAlias = alias) }, null, null, null, null)
+                        KeyChain.choosePrivateKeyAlias(activity, { alias -> if (alias != null) activity.runOnUiThread { draft = draft.copy(clientCertAlias = alias) } }, null, null, null, null)
                     },
                 )
                 if (draft.clientCertAlias != null) {
@@ -151,16 +159,27 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
             SectionTitle("Status")
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "Sent ${status.sent} · dropped ${status.dropped}" + (if (status.rejected > 0) " · rejected ${status.rejected}" else "") +
+                    "Sent ${status.sent} · queued ${status.queued} · dropped ${status.dropped}" +
+                        (if (status.rejected > 0) " · rejected ${status.rejected}" else "") +
                         (status.lastSuccess?.let { " · last success ${formatRelative(it)}" } ?: ""),
                 )
+                status.configProblem?.let {
+                    Text(
+                        "The collector refuses events because of its configuration: $it Events stay queued and are retried once a minute.",
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 if (status.retrying) Text("Undelivered events are queued and retried.", style = MaterialTheme.typography.bodySmall)
                 status.lastError?.let { Text("Last error: $it", color = VigilColors.Block) }
                 Button(enabled = error == null, onClick = {
                     testResult = "Sending…"
                     scope.launch {
                         val r = vm.sendExportTest(candidate)
-                        testResult = r.fold({ "Test event delivered" }, { "Failed: ${it.message ?: it.javaClass.simpleName}" })
+                        val udp = candidate.mode == "syslog" && candidate.transport == "udp"
+                        testResult = r.fold(
+                            { if (udp) "Test event sent (UDP cannot confirm delivery)" else "Test event delivered" },
+                            { "Failed: ${it.message ?: it.javaClass.simpleName}" },
+                        )
                     }
                 }, modifier = Modifier.padding(top = 8.dp)) { Text(if (dirty) "Send test event (unsaved settings)" else "Send test event") }
                 testResult?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }

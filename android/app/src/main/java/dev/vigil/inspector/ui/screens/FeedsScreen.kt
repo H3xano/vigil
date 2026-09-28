@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -30,14 +31,17 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -51,6 +55,7 @@ import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.Tag
@@ -65,8 +70,10 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
     val loaded by vm.loadedFeeds.collectAsStateWithLifecycle()
     val work by vm.feedWork.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
-    var adding by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf<FeedEntity?>(null) }
+    // Open dialogs survive rotation: the Add feed draft in memory (it may hold credentials), the delete target by id.
+    val adding = rememberRetained("feeds.add") { null as FeedDraft? }
+    var confirmDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    val confirmDelete = confirmDeleteId?.let { id -> feeds.firstOrNull { it.id == id } }
 
     // Report when an update the user can see (running or waiting) finishes.
     var wasBusy by remember { mutableStateOf(false) }
@@ -85,7 +92,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                 vm.refreshFeeds()
                 vm.showMessage("Updating threat feeds…")
             }, enabled = work != FeedWork.RUNNING) { Icon(Icons.Default.Refresh, "Update all") }
-            IconButton(onClick = { adding = true }) { Icon(Icons.Default.Add, "Add feed") }
+            IconButton(onClick = { adding.value = FeedDraft() }) { Icon(Icons.Default.Add, "Add feed") }
         }
         when (work) {
             FeedWork.RUNNING -> Progress("Downloading feeds…")
@@ -124,7 +131,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                     }
                 }
                 items(groups.getValue(category), key = { it.id }) { f ->
-                    FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDelete = f })
+                    FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDeleteId = f.id })
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
@@ -136,7 +143,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
                     }
                 }
                 items(taxii, key = { it.id }) { f ->
-                    FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDelete = f })
+                    FeedRow(f, active = f.id in loaded, onToggle = { vm.setFeedEnabled(f.id, it) }, onDelete = { confirmDeleteId = f.id })
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
@@ -145,21 +152,21 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
 
     confirmDelete?.let { f ->
         AlertDialog(
-            onDismissRequest = { confirmDelete = null },
+            onDismissRequest = { confirmDeleteId = null },
             title = { Text("Delete ${f.name}?") },
             text = { Text("The feed and its downloaded copy are removed. Its entries stop matching the next time inspection loads feeds.") },
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteFeed(f.id)
                     vm.showMessage("Deleted ${f.name}")
-                    confirmDelete = null
+                    confirmDeleteId = null
                 }) { Text("Delete") }
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text("Cancel") } },
         )
     }
 
-    if (adding) AddFeedDialog(vm, onDismiss = { adding = false })
+    if (adding.value != null) AddFeedDialog(vm, adding, onDismiss = { adding.value = null })
 }
 
 /** Explains JA4 matching and holds the block switch (alert-only by default). */
@@ -194,30 +201,39 @@ private fun Ja4Settings(block: Boolean, onBlock: (Boolean) -> Unit) {
     }
 }
 
-@Composable
-private fun AddFeedDialog(vm: MainViewModel, onDismiss: () -> Unit) {
-    var kind by remember { mutableStateOf(FeedKinds.LIST) }
-    var name by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("https://") }
-    var category by remember { mutableStateOf("malware") }
-    var auth by remember { mutableStateOf("") }
+/** The Add feed dialog's fields; kept across rotation in memory only (the credentials never go to the saved state). */
+private data class FeedDraft(
+    val kind: String = FeedKinds.LIST,
+    val name: String = "",
+    val url: String = "https://",
+    val category: String = "malware",
+    val auth: String = "",
     // TAXII
-    var authMode by remember { mutableStateOf("none") }
-    var user by remember { mutableStateOf("") }
-    var headerName by remember { mutableStateOf("Authorization") }
-    var collections by remember { mutableStateOf<List<TaxiiCollection>?>(null) }
-    var chosen by remember { mutableStateOf<TaxiiCollection?>(null) }
+    val authMode: String = "none",
+    val user: String = "",
+    val headerName: String = "Authorization",
+    val collections: List<TaxiiCollection>? = null,
+    val chosen: TaxiiCollection? = null,
+    val lookupError: String? = null,
+)
+
+@Composable
+private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, onDismiss: () -> Unit) {
+    val d = state.value ?: return
+    fun edit(t: (FeedDraft) -> FeedDraft) {
+        state.value = state.value?.let(t)
+    }
+    // A lookup in flight is not retained: after a rotation, look up again.
     var looking by remember { mutableStateOf(false) }
-    var lookupError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    val trimmedUrl = url.trim()
+    val trimmedUrl = d.url.trim()
     val urlOk = (trimmedUrl.startsWith("https://") || trimmedUrl.startsWith("http://")) && trimmedUrl.length > 10
     // TAXII credentials as (header name, value).
-    fun taxiiAuth(): Pair<String?, String?> = when (authMode) {
-        "basic" -> "Authorization" to if (user.isBlank() && auth.isBlank()) null else
-            "Basic " + java.util.Base64.getEncoder().encodeToString("$user:$auth".toByteArray())
-        "header" -> headerName.trim().ifEmpty { "Authorization" } to auth.takeIf { it.isNotBlank() }
+    fun taxiiAuth(): Pair<String?, String?> = when (d.authMode) {
+        "basic" -> "Authorization" to if (d.user.isBlank() && d.auth.isBlank()) null else
+            "Basic " + java.util.Base64.getEncoder().encodeToString("${d.user}:${d.auth}".toByteArray())
+        "header" -> d.headerName.trim().ifEmpty { "Authorization" } to d.auth.takeIf { it.isNotBlank() }
         else -> null to null
     }
 
@@ -228,32 +244,24 @@ private fun AddFeedDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Segmented(
                     listOf(FeedKinds.LIST to "Domains / IPs", FeedKinds.JA4 to "JA4", FeedKinds.TAXII to "TAXII"),
-                    kind, {
-                        kind = it
-                        collections = null
-                        chosen = null
-                        lookupError = null
-                    }, Modifier,
+                    d.kind, { k -> edit { it.copy(kind = k, collections = null, chosen = null, lookupError = null) } }, Modifier,
                 )
-                OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true)
+                OutlinedTextField(d.name, { v -> edit { it.copy(name = v) } }, label = { Text("Name") }, singleLine = true)
                 OutlinedTextField(
-                    url, {
-                        url = it
-                        collections = null
-                        chosen = null
-                    },
-                    label = { Text(if (kind == FeedKinds.TAXII) "Discovery or API root URL" else "URL") }, singleLine = true,
+                    d.url, { v -> edit { it.copy(url = v, collections = null, chosen = null) } },
+                    label = { Text(if (d.kind == FeedKinds.TAXII) "Discovery or API root URL" else "URL") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
-                when (kind) {
+                when (d.kind) {
                     FeedKinds.LIST -> {
-                        SecretField(auth, { auth = it }, "Authorization header (optional)")
-                        CleartextWarning(trimmedUrl, hasSecret = auth.isNotBlank(), isFeed = true)
-                        Segmented(listOf("malware" to "Malware", "c2" to "C2", "phishing" to "Phish"), category, { category = it }, Modifier)
-                        Segmented(listOf("tracking" to "Tracking", "ads" to "Ads", "custom" to "Other"), category, { category = it }, Modifier)
+                        SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Authorization header (optional)")
+                        CleartextWarning(trimmedUrl, hasSecret = d.auth.isNotBlank(), isFeed = true)
+                        Segmented(listOf("malware" to "Malware", "c2" to "C2", "phishing" to "Phish"), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
+                        Segmented(listOf("tracking" to "Tracking", "ads" to "Ads", "custom" to "Other"), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
                     }
                     FeedKinds.JA4 -> {
-                        SecretField(auth, { auth = it }, "Authorization header (optional)")
-                        CleartextWarning(trimmedUrl, hasSecret = auth.isNotBlank(), isFeed = true)
+                        SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Authorization header (optional)")
+                        CleartextWarning(trimmedUrl, hasSecret = d.auth.isNotBlank(), isFeed = true)
                         Hint(
                             "One JA4 fingerprint per line, optionally followed by a label, e.g.\n" +
                                 "t13d190900_9dc949149365_97f8aa674fd9  Sliver\n" +
@@ -261,41 +269,45 @@ private fun AddFeedDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         )
                     }
                     FeedKinds.TAXII -> {
-                        Segmented(listOf("none" to "No auth", "basic" to "Basic", "header" to "API key"), authMode, { authMode = it }, Modifier)
-                        when (authMode) {
+                        Segmented(listOf("none" to "No auth", "basic" to "Basic", "header" to "API key"), d.authMode, { v -> edit { it.copy(authMode = v) } }, Modifier)
+                        when (d.authMode) {
                             "basic" -> {
-                                OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true)
-                                SecretField(auth, { auth = it }, "Password")
+                                OutlinedTextField(d.user, { v -> edit { it.copy(user = v) } }, label = { Text("Username") }, singleLine = true)
+                                SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Password")
                             }
                             "header" -> {
-                                OutlinedTextField(headerName, { headerName = it }, label = { Text("Header name") }, singleLine = true)
-                                SecretField(auth, { auth = it }, "Header value", placeholder = "e.g. Bearer <token> or the MISP key")
+                                OutlinedTextField(d.headerName, { v -> edit { it.copy(headerName = v) } }, label = { Text("Header name") }, singleLine = true)
+                                SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Header value", placeholder = "e.g. Bearer <token> or the MISP key")
                             }
                         }
-                        CleartextWarning(trimmedUrl, hasSecret = authMode != "none", isFeed = true)
+                        CleartextWarning(trimmedUrl, hasSecret = d.authMode != "none", isFeed = true)
                         OutlinedButton(enabled = urlOk && !looking, onClick = {
                             looking = true
-                            lookupError = null
+                            edit { it.copy(lookupError = null) }
                             val (h, v) = taxiiAuth()
                             scope.launch {
                                 vm.taxiiCollections(trimmedUrl, h, v)
                                     .onSuccess { list ->
-                                        collections = list
-                                        chosen = list.singleOrNull { it.canRead }
-                                        if (list.isEmpty()) lookupError = "The server lists no collections."
+                                        edit {
+                                            it.copy(
+                                                collections = list,
+                                                chosen = list.singleOrNull { c -> c.canRead },
+                                                lookupError = if (list.isEmpty()) "The server lists no collections." else null,
+                                            )
+                                        }
                                     }
-                                    .onFailure { lookupError = it.message ?: it.javaClass.simpleName }
+                                    .onFailure { e -> edit { it.copy(lookupError = e.message ?: e.javaClass.simpleName) } }
                                 looking = false
                             }
                         }) { Text(if (looking) "Looking up…" else "Find collections") }
-                        lookupError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = VigilColors.Block) }
-                        collections?.forEach { c ->
+                        d.lookupError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = VigilColors.Block) }
+                        d.collections?.forEach { c ->
                             Row(
                                 Modifier.fillMaxWidth()
-                                    .selectable(selected = chosen == c, enabled = c.canRead, role = Role.RadioButton, onClick = { chosen = c }),
+                                    .selectable(selected = d.chosen == c, enabled = c.canRead, role = Role.RadioButton, onClick = { edit { it.copy(chosen = c) } }),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                RadioButton(selected = chosen == c, onClick = null, enabled = c.canRead)
+                                RadioButton(selected = d.chosen == c, onClick = null, enabled = c.canRead)
                                 Column(Modifier.padding(start = 8.dp)) {
                                     Text(c.title, style = MaterialTheme.typography.bodyMedium)
                                     Text(
@@ -305,9 +317,9 @@ private fun AddFeedDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                                 }
                             }
                         }
-                        if (chosen != null) {
+                        if (d.chosen != null) {
                             Text("Treat its domains and IPs as", style = MaterialTheme.typography.bodySmall)
-                            Segmented(listOf("malware" to "Malware", "c2" to "C2", "phishing" to "Phish"), category, { category = it }, Modifier)
+                            Segmented(listOf("malware" to "Malware", "c2" to "C2", "phishing" to "Phish"), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
                         }
                         Hint(
                             "Uses indicators for domains, IP addresses and ranges, URLs (their host) and JA4 fingerprints. " +
@@ -318,16 +330,16 @@ private fun AddFeedDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            val ready = name.isNotBlank() && urlOk && (kind != FeedKinds.TAXII || chosen != null)
+            val chosen = d.chosen
+            val ready = d.name.isNotBlank() && urlOk && (d.kind != FeedKinds.TAXII || chosen != null)
             TextButton(enabled = ready, onClick = {
-                when (kind) {
-                    FeedKinds.TAXII -> {
-                        val (h, v) = taxiiAuth()
-                        vm.addTaxii(name.trim(), chosen!!, category, h, v)
-                    }
-                    else -> vm.addFeed(name.trim(), trimmedUrl, category, auth, kind)
+                if (d.kind == FeedKinds.TAXII && chosen != null) {
+                    val (h, v) = taxiiAuth()
+                    vm.addTaxii(d.name.trim(), chosen, d.category, h, v)
+                } else {
+                    vm.addFeed(d.name.trim(), trimmedUrl, d.category, d.auth, d.kind)
                 }
-                vm.showMessage("Added ${name.trim()}; downloading…")
+                vm.showMessage("Added ${d.name.trim()}; downloading…")
                 onDismiss()
             }) { Text("Add") }
         },
@@ -400,7 +412,11 @@ private fun FeedRow(f: FeedEntity, active: Boolean, onToggle: (Boolean) -> Unit,
     }
 }
 
-/** A single-line field for tokens and Authorization headers, masked until shown. */
+/**
+ * A single-line field for tokens, passwords and Authorization headers,
+ * masked until shown. The password keyboard type and disabled autocorrect
+ * keep secrets out of keyboard suggestions and learned words.
+ */
 @Composable
 fun SecretField(value: String, onChange: (String) -> Unit, label: String, modifier: Modifier = Modifier, placeholder: String? = null) {
     var visible by remember { mutableStateOf(false) }
@@ -409,12 +425,16 @@ fun SecretField(value: String, onChange: (String) -> Unit, label: String, modifi
         label = { Text(label) },
         placeholder = placeholder?.let { { Text(it) } },
         singleLine = true,
+        keyboardOptions = SECRET_KEYBOARD,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         trailingIcon = {
             if (value.isNotEmpty()) TextButton(onClick = { visible = !visible }) { Text(if (visible) "Hide" else "Show") }
         },
     )
 }
+
+/** Keyboard for secrets: password type, no autocorrect or suggestions. */
+val SECRET_KEYBOARD = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false)
 
 /**
  * Warns about plain-http endpoints: credentials travel in clear text, and a

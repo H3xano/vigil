@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -30,6 +29,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.FlowEntity
+import dev.vigil.inspector.ui.BlockReasons
+import dev.vigil.inspector.ui.DomainNames
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.EmptyState
@@ -48,6 +49,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
     // null while loading; Lookup(null) once the query says the row does not exist.
     val lookup by remember(id) { vm.flow(id).map { Lookup(it) } }.collectAsStateWithLifecycle(initialValue = null)
     val settings by vm.settings.collectAsStateWithLifecycle()
+    val feeds by vm.feeds.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
@@ -125,23 +127,33 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
             val domain = f.domain
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (domain != null) {
-                    if (domain in settings.denyDomains) {
-                        OutlinedButton(onClick = { vm.removeRule(domain) }, Modifier.fillMaxWidth()) { Text("Remove block rule for $domain") }
-                    } else {
-                        Button(onClick = { vm.denyDomain(domain) }, Modifier.fillMaxWidth()) { Text("Block $domain") }
-                        if (f.domainSource == "dns") {
-                            Text(
-                                "This name is a hint from an earlier DNS answer; other sites may share ${f.dstIp}. " +
-                                    "Blocking it blocks lookups of $domain (and connections that name it), not this IP address.",
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                    BlockDomainButtons(domain, settings, vm)
+                    if (DomainNames.matchingRule(domain, settings.denyDomains) == null && f.domainSource == "dns") {
+                        Text(
+                            "This name is a hint from an earlier DNS answer; other sites may share ${f.dstIp}. " +
+                                "Blocking it blocks lookups of $domain (and connections that name it), not this IP address.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    if (f.isBlocked && domain !in settings.allowDomains) {
-                        OutlinedButton(onClick = { vm.allowDomain(domain) }, Modifier.fillMaxWidth()) { Text("Always allow $domain") }
+                    val allowRule = DomainNames.matchingRule(domain, settings.allowDomains)
+                    if (f.isBlocked && allowRule == null && f.reason != "app") {
+                        OutlinedButton(onClick = { vm.allowDomainWithUndo(domain) }, Modifier.fillMaxWidth()) { Text("Always allow $domain") }
                     }
+                    if (f.isBlocked) {
+                        Text(
+                            BlockReasons.explain(f.reason, feeds, label),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else if (f.pkg != "unknown" && f.pkg !in settings.blockedPackages) {
+                    // No name to block: vigil's rules match names, not single addresses.
+                    OutlinedButton(onClick = { vm.blockApp(f.pkg, label) }, Modifier.fillMaxWidth()) { Text("Block all network access of $label") }
+                    Text(
+                        "vigil blocks by name; this connection has none, and single IP addresses cannot be blocked.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                OutlinedButton(onClick = { nav.navigate("app/${f.pkg}") }, Modifier.fillMaxWidth()) { Text("Open $label") }
+                if (f.pkg != "unknown") OutlinedButton(onClick = { nav.openApp(f.pkg) }, Modifier.fillMaxWidth()) { Text("Open $label") }
                 OutlinedButton(onClick = {
                     val text = listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")
                     scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("indicators", text))) }

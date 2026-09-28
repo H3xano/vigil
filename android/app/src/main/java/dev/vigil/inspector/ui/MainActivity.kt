@@ -26,7 +26,9 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -102,6 +104,10 @@ class MainActivity : ComponentActivity() {
                             if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         },
                         onFinish = { vm.updateSettings { it.copy(onboarded = true) } },
+                        onStartInspecting = {
+                            vm.updateSettings { it.copy(onboarded = true) }
+                            startInspection()
+                        },
                     )
                     return@VigilTheme
                 }
@@ -173,8 +179,21 @@ class MainActivity : ComponentActivity() {
         val route = backStack?.destination?.route
         val unseen by vm.unseenAlerts.collectAsStateWithLifecycle()
         val snackbar = remember { SnackbarHostState() }
-        LaunchedEffect(Unit) {
-            vm.messages.collect { snackbar.showSnackbar(it) }
+        // Messages stay queued in the view model until shown, so a message
+        // raised during onboarding or a rotation is not lost. If the activity
+        // is recreated mid-display, the same message is shown again.
+        val pending by vm.messages.collectAsStateWithLifecycle()
+        val head = pending.firstOrNull()
+        LaunchedEffect(head?.id) {
+            if (head == null) return@LaunchedEffect
+            val result = snackbar.showSnackbar(
+                head.text,
+                actionLabel = head.actionLabel,
+                withDismissAction = head.actionLabel != null,
+                duration = if (head.actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed) head.action?.invoke()
+            vm.messageShown(head.id)
         }
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },

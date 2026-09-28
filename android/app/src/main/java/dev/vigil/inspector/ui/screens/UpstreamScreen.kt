@@ -33,10 +33,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -46,6 +48,7 @@ import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.data.WgQuick
 import dev.vigil.inspector.engine.UpstreamStatus
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.theme.VigilColors
@@ -63,13 +66,14 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
     val context = LocalContext.current
 
     // Edited locally and applied with Save, so half-typed proxy settings
-    // never reach the engine.
-    var draft by remember { mutableStateOf(saved) }
-    var portText by remember { mutableStateOf(saved.socks5.port.toString()) }
-    var warnings by remember { mutableStateOf<List<String>>(emptyList()) }
-    var importError by remember { mutableStateOf<String?>(null) }
-    var pasting by remember { mutableStateOf(false) }
-    var pickingApp by remember { mutableStateOf(false) }
+    // never reach the engine. The draft (with the WireGuard private key or
+    // proxy password) survives rotation in memory, never in the saved state.
+    var draft by rememberRetained("upstream.draft") { saved }
+    var portText by rememberRetained("upstream.port") { saved.socks5.port.toString() }
+    var warnings by rememberRetained("upstream.warnings") { emptyList<String>() }
+    var importError by rememberRetained("upstream.importError") { null as String? }
+    var pasting by rememberSaveable { mutableStateOf(false) }
+    var pickingApp by rememberSaveable { mutableStateOf(false) }
     val candidate = draft.copy(socks5 = draft.socks5.copy(port = portText.toIntOrNull() ?: -1))
     val error = candidate.validationError()
     val dirty = candidate != saved
@@ -219,19 +223,26 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
     }
 
     if (pasting) {
-        var text by remember { mutableStateOf("") }
+        // The pasted configuration contains the private key: retained in memory only.
+        var text by rememberRetained("upstream.paste") { "" }
+        val closePaste = {
+            pasting = false
+            text = ""
+        }
         AlertDialog(
-            onDismissRequest = { pasting = false },
+            onDismissRequest = closePaste,
             title = { Text("WireGuard configuration") },
             text = {
                 OutlinedTextField(
                     text, { text = it }, Modifier.fillMaxWidth().heightIn(min = 160.dp),
                     placeholder = { Text("[Interface]\nPrivateKey = …\nAddress = …\n\n[Peer]\nPublicKey = …\nEndpoint = …") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    // Holds a private key: keep it out of keyboard suggestions and learning.
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None),
                 )
             },
-            confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { import(text, "pasted"); pasting = false }) { Text("Import") } },
-            dismissButton = { TextButton(onClick = { pasting = false }) { Text("Cancel") } },
+            confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { import(text, "pasted"); closePaste() }) { Text("Import") } },
+            dismissButton = { TextButton(onClick = closePaste) { Text("Cancel") } },
         )
     }
     if (pickingApp) {

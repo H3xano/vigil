@@ -236,8 +236,22 @@ interface FlowDao {
     )
     fun recent(query: String, blockedOnly: Boolean, limit: Int = 500, path: String = PathFilter.ALL): Flow<List<FlowEntity>>
 
+    /** [recent] restricted to one app (the Activity app filter). */
+    @Query(
+        """SELECT * FROM flows WHERE pkg = :pkg AND (:query = '' OR domain LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR dstIp LIKE $LIKE_ARG || '%' ESCAPE '\'
+             OR asnName LIKE '%' || $LIKE_ARG || '%' ESCAPE '\' OR 'AS' || asn = upper(:query))
+           AND (:blockedOnly = 0 OR verdict = 'block')
+           AND (:path = '' OR (:path = 'direct' AND via = 'direct') OR (:path = 'tunnel' AND via IS NOT NULL AND via != 'direct'))
+           ORDER BY ts DESC LIMIT :limit""",
+    )
+    fun recentForApp(query: String, blockedOnly: Boolean, pkg: String, limit: Int = 500, path: String = PathFilter.ALL): Flow<List<FlowEntity>>
+
     @Query("SELECT * FROM flows WHERE id = :id")
     fun byId(id: Long): Flow<FlowEntity?>
+
+    /** The row of engine flow [engineId] in the newest session that started before [before] (alerts carry engine flow ids). */
+    @Query("SELECT * FROM flows WHERE engineId = :engineId AND session <= :before ORDER BY session DESC LIMIT 1")
+    suspend fun byEngineId(engineId: Long, before: Long): FlowEntity?
 
     @Query("SELECT * FROM flows WHERE pkg = :pkg ORDER BY ts DESC LIMIT :limit")
     fun byPackage(pkg: String, limit: Int = 200): Flow<List<FlowEntity>>
@@ -286,8 +300,19 @@ interface DnsDao {
     )
     fun recent(query: String, blockedOnly: Boolean, limit: Int = 500): Flow<List<DnsEntity>>
 
+    /** [recent] restricted to one app (the Activity app filter). */
+    @Query(
+        """SELECT * FROM dns_queries WHERE pkg = :pkg AND (:query = '' OR qname LIKE '%' || $LIKE_ARG || '%' ESCAPE '\')
+           AND (:blockedOnly = 0 OR verdict = 'block') ORDER BY ts DESC LIMIT :limit""",
+    )
+    fun recentForApp(query: String, blockedOnly: Boolean, pkg: String, limit: Int = 500): Flow<List<DnsEntity>>
+
     @Query("SELECT * FROM dns_queries WHERE pkg = :pkg ORDER BY ts DESC LIMIT :limit")
     fun byPackage(pkg: String, limit: Int = 200): Flow<List<DnsEntity>>
+
+    /** The newest blocked lookup of [qname], for its block reason. */
+    @Query("SELECT * FROM dns_queries WHERE qname = :qname AND verdict = 'block' ORDER BY ts DESC LIMIT 1")
+    suspend fun latestBlocked(qname: String): DnsEntity?
 
     @Query("SELECT qname AS name, COUNT(*) AS hits FROM dns_queries WHERE verdict = 'block' AND ts >= :since GROUP BY qname ORDER BY hits DESC LIMIT :limit")
     fun topBlocked(since: Long, limit: Int = 8): Flow<List<NameCount>>

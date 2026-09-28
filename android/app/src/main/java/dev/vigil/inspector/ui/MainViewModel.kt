@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.data.AlertEntity
+import dev.vigil.inspector.data.AlertMute
+import dev.vigil.inspector.data.AlertMutes
 import dev.vigil.inspector.data.AppUsage
 import dev.vigil.inspector.data.DestinationUsage
 import dev.vigil.inspector.data.DnsEntity
@@ -24,27 +26,43 @@ import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.vpn.VpnStatus
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 data class Throughput(val downBps: Long = 0, val upBps: Long = 0)
+
+/** A snackbar message, optionally with an action such as Undo. */
+class UiMessage(val id: Long, val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null)
+
+/** Per-app lists of the app detail screen; null until the first query result. */
+class AppDetailData(
+    val destinations: StateFlow<List<DestinationUsage>?>,
+    val flows: StateFlow<List<FlowEntity>?>,
+    val dns: StateFlow<List<DnsEntity>?>,
+    val alerts: StateFlow<List<AlertEntity>?>,
+    internal val scope: CoroutineScope,
+)
 
 /** State of the on-demand feed update job. */
 enum class FeedWork { IDLE, WAITING, RUNNING }
@@ -89,7 +107,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val dnsBlocked24h: StateFlow<Long> = since(24).flatMapLatest { db.dns().blockedSince(it).aggregate() }.state(0)
     val unseenAlerts: StateFlow<Int> = db.alerts().unseenCount().state(0)
     val topApps: StateFlow<List<AppUsage>> = since(24).flatMapLatest { db.flows().appUsage(it).aggregate() }.state(emptyList())
-    val appsWeek: StateFlow<List<AppUsage>> = since(24 * 7).flatMapLatest { db.flows().appUsage(it).aggregate() }.state(emptyList())
+
+    /**
+     * The one time window of the Apps list and the app details: 7 days, or
+     * the history retention when that is shorter (older rows are gone).
+     */
+    val appWindowDays: StateFlow<Int> = settings.map { appWindowDays(it.retentionDays) }.distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, appWindowDays(settings.value.retentionDays))
+    private val appWindowStart: Flow<Long> = appWindowDays.flatMapLatest { days -> since(24 * days) }
+    val appsWeek: StateFlow<List<AppUsage>> = appWindowStart.flatMapLatest { db.flows().appUsage(it).aggregate() }.state(emptyList())
+
     val topBlocked: StateFlow<List<NameCount>> = since(24).flatMapLatest { db.dns().topBlocked(it).aggregate() }.state(emptyList())
     val alerts: StateFlow<List<AlertEntity>> = db.alerts().recent().list().state(emptyList())
     val feeds: StateFlow<List<FeedEntity>> = app.feeds.feeds.state(emptyList())
@@ -120,13 +147,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val flowBlockedOnly = MutableStateFlow(false)
     /** [PathFilter] value: all connections, only tunnelled/proxied ones, or only direct ones. */
     val flowPath = MutableStateFlow(PathFilter.ALL)
-    val flows: StateFlow<List<FlowEntity>> = combine(flowQuery.debounce(200), flowBlockedOnly, flowPath) { q, b, p -> Triple(q.trim(), b, p) }
-        .flatMapLatest { (q, b, p) -> db.flows().recent(q, b, ACTIVITY_LIMIT, p).list() }.state(emptyList())
+    /** Activity shows only this app's connections and lookups (null: all apps). */
+    val activityApp = MutableStateFlow<String?>(null)
+    /** Paused: the Activity lists stop following new traffic (filter changes still apply). */
+    val activityPaused = MutableStateFlow(false)
+
+    private class ListFilter(val query: String, val blockedOnly: Boolean, val path: String, val app: String?, val paused: Boolean)
+
+    /** Live lists follow the table (throttled); paused ones run the query once per filter change. */
+    private fun <T> Flow<T>.liveOrOnce(paused: Boolean): Flow<T> = if (paused) take(1) else list()
+
+    val flows: StateFlow<List<FlowEntity>> =
+        combine(flowQuery.debounce(200), flowBlockedOnly, flowPath, activityApp, activityPaused) { q, b, p, a, paused ->
+            ListFilter(q.trim(), b, p, a, paused)
+        }.flatMapLatest { f ->
+            val app = f.app
+            val rows = if (app == null) {
+                db.flows().recent(f.query, f.blockedOnly, ACTIVITY_LIMIT, f.path)
+            } else {
+                db.flows().recentForApp(f.query, f.blockedOnly, app, ACTIVITY_LIMIT, f.path)
+            }
+            rows.liveOrOnce(f.paused)
+        }.state(emptyList())
 
     val dnsQuery = MutableStateFlow("")
     val dnsBlockedOnly = MutableStateFlow(false)
-    val dns: StateFlow<List<DnsEntity>> = combine(dnsQuery.debounce(200), dnsBlockedOnly) { q, b -> q.trim() to b }
-        .flatMapLatest { (q, b) -> db.dns().recent(q, b, ACTIVITY_LIMIT).list() }.state(emptyList())
+    val dns: StateFlow<List<DnsEntity>> = combine(dnsQuery.debounce(200), dnsBlockedOnly, activityApp, activityPaused) { q, b, a, paused ->
+        ListFilter(q.trim(), b, PathFilter.ALL, a, paused)
+    }.flatMapLatest { f ->
+        val app = f.app
+        val rows = if (app == null) db.dns().recent(f.query, f.blockedOnly, ACTIVITY_LIMIT) else db.dns().recentForApp(f.query, f.blockedOnly, app, ACTIVITY_LIMIT)
+        rows.liveOrOnce(f.paused)
+    }.state(emptyList())
 
     /** Opens Activity filtered to blocked connections and lookups (the "Blocked" tile). */
     fun showBlockedActivity(preferDns: Boolean) {
@@ -135,21 +187,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         flowBlockedOnly.value = true
         flowPath.value = PathFilter.ALL
         dnsBlockedOnly.value = true
+        activityApp.value = null
+        activityPaused.value = false
         activityTab.value = if (preferDns) 1 else 0
+    }
+
+    /** Opens the Activity DNS tab searching for [name] (e.g. from "Most blocked domains"). */
+    fun showLookups(name: String) {
+        dnsQuery.value = name
+        dnsBlockedOnly.value = false
+        activityApp.value = null
+        activityPaused.value = false
+        activityTab.value = 1
     }
 
     /** Clears the Activity filters, e.g. when the tab is opened from the navigation bar. */
     fun clearActivityFilters() {
         flowBlockedOnly.value = false
         dnsBlockedOnly.value = false
+        activityApp.value = null
+        activityPaused.value = false
     }
 
-    /** One-shot messages shown as snackbars. */
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
-    val messages: SharedFlow<String> = _messages
-    fun showMessage(text: String) {
-        _messages.tryEmit(text)
+    /**
+     * Snackbar messages waiting to be shown, oldest first. A message stays
+     * here until [messageShown], so one raised while no snackbar host exists
+     * (onboarding) or during a rotation is shown later instead of lost.
+     */
+    private val _messages = MutableStateFlow<List<UiMessage>>(emptyList())
+    val messages: StateFlow<List<UiMessage>> = _messages
+    private val messageIds = AtomicLong()
+
+    fun showMessage(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
+        val m = UiMessage(messageIds.incrementAndGet(), text, actionLabel, action)
+        _messages.update { (it + m).takeLast(MAX_PENDING_MESSAGES) }
     }
+
+    fun messageShown(id: Long) = _messages.update { list -> list.filterNot { it.id == id } }
 
     /** App labels resolved off the main thread (PackageManager calls are IPC). */
     private val _labels = MutableStateFlow<Map<String, String>>(emptyMap())
@@ -184,11 +258,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.state(FeedWork.IDLE)
 
     fun flow(id: Long): Flow<FlowEntity?> = db.flows().byId(id)
-    fun appFlows(pkg: String): Flow<List<FlowEntity>> = db.flows().byPackage(pkg)
-    fun appDns(pkg: String): Flow<List<DnsEntity>> = db.dns().byPackage(pkg)
-    fun appAlerts(pkg: String): Flow<List<AlertEntity>> = db.alerts().byPackage(pkg)
-    fun appDestinations(pkg: String): Flow<List<DestinationUsage>> =
-        since(24 * 30).flatMapLatest { db.flows().destinationsFor(pkg, it) }
+
+    /** Recently opened app details; each entry's queries stop 5 s after its screen is left. */
+    private val appDetails = object : LinkedHashMap<String, AppDetailData>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AppDetailData>): Boolean =
+            (size > APP_DETAIL_CACHE).also { if (it) eldest.value.scope.cancel() }
+    }
+
+    /**
+     * The app detail lists of [pkg], cached per app so that returning to an
+     * app shows its data (and keeps the scroll position) at once, then
+     * refreshes. Throttled like the other queries.
+     */
+    fun appDetail(pkg: String): AppDetailData = synchronized(appDetails) {
+        appDetails.getOrPut(pkg) {
+            val scope = CoroutineScope(viewModelScope.coroutineContext + Job(viewModelScope.coroutineContext[Job]))
+            fun <T> Flow<T>.cached(): StateFlow<T?> = stateIn(scope, SharingStarted.WhileSubscribed(5_000), null)
+            AppDetailData(
+                destinations = appWindowStart.flatMapLatest { db.flows().destinationsFor(pkg, it).aggregate() }.cached(),
+                flows = db.flows().byPackage(pkg).list().cached(),
+                dns = db.dns().byPackage(pkg).list().cached(),
+                alerts = db.alerts().byPackage(pkg).list().cached(),
+                scope = scope,
+            )
+        }
+    }
 
     fun updateSettings(transform: (Settings) -> Settings) = app.settings.update(transform)
 
@@ -196,9 +290,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         it.copy(blockedPackages = if (blocked) it.blockedPackages + pkg else it.blockedPackages - pkg)
     }
 
+    /** Blocks all network access of [pkg], with an Undo snackbar. */
+    fun blockApp(pkg: String, label: String) {
+        val wasBlocked = pkg in settings.value.blockedPackages
+        setAppBlocked(pkg, true)
+        if (!wasBlocked) showMessage("Blocked all network access of $label", "Undo") { setAppBlocked(pkg, false) }
+    }
+
     fun denyDomain(domain: String) = updateSettings { it.copy(denyDomains = it.denyDomains + domain.lowercase(), allowDomains = it.allowDomains - domain.lowercase()) }
     fun allowDomain(domain: String) = updateSettings { it.copy(allowDomains = it.allowDomains + domain.lowercase(), denyDomains = it.denyDomains - domain.lowercase()) }
     fun removeRule(domain: String) = updateSettings { it.copy(allowDomains = it.allowDomains - domain, denyDomains = it.denyDomains - domain) }
+
+    /** Restores [name]'s membership of the deny and allow lists as it was in [before]. */
+    private fun restoreRule(name: String, before: Settings) = updateSettings {
+        it.copy(
+            denyDomains = if (name in before.denyDomains) it.denyDomains + name else it.denyDomains - name,
+            allowDomains = if (name in before.allowDomains) it.allowDomains + name else it.allowDomains - name,
+        )
+    }
+
+    /** Adds a block rule for [domain] (and its subdomains) and offers Undo. */
+    fun blockDomain(domain: String) {
+        val name = domain.lowercase()
+        val before = settings.value
+        denyDomain(name)
+        showMessage("Blocked $name (and subdomains)", "Undo") { restoreRule(name, before) }
+    }
+
+    /** Adds an allow rule for [domain] (and its subdomains) and offers Undo. */
+    fun allowDomainWithUndo(domain: String) {
+        val name = domain.lowercase()
+        val before = settings.value
+        allowDomain(name)
+        showMessage("Always allowing $name (and subdomains)", "Undo") { restoreRule(name, before) }
+    }
+
+    /** Removes the rule for [domain] and offers Undo. */
+    fun removeRuleWithUndo(domain: String) {
+        val before = settings.value
+        removeRule(domain)
+        showMessage("Removed the rule for $domain", "Undo") { restoreRule(domain, before) }
+    }
+
+    /** The recorded block reason (engine `reason`) of the newest blocked lookup of [qname], or null. */
+    suspend fun blockReason(qname: String): String? = db.dns().latestBlocked(qname)?.reason
+
+    /** The database id of the connection an alert names by engine flow id, or null if it is no longer stored. */
+    suspend fun flowIdForAlert(engineFlowId: Long, alertTs: Long): Long? = db.flows().byEngineId(engineFlowId, alertTs)?.id
+
+    /** Mutes alerts of [kind] for [pkg] (only those about [target], if given: "mark as expected"), with Undo. */
+    fun muteAlerts(kind: String, pkg: String, target: String?, confirmation: String) {
+        val before = settings.value.alertMutes
+        updateSettings { it.copy(alertMutes = AlertMutes.add(it.alertMutes, AlertMute(kind, pkg, target, System.currentTimeMillis()))) }
+        showMessage(confirmation, "Undo") { updateSettings { it.copy(alertMutes = before) } }
+    }
+
+    fun unmuteAlerts(kind: String, pkg: String, target: String) =
+        updateSettings { it.copy(alertMutes = AlertMutes.remove(it.alertMutes, kind, pkg, target)) }
 
     fun markAlertsSeen() = viewModelScope.launch { db.alerts().markAllSeen() }
     fun markAlertSeen(id: Long) = viewModelScope.launch { db.alerts().markSeen(id) }
@@ -224,5 +372,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val ACTIVITY_LIMIT = 500
         /** Unique work name used by FeedRepository.scheduleRefreshNow(). */
         const val FEEDS_NOW_WORK = "feeds-now"
+        private const val MAX_PENDING_MESSAGES = 8
+        private const val APP_DETAIL_CACHE = 6
+
+        /** Days shown on the Apps screens: a week, or less when history is kept for less. */
+        fun appWindowDays(retentionDays: Int): Int = retentionDays.coerceIn(1, 7)
     }
 }

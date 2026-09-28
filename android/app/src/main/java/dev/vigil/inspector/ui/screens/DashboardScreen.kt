@@ -25,6 +25,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -35,10 +39,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.ui.FeedWork
+import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.EmptyState
 import dev.vigil.inspector.ui.components.ErrorCard
+import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.StatTile
 import dev.vigil.inspector.ui.formatBytes
@@ -51,7 +57,6 @@ import dev.vigil.inspector.vpn.VpnStatus
 @Composable
 fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, onStop: () -> Unit) {
     val status by vm.status.collectAsStateWithLifecycle()
-    val stats by vm.stats.collectAsStateWithLifecycle()
     val totals by vm.totals24h.collectAsStateWithLifecycle()
     val dnsCount by vm.dnsCount24h.collectAsStateWithLifecycle()
     val dnsBlocked by vm.dnsBlocked24h.collectAsStateWithLifecycle()
@@ -61,13 +66,17 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
     val network by vm.network.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val feeds by vm.feeds.collectAsStateWithLifecycle()
-    val throughput by vm.throughput.collectAsStateWithLifecycle()
     val feedWork by vm.feedWork.collectAsStateWithLifecycle()
     val configError by vm.configError.collectAsStateWithLifecycle()
     val usageAccess = usageAccessGranted(vm)
-    val shownApps = topApps.take(6)
+    // Per-second stats and throughput are read inside StatusCard only, so
+    // they do not recompose the whole Overview.
+    val shownApps = remember(topApps) { topApps.take(6) }
+    val maxBytes = remember(topApps) { (topApps.maxOfOrNull { it.tx + it.rx } ?: 1L).coerceAtLeast(1L) }
+    val missing = remember(feeds) { feeds.filter { it.enabled && it.lastUpdated == null } }
     val label = rememberAppLabels(vm, shownApps.map { it.pkg })
     val context = LocalContext.current
+    var blockedSheet by rememberSaveable { mutableStateOf<String?>(null) }
 
     val running = status is VpnStatus.Running
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -79,49 +88,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                 fontWeight = FontWeight.Bold,
             )
         }
-        item {
-            Card(
-                Modifier.fillMaxWidth().padding(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                ),
-            ) {
-                val on = running || status == VpnStatus.Starting
-                // One focus target: the whole row toggles inspection.
-                Row(
-                    Modifier
-                        .toggleable(value = on, role = Role.Switch, onValueChange = { if (it) onStart() else onStop() })
-                        .padding(20.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            when (status) {
-                                is VpnStatus.Running -> "Inspecting traffic"
-                                VpnStatus.Starting -> "Starting…"
-                                is VpnStatus.Failed -> "Not running"
-                                VpnStatus.Stopped -> "Inspection is off"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        val sub = when (val s = status) {
-                            is VpnStatus.Running -> stats?.let {
-                                "${it.tcpActive + it.udpActive} active · ↓ ${formatBytes(throughput.downBps)}/s ↑ ${formatBytes(throughput.upBps)}/s"
-                            } ?: "Since ${formatRelative(s.since)}"
-                            is VpnStatus.Failed -> s.message
-                            else -> "Tap the switch to start the on-device inspector"
-                        }
-                        Text(
-                            sub,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (status is VpnStatus.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(checked = on, onCheckedChange = null)
-                }
-            }
-        }
+        item { StatusCard(vm, status, onStart, onStop) }
 
         // Actionable warnings.
         configError?.let { msg ->
@@ -154,7 +121,6 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                 ) { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
             }
         }
-        val missing = feeds.filter { it.enabled && it.lastUpdated == null }
         if (missing.isNotEmpty()) {
             item {
                 Warning(
@@ -174,7 +140,12 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
             }
         }
 
-        item { SectionTitle("Last 24 hours") }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("Last 24 hours")
+                HelpIcon("Sinkholed", Glossary.SINKHOLED)
+            }
+        }
         item {
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -218,11 +189,10 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         if (topApps.isEmpty()) {
             item { EmptyState("No traffic yet", if (running) "Connections will appear here as apps use the network." else "Start inspection to see which apps talk to whom.") }
         }
-        val maxBytes = (topApps.maxOfOrNull { it.tx + it.rx } ?: 1L).coerceAtLeast(1L)
         items(shownApps, key = { it.pkg }) { a ->
             val name = label(a.pkg)
             Row(
-                Modifier.fillMaxWidth().clickable { nav.navigate("app/${a.pkg}") }.padding(horizontal = 16.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().clickable { nav.openApp(a.pkg) }.padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AppIcon(a.pkg, name)
@@ -249,7 +219,10 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         if (topBlocked.isNotEmpty()) {
             item { SectionTitle("Most blocked domains") }
             items(topBlocked, key = { "b-" + it.name }) { b ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClickLabel = "Why blocked") { blockedSheet = b.name }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
                     Text(b.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${b.hits}×", color = VigilColors.Block)
                 }
@@ -257,10 +230,62 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         }
         item { Spacer(Modifier.height(24.dp)) }
     }
+    blockedSheet?.let { name -> DomainSheet(name, vm, nav, onDismiss = { blockedSheet = null }, loadReason = true) }
+}
+
+/** The inspection switch with live counters; the only reader of the per-second stats. */
+@Composable
+private fun StatusCard(vm: MainViewModel, status: VpnStatus, onStart: () -> Unit, onStop: () -> Unit) {
+    val running = status is VpnStatus.Running
+    Card(
+        Modifier.fillMaxWidth().padding(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (running) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+    ) {
+        val on = running || status == VpnStatus.Starting
+        // One focus target: the whole row toggles inspection.
+        Row(
+            Modifier
+                .toggleable(value = on, role = Role.Switch, onValueChange = { if (it) onStart() else onStop() })
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    when (status) {
+                        is VpnStatus.Running -> "Inspecting traffic"
+                        VpnStatus.Starting -> "Starting…"
+                        is VpnStatus.Failed -> "Not running"
+                        VpnStatus.Stopped -> "Inspection is off"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                val sub = when (status) {
+                    is VpnStatus.Running -> {
+                        val stats by vm.stats.collectAsStateWithLifecycle()
+                        val throughput by vm.throughput.collectAsStateWithLifecycle()
+                        stats?.let {
+                            "${it.tcpActive + it.udpActive} active · ↓ ${formatBytes(throughput.downBps)}/s ↑ ${formatBytes(throughput.upBps)}/s"
+                        } ?: "Since ${formatRelative(status.since)}"
+                    }
+                    is VpnStatus.Failed -> status.message
+                    else -> "Tap the switch to start the on-device inspector"
+                }
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (status is VpnStatus.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = on, onCheckedChange = null)
+        }
+    }
 }
 
 @Composable
-private fun Warning(title: String, body: String, action: String, busy: Boolean = false, onAction: () -> Unit) {
+internal fun Warning(title: String, body: String, action: String, busy: Boolean = false, onAction: () -> Unit) {
     Card(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         colors = CardDefaults.cardColors(containerColor = VigilColors.Low.copy(alpha = 0.12f)),

@@ -58,12 +58,13 @@ import dev.vigil.inspector.ui.theme.VigilColors
 @Composable
 fun AppsScreen(vm: MainViewModel, nav: NavController) {
     val apps by vm.appsWeek.collectAsStateWithLifecycle()
+    val days by vm.appWindowDays.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
     val label = rememberAppLabels(vm, apps.map { it.pkg })
     val filtered = apps.filter { query.isBlank() || label(it.pkg).contains(query, true) || it.pkg.contains(query, true) }
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Apps · last 7 days")
+        VigilTopBar("Apps · ${windowLabel(days)}")
         OutlinedTextField(
             value = query, onValueChange = { query = it }, singleLine = true, placeholder = { Text("Search apps") },
             leadingIcon = { Icon(Icons.Default.Search, null) },
@@ -74,14 +75,14 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
             return@Column
         }
         if (filtered.isEmpty()) {
-            EmptyState("No matches", "No app seen in the last 7 days matches “${query.trim()}”.")
+            EmptyState("No matches", "No app seen in the ${windowLabel(days)} matches “${query.trim()}”.")
             return@Column
         }
         LazyColumn {
             items(filtered, key = { it.pkg }) { a ->
                 val name = label(a.pkg)
                 Row(
-                    Modifier.fillMaxWidth().clickable { nav.navigate("app/${a.pkg}") }.padding(horizontal = 16.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth().clickable { nav.openApp(a.pkg) }.padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     AppIcon(a.pkg, name, 40.dp)
@@ -108,10 +109,19 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
 @Composable
 fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
     val settings by vm.settings.collectAsStateWithLifecycle()
-    val destinations by remember(pkg) { vm.appDestinations(pkg) }.collectAsStateWithLifecycle(initialValue = emptyList())
-    val flows by remember(pkg) { vm.appFlows(pkg) }.collectAsStateWithLifecycle(initialValue = emptyList())
-    val dns by remember(pkg) { vm.appDns(pkg) }.collectAsStateWithLifecycle(initialValue = emptyList())
-    val alerts by remember(pkg) { vm.appAlerts(pkg) }.collectAsStateWithLifecycle(initialValue = emptyList())
+    val days by vm.appWindowDays.collectAsStateWithLifecycle()
+    // Cached per app in the view model: coming back shows the last data at
+    // once (and the list keeps its scroll position) while it refreshes.
+    val data = remember(pkg) { vm.appDetail(pkg) }
+    val destinationsOrNull by data.destinations.collectAsStateWithLifecycle()
+    val flowsOrNull by data.flows.collectAsStateWithLifecycle()
+    val dnsOrNull by data.dns.collectAsStateWithLifecycle()
+    val alertsOrNull by data.alerts.collectAsStateWithLifecycle()
+    val destinations = destinationsOrNull.orEmpty()
+    val flows = flowsOrNull.orEmpty()
+    val dns = dnsOrNull.orEmpty()
+    val alerts = alertsOrNull.orEmpty()
+    var dnsSheet by rememberSaveable { mutableStateOf<Long?>(null) }
     // PackageManager lookups are IPC: resolve off the main thread.
     var info by remember(pkg) { mutableStateOf(AppInfo(pkg, null, vm.fallbackLabel(pkg), isSystem = false, isInstalledPackage = false)) }
     LaunchedEffect(pkg) { info = withContext(Dispatchers.IO) { vm.app.apps.byKey(pkg) } }
@@ -154,8 +164,8 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
             }
             item {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatTile("Destinations", destinations.size.toString(), Modifier.weight(1f))
-                    StatTile("Traffic", formatBytes(destinations.sumOf { it.bytes }), Modifier.weight(1f))
+                    StatTile("Destinations", destinations.size.toString(), Modifier.weight(1f), caption = windowLabel(days))
+                    StatTile("Traffic", formatBytes(destinations.sumOf { it.bytes }), Modifier.weight(1f), caption = windowLabel(days))
                     StatTile("Alerts", alerts.size.toString(), Modifier.weight(1f), accent = if (alerts.isNotEmpty()) VigilColors.Medium else MaterialTheme.colorScheme.primary)
                 }
             }
@@ -168,7 +178,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
             }
             when (tab) {
                 0 -> {
-                    if (destinations.isEmpty()) item { EmptyState("Nothing yet", "No destinations in the last 30 days.") }
+                    if (destinationsOrNull?.isEmpty() == true) item { EmptyState("Nothing yet", "No destinations in the ${windowLabel(days)}.") }
                     items(destinations, key = { "d-" + it.destination }) { d ->
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -186,15 +196,15 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                     }
                 }
                 1 -> {
-                    if (flows.isEmpty()) item { EmptyState("Nothing yet", "No recorded connections.") }
+                    if (flowsOrNull?.isEmpty() == true) item { EmptyState("Nothing yet", "No recorded connections.") }
                     items(flows, key = { "f-" + it.id }) { f -> FlowRow(f, info.label) { nav.navigate("flow/${f.id}") } }
                 }
                 2 -> {
-                    if (dns.isEmpty()) item { EmptyState("Nothing yet", "No recorded DNS lookups.") }
-                    items(dns, key = { "q-" + it.id }) { d -> DnsRow(d, info.label) }
+                    if (dnsOrNull?.isEmpty() == true) item { EmptyState("Nothing yet", "No recorded DNS lookups.") }
+                    items(dns, key = { "q-" + it.id }) { d -> DnsRow(d, info.label) { dnsSheet = d.id } }
                 }
                 else -> {
-                    if (alerts.isEmpty()) item { EmptyState("No alerts", "Nothing suspicious recorded for this app.") }
+                    if (alertsOrNull?.isEmpty() == true) item { EmptyState("No alerts", "Nothing suspicious recorded for this app.") }
                     items(alerts, key = { "a-" + it.id }) { a ->
                         Row(Modifier.fillMaxWidth().padding(16.dp)) {
                             SeverityDot(a.severity)
@@ -210,4 +220,10 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
             item { SectionTitle(" ") }
         }
     }
+    dnsSheet?.let { id -> dns.firstOrNull { it.id == id } }?.let { d ->
+        DomainSheet(d.qname, vm, nav, onDismiss = { dnsSheet = null }, knownReason = d.reason.takeIf { d.isBlocked }, loadReason = false)
+    }
 }
+
+/** "last 7 days", "last day". */
+internal fun windowLabel(days: Int) = if (days == 1) "last day" else "last $days days"

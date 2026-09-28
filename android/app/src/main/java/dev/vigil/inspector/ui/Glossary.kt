@@ -33,6 +33,11 @@ object Glossary {
     const val SINKHOLE =
         "How vigil answers DNS lookups of blocked names. 0.0.0.0 / :: returns an address that goes nowhere, so apps fail " +
             "fast and rarely retry. NXDOMAIN says the name does not exist; some apps then retry or fall back to other resolvers."
+    const val SINKHOLED =
+        "A sinkholed lookup is a DNS query for a blocked name (listed by a feed or one of your block rules) that vigil " +
+            "answered itself, with an address that goes nowhere (or NXDOMAIN, see Settings), instead of forwarding it. " +
+            "The app never learns the real address, so it cannot connect. Tap a name under “Most blocked domains” to see " +
+            "why it was blocked, allow it, or show its lookups.\n\n$SINKHOLE"
     const val BEACONING =
         "Connections to the same destination at a near-constant interval. Malware checks in with its command-and-control " +
             "(C2) server this way, but so do many legitimate telemetry and sync services."

@@ -97,16 +97,98 @@ class ExportPipelineTest {
     }
 
     @Test
-    fun badRequestDropsTheBatchAsRejected() = runTest {
-        val h = harness { attempt, batch -> if (attempt == 1) throw HttpStatusException(400) else SendOutcome(batch.size) }
-        repeat(2) { h.pipeline.offer(rec(it)) }
+    fun badRequestSplitsTheBatchAndRejectsOnlyTheBadRecord() = runTest {
+        val bad = rec(5)
+        val h = harness { _, batch -> if (bad in batch) throw HttpStatusException(400, "mapper_parsing_exception") else SendOutcome(batch.size) }
+        repeat(8) { h.pipeline.offer(rec(it)) }
+        backgroundScope.launch { h.pipeline.run() }
+        runCurrent()
+        assertEquals(7L, h.pipeline.status.value.sent)
+        assertEquals(1L, h.pipeline.status.value.rejected)
+        assertEquals(0, h.pipeline.status.value.queued)
+        // [0-7] -> [0-3] ok, [4-7] -> [4,5] -> [4] ok, [5] rejected; then [6,7]. No backoff waits.
+        assertEquals(listOf(8, 4, 4, 2, 1, 1, 2), h.attempts.map { it.size })
+        assertEquals(listOf(bad), h.attempts[5])
+        h.pipeline.offer(rec(9))
+        runCurrent()
+        assertEquals(8L, h.pipeline.status.value.sent)
+    }
+
+    @Test
+    fun payloadTooLargeSplitsUntilBatchesFit() = runTest {
+        val h = harness { _, batch -> if (batch.size > 50) throw HttpStatusException(413) else SendOutcome(batch.size) }
+        repeat(200) { h.pipeline.offer(rec(it)) }
+        backgroundScope.launch { h.pipeline.run() }
+        runCurrent()
+        assertEquals(200L, h.pipeline.status.value.sent)
+        assertEquals(0L, h.pipeline.status.value.rejected)
+        // Order is kept.
+        assertEquals((0 until 200).map(::rec), h.attempts.filter { it.size <= 50 }.flatten())
+    }
+
+    @Test
+    fun singleRecordTooLargeIsRejected() = runTest {
+        val h = harness { _, _ -> throw HttpStatusException(413) }
+        h.pipeline.offer(rec(1))
         backgroundScope.launch { h.pipeline.run() }
         runCurrent()
         assertEquals(1, h.attempts.size)
-        assertEquals(2L, h.pipeline.status.value.rejected)
-        h.pipeline.offer(rec(3))
+        assertEquals(1L, h.pipeline.status.value.rejected)
+        assertTrue(h.pipeline.status.value.lastError!!.contains("record rejected"))
+    }
+
+    @Test
+    fun splunkIndexErrorKeepsRecordsQueued() = runTest {
+        val hec = enabled.copy(mode = "http", url = "https://splunk:8088/services/collector", httpFormat = "splunk_hec")
+        val h = harness(cfg = hec) { attempt, batch ->
+            if (attempt <= 2) throw HttpStatusException(400, """{"text":"Incorrect index","code":7,"invalid-event-number":0}""") else SendOutcome(batch.size)
+        }
+        repeat(3) { h.pipeline.offer(rec(it)) }
+        backgroundScope.launch { h.pipeline.run() }
         runCurrent()
-        assertEquals(1L, h.pipeline.status.value.sent)
+        val s = h.pipeline.status.value
+        assertEquals("not split, not rejected", 1, h.attempts.size)
+        assertEquals(0L, s.rejected)
+        assertEquals(3, s.queued)
+        assertTrue(s.configProblem!!, s.configProblem!!.contains("code 7"))
+        advanceTimeBy(59_000)
+        runCurrent()
+        assertEquals("retried slowly", 1, h.attempts.size)
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(2, h.attempts.size)
+        // Fixing the settings retries at once and clears the problem.
+        h.config.value = hec.copy(url = "https://splunk:8088/services/collector/event")
+        runCurrent()
+        assertEquals(3L, h.pipeline.status.value.sent)
+        assertEquals(null, h.pipeline.status.value.configProblem)
+        assertEquals(0, h.pipeline.status.value.queued)
+    }
+
+    @Test
+    fun splunkDataErrorsStillSplit() = runTest {
+        val hec = enabled.copy(mode = "http", url = "https://splunk", httpFormat = "splunk_hec")
+        val body = """{"text":"Invalid data format","code":6,"invalid-event-number":1}"""
+        assertEquals(FailureKind.BAD_BATCH, ExportRetry.classify(HttpStatusException(400, body), hec))
+        assertEquals(FailureKind.CONFIG, ExportRetry.classify(HttpStatusException(400, """{"text":"Data channel is missing","code":10}"""), hec))
+        // Only for Splunk HEC: another collector's body with a "code" is not interpreted.
+        assertEquals(FailureKind.BAD_BATCH, ExportRetry.classify(HttpStatusException(400, """{"code":7}"""), enabled))
+        assertEquals(null, ExportRetry.splunkHecCode("<html>"))
+    }
+
+    @Test
+    fun queueDepthCountsWaitingAndInFlightRecords() = runTest {
+        val h = harness { _, _ -> throw IOException("down") }
+        repeat(5) { h.pipeline.offer(rec(it)) }
+        assertEquals(5, h.pipeline.status.value.queued)
+        backgroundScope.launch { h.pipeline.run() }
+        runCurrent()
+        h.pipeline.offer(rec(5))
+        assertEquals(6, h.pipeline.status.value.queued)
+        h.config.value = enabled.copy(enabled = false)
+        runCurrent()
+        assertEquals(0, h.pipeline.status.value.queued)
+        assertEquals(6L, h.pipeline.status.value.dropped)
     }
 
     @Test
@@ -161,6 +243,7 @@ class ExportPipelineTest {
         assertEquals(FailureKind.TRANSIENT, ExportRetry.classify(HttpStatusException(429)))
         assertEquals(FailureKind.TRANSIENT, ExportRetry.classify(HttpStatusException(408)))
         assertEquals(FailureKind.BAD_BATCH, ExportRetry.classify(HttpStatusException(400)))
+        assertEquals(FailureKind.BAD_BATCH, ExportRetry.classify(HttpStatusException(413)))
         assertEquals(FailureKind.PERMANENT, ExportRetry.classify(HttpStatusException(401)))
         assertEquals(FailureKind.PERMANENT, ExportRetry.classify(HttpStatusException(403)))
         assertEquals(60_000L, ExportRetry.nextBackoff(40_000))
