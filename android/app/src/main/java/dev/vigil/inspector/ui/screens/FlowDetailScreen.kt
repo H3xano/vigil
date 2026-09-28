@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.FlowEntity
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
@@ -78,6 +79,18 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 else -> null
             }, help = Glossary.NAME_SOURCE + "\n\n" + Glossary.SNI)
             Field("Address", "${f.dstIp}:${f.dstPort}", mono = true)
+            Field(
+                "Network",
+                AsnDatabase.label(f.asn, f.asnName)?.let { l -> l + (f.asnCountry?.let { " · registered in $it" } ?: "") },
+                help = Glossary.ASN,
+            )
+            Field("Path", when (f.via) {
+                "direct" -> "Direct"
+                "wireguard" -> "Through the WireGuard tunnel"
+                "socks5" -> "Through the SOCKS5 proxy"
+                null -> null
+                else -> f.via
+            }, help = Glossary.VIA)
             Field("Transport", f.proto.uppercase())
             Field("Protocol", f.appProto?.uppercase())
             SectionTitle("Handshake")

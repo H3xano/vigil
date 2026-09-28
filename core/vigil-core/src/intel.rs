@@ -434,17 +434,24 @@ pub struct Feed {
     pub domains: DomainSet,
     pub ips: IpSet,
     pub ja4: Ja4Set,
+    /// IP → AS table (feeds of kind [`FeedKind::Asn`] only).
+    pub asn: crate::asn::AsnTable,
     /// Lines that could not be interpreted.
     pub rejected: usize,
 }
 
 impl Feed {
     pub fn is_empty(&self) -> bool {
-        self.domains.is_empty() && self.ips.is_empty() && self.ja4.is_empty()
+        self.domains.is_empty() && self.ips.is_empty() && self.ja4.is_empty() && self.asn.is_empty()
+    }
+
+    /// IP ranges of an IP feed, or ranges mapped to an AS in an ASN table.
+    pub fn ip_range_count(&self) -> usize {
+        self.ips.len() + self.asn.len()
     }
 
     pub fn memory_bytes(&self) -> usize {
-        self.domains.memory_bytes() + self.ja4.memory_bytes()
+        self.domains.memory_bytes() + self.ja4.memory_bytes() + self.asn.memory_bytes()
     }
 }
 
@@ -456,6 +463,8 @@ pub enum FeedKind {
     Mixed,
     /// JA4 fingerprints only; any other non-comment line is rejected.
     Ja4,
+    /// An IP → ASN table (iptoasn.com TSV, see [`crate::asn`]).
+    Asn,
 }
 
 fn is_sink_address(s: &str) -> bool {
@@ -487,6 +496,14 @@ pub fn parse_feed_reader_kind<R: std::io::BufRead>(
     mut r: R,
     kind: FeedKind,
 ) -> std::io::Result<Feed> {
+    if kind == FeedKind::Asn {
+        let (asn, rejected) = crate::asn::parse_asn_reader(r)?;
+        return Ok(Feed {
+            asn,
+            rejected,
+            ..Default::default()
+        });
+    }
     let mut buf = Vec::with_capacity(256);
     let mut builder = FeedBuilder {
         kind,
@@ -526,6 +543,7 @@ impl FeedBuilder {
             domains: self.domains.build(),
             ips: IpSet::from_ranges(self.ranges),
             ja4: self.ja4.build(),
+            asn: Default::default(),
             rejected: self.rejected,
         }
     }
@@ -539,7 +557,8 @@ impl FeedBuilder {
             FeedKind::Mixed => {
                 parse_line(raw, &mut self.domains, &mut self.ranges, &mut self.rejected)
             }
-            FeedKind::Ja4 => {
+            // Handled by parse_feed_reader_kind; never reached.
+            FeedKind::Ja4 | FeedKind::Asn => {
                 let t = raw.trim();
                 if !(t.is_empty() || t.starts_with(['#', '!', ';']) || t.starts_with("//")) {
                     self.rejected += 1;

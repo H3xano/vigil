@@ -13,6 +13,7 @@ import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.FlowEntity
 import dev.vigil.inspector.data.NameCount
+import dev.vigil.inspector.data.PathFilter
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.data.Totals
@@ -117,8 +118,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activityTab = MutableStateFlow(0)
     val flowQuery = MutableStateFlow("")
     val flowBlockedOnly = MutableStateFlow(false)
-    val flows: StateFlow<List<FlowEntity>> = combine(flowQuery.debounce(200), flowBlockedOnly) { q, b -> q.trim() to b }
-        .flatMapLatest { (q, b) -> db.flows().recent(q, b, ACTIVITY_LIMIT).list() }.state(emptyList())
+    /** [PathFilter] value: all connections, only tunnelled/proxied ones, or only direct ones. */
+    val flowPath = MutableStateFlow(PathFilter.ALL)
+    val flows: StateFlow<List<FlowEntity>> = combine(flowQuery.debounce(200), flowBlockedOnly, flowPath) { q, b, p -> Triple(q.trim(), b, p) }
+        .flatMapLatest { (q, b, p) -> db.flows().recent(q, b, ACTIVITY_LIMIT, p).list() }.state(emptyList())
 
     val dnsQuery = MutableStateFlow("")
     val dnsBlockedOnly = MutableStateFlow(false)
@@ -130,6 +133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         flowQuery.value = ""
         dnsQuery.value = ""
         flowBlockedOnly.value = true
+        flowPath.value = PathFilter.ALL
         dnsBlockedOnly.value = true
         activityTab.value = if (preferDns) 1 else 0
     }

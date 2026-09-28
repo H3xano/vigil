@@ -146,6 +146,7 @@ fn base_event(
         src: src.to_string(),
         dst_ip: dst.ip().to_string(),
         dst_port: dst.port(),
+        asn: shared.policy.read().asn_lookup(dst.ip()),
         ..Default::default()
     };
     if let Some(name) = shared.dns_cache.lookup(dst.ip(), Instant::now()) {

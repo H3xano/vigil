@@ -78,4 +78,37 @@ class MigrationTest {
         for (table in t3.keys) assertEquals(table, fields(3, table), result.getValue(table).toMap())
         assertEquals(t3, created)
     }
+
+    @Test
+    fun migration3to4AddsColumnsAndTheAppAsnsTable() {
+        assertEquals("indices are unchanged in 3 → 4", indices(3), indices(4))
+        val t3 = tables(3)
+        val t4 = tables(4)
+        assertEquals(t3.keys + "app_asns", t4.keys)
+        val result = t3.keys.associateWith { fields(3, it).toMutableMap() }.toMutableMap()
+        val created = t3.toMutableMap()
+        val add = Regex("^ALTER TABLE `(\\w+)` ADD COLUMN `(\\w+)` (INTEGER|TEXT)( NOT NULL)?(?: DEFAULT (.+))?$")
+        val create = Regex("^CREATE TABLE IF NOT EXISTS `(\\w+)` (\\(.*\\))$")
+        for (sql in VigilDatabase.MIGRATION_3_4_SQL) {
+            val c = create.matchEntire(sql)
+            if (c != null) {
+                val (table, body) = c.destructured
+                created[table] = "CREATE TABLE IF NOT EXISTS `\${TABLE_NAME}` $body"
+                result[table] = fields(4, table).toMutableMap() // checked through the CREATE statement
+            } else {
+                val m = add.matchEntire(sql) ?: error("unexpected statement $sql")
+                val (table, column, type, notNull, default) = m.destructured
+                result.getValue(table)[column] = Triple(type, notNull.isNotEmpty(), default.ifEmpty { null })
+                val def = sql.substringAfter("ADD COLUMN ")
+                val sqlText = created.getValue(table)
+                created[table] = if (", PRIMARY KEY" in sqlText) sqlText.replace(", PRIMARY KEY", ", $def, PRIMARY KEY") else sqlText.dropLast(1) + ", $def)"
+            }
+        }
+        for (table in t4.keys) assertEquals(table, fields(4, table), result.getValue(table).toMap())
+        assertEquals(t4, created)
+        // New columns are nullable, so rows written by version 3 stay valid.
+        val flows4 = fields(4, "flows")
+        for (c in listOf("via", "asn", "asnName", "asnCountry")) assertEquals(c, false, flows4.getValue(c).second)
+        assertEquals("TEXT", fields(4, "dns_queries").getValue("upstream").first)
+    }
 }

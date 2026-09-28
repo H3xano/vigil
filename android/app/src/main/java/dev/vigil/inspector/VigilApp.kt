@@ -53,7 +53,8 @@ class VigilApp : Application() {
      * Applies the retention setting to the history tables. Deletes in chunks
      * so a large backlog does not hold one long write transaction (which
      * would stall event persistence). Learned destinations are kept for at
-     * least [DESTINATION_MIN_DAYS] so novelty alerts keep their baseline.
+     * least [DESTINATION_MIN_DAYS] so novelty alerts keep their baseline;
+     * the same applies to learned (app, network) pairs.
      */
     suspend fun pruneOldData() = pruneLock.withLock {
         val days = settings.value.retentionDays.coerceAtLeast(1)
@@ -64,6 +65,7 @@ class VigilApp : Application() {
         deleted += drain { db.dns().deleteBefore(before, CHUNK) }
         deleted += drain { db.alerts().deleteBefore(before, CHUNK) }
         deleted += db.destinations().deleteBefore(now - maxOf(days, DESTINATION_MIN_DAYS) * DAY_MS)
+        deleted += db.appAsns().deleteBefore(now - maxOf(days, DESTINATION_MIN_DAYS) * DAY_MS)
         if (deleted > 0) Log.i(TAG, "pruned $deleted rows older than $days days")
     }
 
@@ -93,6 +95,7 @@ class VigilApp : Application() {
         db.dns().clear()
         db.alerts().clear()
         db.destinations().clear()
+        db.appAsns().clear()
     }
 
     private companion object {

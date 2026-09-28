@@ -50,6 +50,13 @@ if [[ " $stages " == *" direct "* ]]; then
 cat > "$work/threat.txt" <<'FEED'
 quic-probe.vigil-test.example
 FEED
+# Tiny IP-to-ASN table (iptoasn.com TSV): the QUIC probes' 1.1.1.1, the
+# blocked 192.0.2.0/24 (also reached through NAT64 by inside.sh) and an
+# unrouted row.
+printf '%s\t%s\t%s\t%s\t%s\n' \
+  1.1.1.0 1.1.1.255 13335 US CLOUDFLARENET \
+  192.0.2.0 192.0.2.255 64496 ZZ 'VIGIL-E2E Documentation AS' \
+  198.18.0.0 198.19.255.255 0 None 'Not routed' > "$work/asn.tsv"
 echo '{"stats_interval_ms": 1000, "beacon": {"min_interval_s": 1.0, "min_events": 5, "max_jitter": 0.25},
   "block_ja4_matches": true, "allow_domains": ["example.org", "www.cloudflare.com"]}' > "$work/config.json"
 export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
@@ -60,7 +67,7 @@ rst_pid=$!
 
 "$cli" run --fd-socket "$sock" --config "$work/config.json" \
   --feed test:tracking:"$work/feed.txt" --feed threats:c2:"$work/threat.txt" \
-  --feed ja4-e2e:ja4:"$work/ja4.txt" \
+  --feed ja4-e2e:ja4:"$work/ja4.txt" --feed iptoasn:asn:"$work/asn.tsv" \
   > "$work/events.jsonl" 2> "$work/cli.log" &
 cli_pid=$!
 

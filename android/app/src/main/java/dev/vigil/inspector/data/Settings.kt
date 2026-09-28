@@ -51,6 +51,10 @@ data class Settings(
     val noveltyAlerts: Boolean = false,
     /** Alerts for unusually large uploads while an app is in the background. */
     val exfil: ExfilSettings = ExfilSettings(),
+    /** Alert when an app contacts an autonomous system (network) it never used before (needs the ASN database). */
+    val newAsnAlerts: Boolean = false,
+    /** Days after vigil first records an app's networks before new-network alerts start. */
+    val asnLearningDays: Int = 7,
     val notifyAlerts: Boolean = true,
     val retentionDays: Int = 7,
     val export: ExportSettings = ExportSettings(),

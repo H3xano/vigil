@@ -63,7 +63,9 @@ class EventProcessor(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > 20_000
     }
 
-    suspend fun process(json: String) = process(EngineJson.parseBatch(json))
+    private val newAsn = NewAsnDetector(db.appAsns()) { apps.byKey(it).label }
+
+    suspend fun process(json: String) =process(EngineJson.parseBatch(json))
 
     suspend fun process(batch: List<EngineEvent>) {
         if (batch.isEmpty()) return
@@ -94,11 +96,7 @@ class EventProcessor(
                 }
                 is DnsEvent -> {
                     val app = apps.resolve(e.uid)
-                    dns += DnsEntity(
-                        ts = e.ts, uid = e.uid, pkg = app.key, qname = e.qname, qtype = e.qtype, rcode = e.rcode,
-                        answers = e.answers.joinToString(", "), verdict = e.verdict, reason = e.reason,
-                        latencyMs = e.latencyMs, server = e.server, transport = e.transport,
-                    )
+                    dns += EntityMapping.dns(e, app.key)
                     exporter.offer("dns", ExportRecords.dns(e, app))
                 }
                 is AlertEvent -> {
@@ -118,6 +116,8 @@ class EventProcessor(
         }
         db.withTransaction {
             alerts += noveltyAlerts(flows)
+            val s = settings.value
+            alerts += newAsn.process(flows, s.newAsnAlerts, NewAsnDetector.learningMs(s.asnLearningDays))
             if (flows.isNotEmpty()) db.flows().insert(flows)
             if (dns.isNotEmpty()) db.dns().insert(dns)
             if (alerts.isNotEmpty()) db.alerts().insert(alerts)
@@ -145,13 +145,7 @@ class EventProcessor(
         exporter.offer("flow", ExportRecords.flow(o.flow, end, o.app))
     }
 
-    private fun FlowEvent.toEntity(app: AppInfo) = FlowEntity(
-        session = session, engineId = id, ts = ts, proto = proto, uid = uid, pkg = app.key, src = src, dstIp = dstIp,
-        dstPort = dstPort, domain = domain, domainSource = domainSource, appProto = appProto, alpn = alpn,
-        tlsVersion = tlsVersion, ja4 = ja4, ech = ech, httpMethod = httpMethod, verdict = verdict ?: "allow",
-        reason = reason, tags = tags.joinToString(","), background = foreground.isBackground(app.key),
-        ja4Feed = ja4Match?.feed, ja4Label = ja4Match?.label,
-    )
+    private fun FlowEvent.toEntity(app: AppInfo) = EntityMapping.flow(this, session, app.key, foreground.isBackground(app.key))
 
     private class Seen(val first: FlowEntity, var count: Long = 0, var minTs: Long = Long.MAX_VALUE, var maxTs: Long = Long.MIN_VALUE)
 

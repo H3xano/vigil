@@ -1,6 +1,7 @@
 //! Blocking policy: per-app blocks, threat/tracker feeds, user allow/deny
 //! lists and encrypted-DNS handling.
 
+use crate::asn::{AsnInfo, AsnTable};
 use crate::config::Config;
 use crate::intel::{nat64_embedded, DomainSet, Feed, FeedKind};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,9 @@ pub enum FeedCategory {
     /// JA4 fingerprints only (see [`crate::intel::FeedKind::Ja4`]). Matches
     /// raise `threat_ja4` alerts; they block only with `block_ja4_matches`.
     Ja4,
+    /// An IP → ASN table (see [`crate::asn`]): enriches `flow` events with
+    /// the destination's autonomous system; never blocks.
+    Asn,
 }
 
 impl FeedCategory {
@@ -41,6 +45,7 @@ impl FeedCategory {
             FeedCategory::C2 => "c2",
             FeedCategory::Custom => "custom",
             FeedCategory::Ja4 => "ja4",
+            FeedCategory::Asn => "asn",
         }
     }
 
@@ -48,6 +53,7 @@ impl FeedCategory {
     pub fn feed_kind(self) -> FeedKind {
         match self {
             FeedCategory::Ja4 => FeedKind::Ja4,
+            FeedCategory::Asn => FeedKind::Asn,
             _ => FeedKind::Mixed,
         }
     }
@@ -161,6 +167,8 @@ pub struct Policy {
     allow: DomainSet,
     deny: DomainSet,
     feeds: BTreeMap<String, Arc<LoadedFeed>>,
+    /// ASN tables (category `asn`) by feed id; normally at most one.
+    asn: BTreeMap<String, Arc<AsnTable>>,
     doh: DomainSet,
     nat64: Vec<Ipv6Addr>,
     pub block_encrypted_dns: bool,
@@ -175,6 +183,7 @@ impl Policy {
             allow: DomainSet::default(),
             deny: DomainSet::default(),
             feeds: BTreeMap::new(),
+            asn: BTreeMap::new(),
             doh: DomainSet::from_names(DOH_HOSTS),
             nat64: Vec::new(),
             block_encrypted_dns: false,
@@ -199,15 +208,32 @@ impl Policy {
     }
 
     pub fn set_feed(&mut self, id: &str, feed: LoadedFeed) {
+        if feed.category == FeedCategory::Asn {
+            self.feeds.remove(id);
+            self.asn.insert(id.to_string(), Arc::new(feed.feed.asn));
+            return;
+        }
+        self.asn.remove(id);
         self.feeds.insert(id.to_string(), Arc::new(feed));
     }
 
     pub fn remove_feed(&mut self, id: &str) -> bool {
-        self.feeds.remove(id).is_some()
+        let asn = self.asn.remove(id).is_some();
+        self.feeds.remove(id).is_some() || asn
     }
 
     pub fn feed_ids(&self) -> Vec<String> {
-        self.feeds.keys().cloned().collect()
+        self.feeds.keys().chain(self.asn.keys()).cloned().collect()
+    }
+
+    /// The autonomous system of a destination, from the loaded ASN tables.
+    /// NAT64 addresses resolve through their embedded IPv4 address.
+    pub fn asn_lookup(&self, ip: IpAddr) -> Option<AsnInfo> {
+        if self.asn.is_empty() {
+            return None;
+        }
+        let ip = self.nat64_v4(ip).map(IpAddr::V4).unwrap_or(ip);
+        self.asn.values().find_map(|t| t.lookup(ip))
     }
 
     pub fn is_app_blocked(&self, uid: Option<u32>) -> bool {
@@ -461,6 +487,48 @@ mod tests {
         assert_eq!(FeedCategory::Ja4.feed_kind(), FeedKind::Ja4);
         let cat: FeedCategory = serde_json::from_str("\"ja4\"").unwrap();
         assert_eq!(cat, FeedCategory::Ja4);
+    }
+
+    #[test]
+    fn asn_tables_are_lookups_not_blocklists() {
+        let mut p = policy();
+        let ip: IpAddr = "192.0.2.9".parse().unwrap();
+        assert_eq!(p.asn_lookup(ip), None);
+        let text = "192.0.2.0\t192.0.2.255\t64500\tNL\tEXAMPLE-NET\n\
+                    2001:db8::\t2001:db8::ffff\t64501\tDE\tEXAMPLE-V6\n";
+        let feed = crate::intel::parse_feed_reader_kind(text.as_bytes(), FeedKind::Asn).unwrap();
+        assert_eq!(feed.ip_range_count(), 2);
+        assert!(feed.domains.is_empty() && feed.ips.is_empty());
+        p.set_feed(
+            "iptoasn",
+            LoadedFeed {
+                category: FeedCategory::Asn,
+                feed,
+            },
+        );
+        assert!(p.feed_ids().contains(&"iptoasn".to_string()));
+        let a = p.asn_lookup(ip).unwrap();
+        assert_eq!((a.number, a.name.as_str()), (64500, "EXAMPLE-NET"));
+        assert_eq!(a.country.as_deref(), Some("NL"));
+        // NAT64 (well-known prefix) and IPv4-mapped addresses use the IPv4 table.
+        for v6 in ["64:ff9b::192.0.2.9", "::ffff:192.0.2.9"] {
+            assert_eq!(p.asn_lookup(v6.parse().unwrap()).unwrap().number, 64500);
+        }
+        assert_eq!(
+            p.asn_lookup("2001:db8::1".parse().unwrap()).unwrap().number,
+            64501
+        );
+        assert_eq!(p.asn_lookup("198.51.100.1".parse().unwrap()), None);
+        // The ASN "feed" neither blocks nor alerts.
+        assert_eq!(
+            p.check_ip(Some(1), "192.0.2.10".parse().unwrap()),
+            Decision::Allow
+        );
+        assert!(p.remove_feed("iptoasn"));
+        assert_eq!(p.asn_lookup(ip), None);
+        let cat: FeedCategory = serde_json::from_str("\"asn\"").unwrap();
+        assert_eq!(cat.feed_kind(), FeedKind::Asn);
+        assert!(!cat.is_threat());
     }
 
     #[test]

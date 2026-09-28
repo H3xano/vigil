@@ -636,7 +636,7 @@ fn install_feed(
     let summary = FeedSummary {
         id: id.to_string(),
         domains: feed.domains.len(),
-        ip_ranges: feed.ips.len(),
+        ip_ranges: feed.ip_range_count(),
         ja4: feed.ja4.len(),
         rejected_lines: feed.rejected,
         memory_bytes: feed.memory_bytes(),

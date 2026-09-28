@@ -54,9 +54,18 @@ object FeedCatalog {
                 "Small and prone to false positives: Sliver's fingerprint is Go's default TLS client, which some " +
                 "legitimate apps also use.",
         ),
+        // Offline IP → ASN table. Public domain (PDDL 1.0), so it may be downloaded and used without conditions;
+        // vigil credits the source anyway. On by default: it only labels connections and never blocks.
+        FeedEntity(
+            id = "iptoasn", name = "IP to ASN (iptoasn.com)", url = "https://iptoasn.com/data/ip2asn-combined.tsv.gz",
+            category = AsnDatabase.CATEGORY, enabled = true, builtin = true, kind = FeedKinds.ASN, format = AsnDatabase.FORMAT_IPTOASN,
+            description = "Names the network (autonomous system) behind each connection, e.g. \"AS13335 CLOUDFLARENET\", and " +
+                "enables new-network alerts. Downloaded weekly (≈ 9 MB, ≈ 10 MB of memory while inspecting). " +
+                "Data: iptoasn.com, public domain (PDDL 1.0).",
+        ),
     )
 
-    val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom")
+    val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom", AsnDatabase.CATEGORY)
 
     private fun feed(id: String, name: String, url: String, category: String, enabled: Boolean, description: String) =
         FeedEntity(id = id, name = name, url = url, category = category, enabled = enabled, builtin = true, description = description)

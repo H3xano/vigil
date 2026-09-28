@@ -50,6 +50,25 @@ object Glossary {
             "the baseline learns an app's regular uploads."
     const val C2 =
         "Command and control: servers that malware contacts to receive instructions or send stolen data."
+    const val ASN =
+        "An autonomous system (AS) is one network on the internet: a provider, cloud, company or university that " +
+            "announces its own blocks of IP addresses, identified by a number (ASN), e.g. AS13335 is Cloudflare and " +
+            "AS15169 Google. vigil looks up each connection's address in an offline copy of the routing table " +
+            "(iptoasn.com, public domain), so no lookup leaves the device. The country is where the network is " +
+            "registered, not where the server stands. A cloud or CDN network hosts many unrelated sites, so the AS says " +
+            "who carries the traffic, not who runs the site."
+    const val NEW_ASN =
+        "The app connected to a network (autonomous system) it had never used since vigil started watching it. Most " +
+            "apps talk to a small, stable set of networks: their own servers, a cloud provider, a CDN, analytics. A new " +
+            "one can be an update, a new ad or CDN partner, or a user visiting a new site in a browser, but it can " +
+            "also be data going somewhere unexpected. Alerts start after a learning period (7 days by default) and " +
+            "are medium severity for apps that used only a few networks so far. $ASN"
+    const val VIA =
+        "The path vigil used for this connection: direct over the phone's network, through your WireGuard tunnel, or " +
+            "through the SOCKS5 proxy (e.g. Tor). Destinations outside the WireGuard peer's AllowedIPs go direct."
+    const val DNS_UPSTREAM =
+        "How vigil forwarded the lookup to the resolver: UDP or TCP (plain DNS, readable by the network), DoT (DNS over " +
+            "TLS) or DoH (DNS over HTTPS)."
     const val ECS =
         "Elastic Common Schema: standard field names (event.*, source.*, destination.*, dns.*) that Elastic, Splunk " +
             "and Sentinel map without custom parsing."

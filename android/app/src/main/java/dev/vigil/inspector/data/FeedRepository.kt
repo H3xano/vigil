@@ -142,6 +142,16 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                 val (s, after) = pollTaxii(feed, tmp, stateTmp)
                 nextAddedAfter = after
                 s
+            } else if (feed.kind == FeedKinds.ASN) {
+                // Gunzipped and checked row by row here; the engine streams the TSV (category `asn`).
+                download(feed, tmp)
+                val stats = AsnDatabase.convert(tmp, converted)
+                ensureActive()
+                val previous = if (feed.lastUpdated != null && target.exists()) feed.ipRanges else null
+                AsnDatabase.validate(stats, previous)?.let { throw IOException(it) }
+                if (!converted.renameTo(target)) throw IOException("could not store feed")
+                Log.i(TAG, "asn ${feed.id}: ${stats.routed} routed ranges, ${stats.asCount} networks, ${stats.rejected} rejected rows")
+                FeedSummary(id = feed.id, ipRanges = stats.routed)
             } else {
                 download(feed, tmp)
                 val file = if (Ja4Converters.needsConversion(feed.format)) {
@@ -207,7 +217,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         var failures = 0
         for (f in dao.list().filter { it.enabled }) {
             coroutineContext.ensureActive()
-            val fresh = !force && f.lastUpdated != null && now - f.lastUpdated < maxAgeMs && fileFor(f.id).exists()
+            val fresh = f.lastUpdated != null && now - f.lastUpdated < maxAgeFor(f, maxAgeMs, force) && fileFor(f.id).exists()
             if (!fresh && refreshLocked(f).isFailure) failures++
         }
         failures
@@ -355,6 +365,18 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
     }
 
     companion object {
+        /**
+         * How old a downloaded copy may be before a refresh fetches it again.
+         * The ASN table changes slowly and is large: weekly, and at most daily
+         * even for a forced refresh. Other feeds: [maxAgeMs], 0 when forced.
+         */
+        fun maxAgeFor(feed: FeedEntity, maxAgeMs: Long, force: Boolean): Long = when {
+            feed.kind == FeedKinds.ASN -> if (force) ASN_FORCED_MIN_AGE_MS else maxOf(maxAgeMs, AsnDatabase.MAX_AGE_MS)
+            force -> 0L
+            else -> maxAgeMs
+        }
+
+        private const val ASN_FORCED_MIN_AGE_MS = 20L * 3600 * 1000
         private const val TAG = "vigil.feeds"
         private const val MAX_FEED_BYTES = 150L * 1024 * 1024
         const val MAX_AGE_MS = 20L * 3600 * 1000

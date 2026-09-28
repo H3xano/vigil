@@ -54,12 +54,16 @@ object ExportRecords {
             ),
             "vigil" to obj(
                 "type" to "flow", "flow_id" to f.id, "domain_source" to f.domainSource, "tags" to f.tags, "error" to end.error,
+                "via" to f.via, "asn_country" to f.asn?.country,
                 "ja4_match" to f.ja4Match?.let { obj("feed" to it.feed, "rule" to it.rule, "label" to it.label) },
             ),
             "app" to app(a),
             "network" to obj("transport" to f.proto, "protocol" to f.appProto, "bytes" to end.tx + end.rx),
             "source" to obj("ip" to srcIp, "port" to srcPort, "bytes" to end.tx),
-            "destination" to obj("ip" to f.dstIp, "port" to f.dstPort, "domain" to f.domain, "bytes" to end.rx),
+            "destination" to obj(
+                "ip" to f.dstIp, "port" to f.dstPort, "domain" to f.domain, "bytes" to end.rx,
+                "as" to f.asn?.let { obj("number" to it.number, "organization" to it.name.takeIf(String::isNotEmpty)?.let { n -> obj("name" to n) }) },
+            ),
             "tls" to if (f.tlsVersion != null || f.ja4 != null) {
                 obj("version" to f.tlsVersion, "next_protocol" to f.alpn, "client" to obj("ja4" to f.ja4, "server_name" to f.domain.takeIf { f.domainSource == "sni" || f.domainSource == "quic" }), "ech" to f.ech)
             } else null,

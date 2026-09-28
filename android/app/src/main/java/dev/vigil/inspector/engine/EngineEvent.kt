@@ -35,7 +35,13 @@ data class FlowEvent(
     val tags: List<String> = emptyList(),
     /** Upstream path: "direct", "wireguard" or "socks5" (null if never connected). */
     val via: String? = null,
+    /** Autonomous system of [dstIp] from the loaded ASN table; null if unknown. */
+    val asn: AsnInfo? = null,
 ) : EngineEvent
+
+/** An autonomous system: [country] is where it is registered, not where the address is. */
+@Serializable
+data class AsnInfo(val number: Long, val name: String = "", val country: String? = null)
 
 /** A flow's JA4 fingerprint is listed by [feed]; [rule] is the entry (`a_b_*` for wildcards). */
 @Serializable

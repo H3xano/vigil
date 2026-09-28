@@ -69,6 +69,10 @@ pub struct FlowEvent {
     /// "socks5". None when no upstream connection was attempted (blocked
     /// before connecting).
     pub via: Option<&'static str>,
+    /// Autonomous system of the destination (from a loaded ASN table; NAT64
+    /// addresses by their embedded IPv4). None when no table is loaded or
+    /// the address is unrouted, private or unknown.
+    pub asn: Option<crate::asn::AsnInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
