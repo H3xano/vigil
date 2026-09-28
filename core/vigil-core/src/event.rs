@@ -165,6 +165,8 @@ pub struct StatsEvent {
     pub encrypted_dns_last_error_ts: u64,
     pub encrypted_dns_last_error: Option<String>,
     pub upstream: UpstreamStatus,
+    /// Packet capture counters (see docs/EVENTS.md).
+    pub capture: crate::engine::capture::CaptureStats,
 }
 
 /// State of the upstream path (in `stats` events).

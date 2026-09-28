@@ -24,6 +24,10 @@ usage:
       --feed ID:CATEGORY:FILE  load a blocklist (category: ads|tracking|malware|phishing|c2|custom|ja4|asn)
       --upstream IP:PORT     upstream resolver (repeatable; overrides config)
       --no-stats             suppress periodic stats events
+      --pcap-on-exit FILE    when stopping, export the captured packets as PCAPng
+                             (needs \"capture\": {\"enabled\": true} in the config) and print
+                             the export summary to stderr
+      --pcap-filter JSON     filter for --pcap-on-exit ({\"flow_ids\",\"uids\",\"since_ms\",\"until_ms\"})
   vigil-cli parse-feed FILE   parse a blocklist and print a summary
   vigil-cli asn FILE [IP...]  load an IP-to-ASN table (iptoasn TSV), print its size, memory
                              and the process RSS, then look up the addresses
@@ -94,6 +98,8 @@ fn run(args: &[String]) -> io::Result<()> {
     let mut upstreams = Vec::new();
     let mut stats = true;
     let mut config_path = None;
+    let mut pcap_out: Option<String> = None;
+    let mut pcap_filter = vigil_core::engine::capture::CaptureFilter::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || {
@@ -116,6 +122,11 @@ fn run(args: &[String]) -> io::Result<()> {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
             ),
             "--no-stats" => stats = false,
+            "--pcap-on-exit" => pcap_out = Some(val()?),
+            "--pcap-filter" => {
+                pcap_filter = serde_json::from_str(&val()?)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+            }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -191,6 +202,13 @@ fn run(args: &[String]) -> io::Result<()> {
         out.flush()?;
     }
     eprintln!("vigil-cli: stopping");
+    engine.shutdown();
+    if let Some(path) = pcap_out {
+        match engine.export_pcap(&pcap_filter, std::path::Path::new(&path)) {
+            Ok(sum) => eprintln!("vigil-cli: pcap {}", serde_json::to_string(&sum).unwrap()),
+            Err(e) => eprintln!("vigil-cli: pcap export failed: {e}"),
+        }
+    }
     engine.stop();
     for e in events.poll(usize::MAX, Duration::from_millis(0)) {
         println!("{}", serde_json::to_string(&e).unwrap());
