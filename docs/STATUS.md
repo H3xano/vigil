@@ -166,10 +166,13 @@ history.
    are observed. Periodic `flow_update` byte deltas could detect heartbeats
    inside one connection.
 8. **PCAP export** of selected flows, for Wireshark users.
-9. **Upgrade AndroidX.** Versions are pinned to what AGP 8.7.3 and
-    compileSdk 35 support. Newer lifecycle, core and Room need AGP 8.9+ and
-    compileSdk 36. The lint `GradleDependency` check is disabled because of
-    this.
+9. **compileSdk and targetSdk 37.** The build is on compileSdk and
+    targetSdk 36 with the newest AndroidX that supports them. Compose BOM
+    2026.08.00+ (UI 1.12), core 1.19, lifecycle 2.11 and navigation-compose
+    2.10 need compileSdk 37; lint's `GradleDependency` warnings for them
+    (and `OldTargetApi`) are suppressed line by line in
+    `app/build.gradle.kts`. targetSdk 37 needs a review of the Android 17
+    behaviour changes first.
 10. Smaller items:
     - Hide or collapse Chrome's unused preconnect flows (0 bytes, name from
       DNS).
@@ -229,4 +232,4 @@ history.
 | Threat alerts keyed by feed entry + UID | DGA/tunnelling produced one alert per random subdomain. |
 | Engine error → bounded auto-restart | A dead TUN reader with routes up black-holes the device; the user may not notice. |
 | SIEM: retry until delivered, deterministic record ids | Alerts are low-volume and high-value; ids make retries and Elastic partial failures idempotent. |
-| Version pins (AGP 8.7.3, Kotlin 2.1.0, Gradle 8.11.1) | These were cached and working on the development machine. Upgrading is backlog item 9. |
+| Version pins (AGP 9.4.1, Kotlin 2.4.20, Gradle 9.8.0, compileSdk/targetSdk 36) | Newest stable, mutually compatible releases as of 2026-09. AGP 9 compiles Kotlin itself (no kotlin-android plugin); KGP is pinned on the build classpath to match the compose and serialization plugins. AndroidX stops where minCompileSdk 37 starts (backlog item 9). |
