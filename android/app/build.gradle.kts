@@ -20,7 +20,7 @@ android {
         applicationId = "dev.vigil.inspector"
         // getConnectionOwnerUid (per-app attribution) requires Android 10.
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         // versionCode = major * 10000 + minor * 100 + patch, kept as a literal
         // so F-Droid's update checker can read it. The APK is universal (no
         // ABI splits), so there are no per-ABI offsets. See docs/DEVELOPMENT.md.
