@@ -36,6 +36,18 @@ object Glossary {
     const val BEACONING =
         "Connections to the same destination at a near-constant interval. Malware checks in with its command-and-control " +
             "(C2) server this way, but so do many legitimate telemetry and sync services."
+    const val BEACONING_IN_CONNECTION =
+        "Beaconing inside a connection: the app keeps one connection open and sends a small burst of data through it at " +
+            "a near-constant interval, instead of reconnecting each time. Malware does this to check in with its " +
+            "command-and-control (C2) server while hiding among long-lived connections. Push services (Firebase Cloud " +
+            "Messaging, Apple push) and chat apps also keep connections alive, but their keep-alive pings are tiny; vigil " +
+            "skips known push services and bursts too small to carry a request."
+    const val EXFILTRATION =
+        "Exfiltration: sending data off the device without the user asking for it, for example stolen photos, contacts " +
+            "or messages. vigil alerts when an app uploads far more than usual while it is in the background: more than " +
+            "the absolute floor, several times its own busiest hour of the past week, and mostly one-way (much more sent " +
+            "than received). Backups and photo sync can look like this; apps whose job is uploading are skipped, and " +
+            "the baseline learns an app's regular uploads."
     const val C2 =
         "Command and control: servers that malware contacts to receive instructions or send stolen data."
     const val ECS =

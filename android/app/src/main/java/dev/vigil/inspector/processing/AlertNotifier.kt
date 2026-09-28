@@ -20,7 +20,7 @@ class AlertNotifier(private val context: Context, private val apps: AppResolver)
     fun createChannels() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ALERTS, "Security alerts", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Threat hits, beaconing and other suspicious behaviour"
+                description = "Threat hits, beaconing, unusual uploads and other suspicious behaviour"
             },
         )
         nm.createNotificationChannel(
@@ -64,6 +64,7 @@ class AlertNotifier(private val context: Context, private val apps: AppResolver)
             "threat_ip" -> "threat IP blocked"
             "threat_ja4" -> "known malicious TLS fingerprint"
             "beacon" -> "periodic beaconing"
+            "exfil_volume" -> "unusual upload volume"
             "encrypted_dns" -> "encrypted DNS in use"
             "hardcoded_dns" -> "bypasses system DNS"
             "new_destination" -> "new destination"

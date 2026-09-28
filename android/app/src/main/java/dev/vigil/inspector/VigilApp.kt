@@ -8,6 +8,7 @@ import dev.vigil.inspector.data.SettingsStore
 import dev.vigil.inspector.data.VigilDatabase
 import dev.vigil.inspector.export.SiemExporter
 import dev.vigil.inspector.processing.AlertNotifier
+import dev.vigil.inspector.processing.ExfilDetector
 import dev.vigil.inspector.processing.ForegroundTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +31,8 @@ class VigilApp : Application() {
     val foreground by lazy { ForegroundTracker(this) }
     val notifier by lazy { AlertNotifier(this, apps) }
     val exporter by lazy { SiemExporter(this, settings, scope).also { it.start() } }
+    /** App-wide, so upload windows and the per-app baseline span engine sessions. */
+    val exfil by lazy { ExfilDetector(java.io.File(filesDir, "exfil_baseline.json")) }
     private val pruneLock = Mutex()
 
     override fun onCreate() {

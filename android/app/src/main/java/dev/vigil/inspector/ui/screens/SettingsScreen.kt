@@ -147,12 +147,22 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SectionTitle("Detection")
             SettingRow(
                 "Beaconing detection",
-                "Alert when an app contacts the same destination at a near-constant interval: malware checking in with its command-and-control (C2) server, but also telemetry heartbeats.",
+                "Alert when an app contacts the same destination at a near-constant interval, or sends small bursts through one open connection at a near-constant interval: malware checking in with its command-and-control (C2) server, but also telemetry heartbeats. Push services are skipped.",
                 s.beaconEnabled, onChecked = { v -> vm.updateSettings { it.copy(beaconEnabled = v) } },
             )
             if (s.beaconEnabled) {
                 Segmented(listOf("low" to "Strict", "normal" to "Balanced", "high" to "Sensitive"), s.beaconSensitivity,
                     { v -> vm.updateSettings { it.copy(beaconSensitivity = v) } })
+            }
+            SettingRow(
+                "Unusual upload alerts",
+                "Alert when an app uploads far more than usual while in the background (possible data theft): at least " +
+                    "${s.exfil.floorMbPerHour} MB in an hour and several times its own busiest hour of the past week.",
+                s.exfil.enabled, onChecked = { v -> vm.updateSettings { it.copy(exfil = it.exfil.copy(enabled = v)) } },
+            )
+            if (s.exfil.enabled) {
+                Segmented(listOf(20 to "20 MB/h", 50 to "50 MB/h", 100 to "100 MB/h", 250 to "250 MB/h"), s.exfil.floorMbPerHour,
+                    { v -> vm.updateSettings { it.copy(exfil = it.exfil.copy(floorMbPerHour = v)) } })
             }
             SettingRow(
                 "New destination alerts",

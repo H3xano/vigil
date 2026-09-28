@@ -42,6 +42,8 @@ class EventProcessor(
     private val exporter: SiemExporter,
     private val notifier: AlertNotifier,
     private val session: Long,
+    /** Upload-volume alerts; fed from each batch (see [ExfilDetector]). */
+    private val exfil: ExfilDetector? = null,
     /** Called (on the processing coroutine) when the engine reports a fatal error. */
     private val onEngineError: (String) -> Unit = {},
 ) {
@@ -66,13 +68,14 @@ class EventProcessor(
     suspend fun process(batch: List<EngineEvent>) {
         if (batch.isEmpty()) return
         foreground.refresh()
+        val events = exfil?.let { batch + it.process(session, batch, settings.value.exfil, apps::resolve, foreground::isBackground) } ?: batch
         val flows = ArrayList<FlowEntity>()
         val dns = ArrayList<DnsEntity>()
         val alerts = ArrayList<AlertEntity>()
         val ends = ArrayList<FlowEndEvent>()
         val updates = LinkedHashMap<Long, FlowUpdateEvent>()
         var engineError: String? = null
-        for (e in batch) {
+        for (e in events) {
             when (e) {
                 is FlowEvent -> {
                     val app = apps.resolve(e.uid)
@@ -133,6 +136,7 @@ class EventProcessor(
         val now = System.currentTimeMillis()
         open.values.toList().forEach { exportUnfinished(it, now, "session ended") }
         open.clear()
+        exfil?.endSession(session)
         db.flows().closeSession(session, now)
     }
 
