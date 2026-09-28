@@ -61,6 +61,8 @@ struct TcpSocketControl {
     last_state: TcpState,
     // vigil patch: when the socket was first seen in TIME-WAIT.
     time_wait_since: Option<Instant>,
+    // vigil patch: when the socket was first seen in LISTEN.
+    listen_since: Option<Instant>,
 }
 
 // vigil patch: how long a socket stays in TIME-WAIT before it is removed.
@@ -70,6 +72,28 @@ struct TcpSocketControl {
 // second). On a virtual link to a local app, 1 s still absorbs a
 // retransmitted FIN; a later one gets a RST.
 const TIME_WAIT_REAP: Duration = Duration::from_secs(1);
+
+// vigil patch: sockets are created in LISTEN for one SYN, which is queued
+// before the socket is added and processed by the next poll. One still in
+// LISTEN after this long never took its SYN; it would only swallow a later
+// SYN to the same destination (see `is_zombie_listen`).
+const LISTEN_REAP: Duration = Duration::from_secs(10);
+
+// vigil patch: whether a socket is back in (or stuck in) LISTEN, i.e. dead.
+// smoltcp flips a socket in SYN-RECEIVED that receives a RST back to LISTEN
+// with no tuple (socket/tcp.rs, "RSTs in SYN-RECEIVED"), instead of closing
+// it. That happens when the app gives up before the handshake completes and
+// its kernel resets our late SYN-ACK. Treated as live, such a socket kept
+// its stream, the relay and the upstream socket open for up to the 2 h
+// timeout, and, listening on the destination address, accepted the next
+// SYN to that ip:port from any app (wrong flow and uid).
+fn is_zombie_listen(control: &mut TcpSocketControl, state: TcpState, now: Instant) -> bool {
+    if state != TcpState::Listen {
+        return false;
+    }
+    let since = *control.listen_since.get_or_insert(now);
+    control.last_state != TcpState::Listen || now - since >= LISTEN_REAP
+}
 
 struct TcpSocketCreation {
     control: SharedControl,
@@ -227,6 +251,7 @@ impl TcpListenerRunner {
                     reset: false,
                     last_state: TcpState::Listen,
                     time_wait_since: None,
+                    listen_since: None,
                 }));
 
                 stream_tx
@@ -291,6 +316,7 @@ impl TcpListenerRunner {
             // Check all the sockets' status
             let mut sockets_to_remove = Vec::new();
             let mut any_time_wait = false;
+            let mut any_listen = false;
 
             for (socket_handle, control) in sockets.iter() {
                 let socket_handle = *socket_handle;
@@ -304,8 +330,16 @@ impl TcpListenerRunner {
                     before_poll - since >= TIME_WAIT_REAP
                 };
 
+                // vigil patch: a socket that fell back to LISTEN was reset.
+                any_listen |= socket.state() == TcpState::Listen;
+                let zombie = is_zombie_listen(&mut control, socket.state(), before_poll);
+                if zombie && !control.abort {
+                    trace!("reaping a TCP socket reset back to LISTEN");
+                    control.reset = true;
+                }
+
                 // Remove the socket only when it is in the closed state.
-                if socket.state() == TcpState::Closed || reap {
+                if socket.state() == TcpState::Closed || reap || zombie {
                     sockets_to_remove.push(socket_handle);
 
                     // vigil patch: an orderly close reaches CLOSED from
@@ -490,6 +524,10 @@ impl TcpListenerRunner {
                 // vigil patch: wake up to reap TIME-WAIT sockets.
                 if any_time_wait {
                     next_duration = next_duration.min(TIME_WAIT_REAP);
+                }
+                // vigil patch: and to reap sockets stuck in LISTEN.
+                if any_listen {
+                    next_duration = next_duration.min(LISTEN_REAP);
                 }
                 if next_duration != Duration::ZERO {
                     let _ = tokio::time::timeout(

@@ -1106,6 +1106,79 @@ mod tests {
         assert_eq!(dropped(), 3);
     }
 
+    /// The TCP half of the netstack as `run` builds it: its input, its
+    /// output stream and the listener.
+    fn test_stack() -> (
+        mpsc::Sender<Vec<u8>>,
+        netstack_smoltcp::Stack,
+        netstack_smoltcp::TcpListener,
+    ) {
+        let (stack, runner, _udp, listener) = netstack_smoltcp::StackBuilder::default()
+            .enable_tcp(true)
+            .enable_udp(false)
+            .enable_icmp(false)
+            .build()
+            .unwrap();
+        tokio::spawn(runner.unwrap());
+        (stack.tcp_sender().unwrap(), stack, listener.unwrap())
+    }
+
+    /// The next TCP segment the stack sends to `to`.
+    async fn next_segment(out: &mut netstack_smoltcp::Stack, to: SocketAddr) -> packet::TcpInfo {
+        loop {
+            let p = tokio::time::timeout(Duration::from_secs(2), out.next())
+                .await
+                .expect("stack output")
+                .unwrap()
+                .unwrap();
+            let ip = packet::parse_ip(&p).unwrap();
+            let t = packet::parse_tcp(&p, &ip).unwrap();
+            if t.dst == to {
+                return t;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn netstack_reaps_sockets_reset_during_handshake() {
+        use packet::{build_tcp, TCP_ACK, TCP_RST, TCP_SYN};
+        use tokio::io::AsyncReadExt;
+        let (input, mut out, mut listener) = test_stack();
+        let app: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+        let dst: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        input
+            .send(build_tcp(app, dst, 1000, 0, TCP_SYN, &[]).unwrap())
+            .await
+            .unwrap();
+        let (mut stream, src, _) = listener.next().await.unwrap();
+        assert_eq!(src, app);
+        let syn_ack = next_segment(&mut out, app).await;
+        assert_eq!(syn_ack.flags, TCP_SYN | TCP_ACK);
+        // The app gave up; its kernel resets the late SYN-ACK. smoltcp puts
+        // the socket back into LISTEN, which must count as a reset.
+        input
+            .send(build_tcp(app, dst, 1001, 0, TCP_RST, &[]).unwrap())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 16];
+        let r = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+            .await
+            .expect("stream still open: zombie LISTEN socket");
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+
+        // A later SYN to the same destination from another app socket gets
+        // its own connection (the zombie would have taken it).
+        let other: SocketAddr = "10.0.0.3:50000".parse().unwrap();
+        input
+            .send(build_tcp(other, dst, 5000, 0, TCP_SYN, &[]).unwrap())
+            .await
+            .unwrap();
+        let (_stream2, src2, _) = listener.next().await.unwrap();
+        assert_eq!(src2, other);
+        let syn_ack = next_segment(&mut out, other).await;
+        assert_eq!((syn_ack.flags, syn_ack.ack), (TCP_SYN | TCP_ACK, 5001));
+    }
+
     /// A datagram socket pair stands in for the TUN device.
     fn fake_tun() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
         use std::os::fd::FromRawFd;
