@@ -29,11 +29,11 @@ class ForegroundTracker(private val context: Context) {
             AppOpsManager.MODE_ALLOWED
     }
 
-    /** Folds new usage events into the current foreground package (throttled). */
+    /** Folds new usage events into the current foreground package (at most every [minIntervalMs]). */
     @Synchronized
-    fun refresh() {
+    fun refresh(minIntervalMs: Long = 2_000) {
         val now = System.currentTimeMillis()
-        if (now - lastRefresh < 2_000) return
+        if (now - lastRefresh < minIntervalMs) return
         lastRefresh = now
         permitted = hasPermission()
         interactive = power.isInteractive
@@ -68,6 +68,17 @@ class ForegroundTracker(private val context: Context) {
      * usage access (the detector then counts uploads as "unknown").
      */
     fun isBackgroundForExfil(appKey: String): Boolean? = state.isBackgroundForExfil(appKey, permitted, interactive)
+
+    /**
+     * For the per-app background rules: refreshes (at most every
+     * [minIntervalMs]) and returns the foreground package, "" when no app is
+     * in the foreground, or null when that is unknown (no usage access, or
+     * no app resumed since tracking started).
+     */
+    fun foregroundPackage(minIntervalMs: Long): String? {
+        refresh(minIntervalMs)
+        return state.foreground(permitted)
+    }
 }
 
 /**
@@ -89,6 +100,9 @@ class ForegroundState {
     fun paused(pkg: String) {
         if (pkg == current) current = null
     }
+
+    /** The foreground package, "" for none, null when unknown (see [ForegroundTracker.foregroundPackage]). */
+    fun foreground(permitted: Boolean): String? = if (!permitted || !known) null else current.orEmpty()
 
     fun isBackground(appKey: String, permitted: Boolean, interactive: Boolean): Boolean? {
         if (!appKey.contains('.') || appKey.startsWith("uid:") || !permitted) return null

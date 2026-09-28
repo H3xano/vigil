@@ -29,6 +29,13 @@ object VigilNative {
 
     @JvmStatic external fun nativeUpdateConfig(handle: Long, configJson: String): Boolean
 
+    /**
+     * Pushes the device state per-app conditions are evaluated against
+     * ([DeviceState] as JSON). Cheap; open connections the new state blocks
+     * are cut. False if the JSON is invalid or the engine is not running.
+     */
+    @JvmStatic external fun nativeSetDeviceState(handle: Long, stateJson: String): Boolean
+
     /** Streams a feed file into the engine; returns a JSON summary or null. */
     @JvmStatic external fun nativeLoadFeedFile(handle: Long, id: String, category: String, path: String): String?
 

@@ -1,5 +1,6 @@
 package dev.vigil.inspector.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,10 +42,12 @@ fun RulesScreen(vm: MainViewModel, nav: NavController) {
     var input by remember { mutableStateOf("") }
     val candidate = input.trim().lowercase().removePrefix("*.")
     val valid = DOMAIN.matches(candidate)
+    val label = rememberAppLabels(vm, (s.blockedPackages + s.appRules.keys + s.appDomainRules.map { it.app }).distinct())
     Column(Modifier.fillMaxSize()) {
         VigilTopBar("Custom rules", nav)
         Text(
-            "Rules match the domain and all its subdomains. Allow rules override feeds and block rules.",
+            "Rules match the domain and all its subdomains. Allow rules override feeds and block rules. " +
+                "Rules for one app take precedence over these for that app; a blocked app stays blocked.",
             Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -63,7 +66,45 @@ fun RulesScreen(vm: MainViewModel, nav: NavController) {
             item { SectionTitle("Allowed (${s.allowDomains.size})") }
             if (s.allowDomains.isEmpty()) item { EmptyState("No allow rules", "Allow a domain to exempt it from all feeds.") }
             items(s.allowDomains.sorted(), key = { "a-$it" }) { d -> RuleRow(d, false) { vm.removeRule(d) } }
+            val conditional = s.appRules.filterValues { !it.isEmpty }.toSortedMap()
+            val perApp = s.appDomainRules.sortedWith(compareBy({ label(it.app) }, { it.domain }))
+            item { SectionTitle("Per-app rules (${s.blockedPackages.size + conditional.size + perApp.size})") }
+            if (s.blockedPackages.isEmpty() && conditional.isEmpty() && perApp.isEmpty()) {
+                item {
+                    EmptyState(
+                        "No per-app rules",
+                        "Open an app in the Apps tab to block it always, on Wi-Fi, on mobile data, in the background or with the screen off, " +
+                            "or to allow or block a domain for that app only.",
+                    )
+                }
+            }
+            items(s.blockedPackages.sorted(), key = { "pb-$it" }) { app ->
+                AppRuleRow(label(app), "No network access", VigilColors.Block) { nav.openApp(app) }
+            }
+            items(conditional.entries.toList(), key = { "pc-${it.key}" }) { (app, rule) ->
+                AppRuleRow(label(app), "Blocked ${rule.describe()}", VigilColors.Medium) { nav.openApp(app) }
+            }
+            items(perApp, key = { "pd-${it.app}|${it.domain}" }) { r ->
+                Row(Modifier.fillMaxWidth().clickable { nav.openApp(r.app) }.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(r.domain, color = if (r.isBlock) VigilColors.Block else VigilColors.Allow)
+                        Text(
+                            "${if (r.isBlock) "Blocked" else "Allowed"} for ${label(r.app)} only",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { vm.removeAppDomainRule(r.app, r.domain) }) { Icon(Icons.Default.Delete, "Remove rule for ${r.domain}") }
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun AppRuleRow(app: String, what: String, color: androidx.compose.ui.graphics.Color, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(app)
+        Text(what, style = MaterialTheme.typography.bodySmall, color = color)
     }
 }
 

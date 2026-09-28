@@ -140,12 +140,12 @@ mod tests {
 
     #[test]
     fn app_rules_json_contract() {
-        // APP_RULES_JSON in ConfigFactoryTest.kt, verbatim.
+        // "{" + APP_RULES_JSON + "}" from ConfigFactoryTest.kt, verbatim.
         let c = Config::from_json(
-            r#"{"blocked_uids":[10100],"app_rules":[{"uid":10123,"block_wifi":true,"block_cellular":false,"block_background":true,"block_screen_off":false},{"uid":10124,"block_wifi":false,"block_cellular":true,"block_background":false,"block_screen_off":true}],"app_domain_rules":[{"uid":10123,"domain":"ads.example.com","action":"block"},{"uid":10124,"domain":"tracker.example","action":"allow"}]}"#,
+            r#"{"app_rules":[{"uid":10123,"block_wifi":true,"block_cellular":false,"block_background":true,"block_screen_off":false},{"uid":10124,"block_wifi":false,"block_cellular":true,"block_background":false,"block_screen_off":true}],"app_domain_rules":[{"uid":10123,"domain":"ads.example.com","action":"block"},{"uid":10124,"domain":"tracker.example","action":"allow"}]}"#,
         )
         .unwrap();
-        assert_eq!(c.blocked_uids, vec![10100]);
+
         assert_eq!(c.app_rules.len(), 2);
         assert_eq!(
             c.app_rules[0],
@@ -170,12 +170,22 @@ mod tests {
         assert_eq!(s.network, NetworkType::Wifi);
         assert!(!s.screen_on);
         assert_eq!(s.foreground_uids, Some(vec![10123, 10200]));
-        // Without usage access the app sends null.
-        let s = DeviceState::from_json(
+        // Without usage access the app omits foreground_uids (DEVICE_STATE_UNKNOWN_FG_JSON);
+        // null works too.
+        for json in [
+            r#"{"network":"cellular","screen_on":true}"#,
             r#"{"network":"cellular","screen_on":true,"foreground_uids":null}"#,
+        ] {
+            let s = DeviceState::from_json(json).unwrap();
+            assert_eq!(s.network, NetworkType::Cellular);
+            assert_eq!(s.foreground_uids, None);
+        }
+        // The start config carries the state as `device_state`.
+        let c = Config::from_json(
+            r#"{"device_state":{"network":"none","screen_on":true,"foreground_uids":[]}}"#,
         )
         .unwrap();
-        assert_eq!(s.foreground_uids, None);
+        assert_eq!(c.device_state.unwrap().foreground_uids, Some(vec![]));
         let s = DeviceState::from_json("{}").unwrap();
         assert_eq!(s, DeviceState::default());
         assert!(DeviceState::from_json(r#"{"network":"satellite"}"#).is_err());

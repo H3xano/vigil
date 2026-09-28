@@ -16,6 +16,10 @@ data class EngineConfig(
     @SerialName("blocked_uids") val blockedUids: List<Int> = emptyList(),
     @SerialName("allow_domains") val allowDomains: List<String> = emptyList(),
     @SerialName("deny_domains") val denyDomains: List<String> = emptyList(),
+    /** Conditional blocking per app UID (Wi-Fi, mobile data, background, screen off). */
+    @SerialName("app_rules") val appRules: List<AppRuleConfig> = emptyList(),
+    /** Allow or block a domain (and its subdomains) for one app UID only. */
+    @SerialName("app_domain_rules") val appDomainRules: List<AppDomainRuleConfig> = emptyList(),
     val beacon: BeaconConfig = BeaconConfig(),
     /** NAT64 prefixes (IPv6 /96) of the underlying network; the engine always implies 64:ff9b::/96. */
     @SerialName("nat64_prefixes") val nat64Prefixes: List<String> = emptyList(),
@@ -35,6 +39,11 @@ data class EngineConfig(
     val feeds: List<FeedFileConfig>? = null,
     /** Start config only: how long the engine waits for [feeds] before processing packets. */
     @SerialName("feeds_preload_timeout_ms") val feedsPreloadTimeoutMs: Long? = null,
+    /**
+     * Start config only: the device state the app conditions start with.
+     * Afterwards it is pushed with `nativeSetDeviceState` (null: omitted).
+     */
+    @SerialName("device_state") val deviceState: DeviceState? = null,
 ) {
     fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
 
@@ -64,6 +73,45 @@ data class FeedFileConfig(
     val category: String,
     val path: String,
 )
+
+/** Mirror of the Rust `AppRule` (core/vigil-core/src/config/app_rules.rs). */
+@Serializable
+data class AppRuleConfig(
+    val uid: Int,
+    @SerialName("block_wifi") val blockWifi: Boolean = false,
+    @SerialName("block_cellular") val blockCellular: Boolean = false,
+    @SerialName("block_background") val blockBackground: Boolean = false,
+    @SerialName("block_screen_off") val blockScreenOff: Boolean = false,
+)
+
+/** Mirror of the Rust `AppDomainRule`: [action] is "allow" or "block". */
+@Serializable
+data class AppDomainRuleConfig(
+    val uid: Int,
+    val domain: String,
+    val action: String,
+)
+
+/**
+ * Mirror of the Rust `DeviceState`, sent with `nativeSetDeviceState`.
+ * [network]: "wifi", "cellular", "other" or "none". [foregroundUids]: null
+ * when unknown (no usage access), so background rules cannot apply.
+ */
+@Serializable
+data class DeviceState(
+    val network: String = NETWORK_OTHER,
+    @SerialName("screen_on") val screenOn: Boolean = true,
+    @SerialName("foreground_uids") val foregroundUids: List<Int>? = null,
+) {
+    fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
+
+    companion object {
+        const val NETWORK_WIFI = "wifi"
+        const val NETWORK_CELLULAR = "cellular"
+        const val NETWORK_OTHER = "other"
+        const val NETWORK_NONE = "none"
+    }
+}
 
 /** Mirror of the Rust `EncryptedDnsConfig` (see docs/EVENTS.md). */
 @Serializable

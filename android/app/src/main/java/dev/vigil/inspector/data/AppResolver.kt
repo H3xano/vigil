@@ -41,6 +41,9 @@ class AppResolver(context: Context) {
         else runCatching { pm.getApplicationInfo(key, 0).uid }.getOrNull()
     }.distinct()
 
+    /** UID of one app key (package or `uid:<n>`), null if not installed. A PackageManager call. */
+    fun uidFor(key: String): Int? = uidsFor(listOf(key)).firstOrNull()
+
     fun icon(key: String): Drawable? {
         val pkg = byKey(key).iconPackage ?: return null
         return runCatching { pm.getApplicationIcon(pkg) }.getOrNull()
