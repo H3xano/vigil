@@ -114,7 +114,9 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
     private fun decorate(r: JsonObject): JsonObject {
         val deviceId = settings.value.deviceId
         val withId = ExportRecords.withEventId(r, ExportRecords.recordId(deviceId, r))
-        return ExportRecords.withDevice(withId, deviceId, "${Build.MANUFACTURER} ${Build.MODEL}", Build.VERSION.SDK_INT, BuildConfig.VERSION_NAME)
+        return ExportRecords.withDevice(
+            withId, deviceId, "${Build.MANUFACTURER} ${Build.MODEL}", Build.VERSION.RELEASE, Build.VERSION.SDK_INT, BuildConfig.VERSION_NAME,
+        )
     }
 
     private suspend fun send(cfg: ExportSettings, batch: List<JsonObject>): SendOutcome {
@@ -130,7 +132,8 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
             }
             val host = Build.MODEL.replace(' ', '_')
             val maxBytes = if (cfg.transport == "udp") WireFormats.UDP_MAX_BYTES else Int.MAX_VALUE
-            val messages = records.map { WireFormats.syslogFitted(it, host, WireFormats.syslogTimestamp(Instant.now()), maxBytes) }
+            // The header carries the event's own time, not the (possibly much later) send time.
+            val messages = records.map { WireFormats.syslogFitted(it, host, WireFormats.recordSyslogTimestamp(it), maxBytes) }
             current.write(messages.filterNotNull())
             val tooLarge = messages.count { it == null }
             SendOutcome(
@@ -167,7 +170,7 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
         require(cfg.host.isNotBlank()) { "no syslog host configured" }
         require(cfg.port in 1..65535) { "invalid syslog port" }
         return when (cfg.transport) {
-            "udp" -> UdpSink(InetAddress.getByName(cfg.host), cfg.port)
+            "udp" -> UdpSink(cfg.host, cfg.port)
             "tcp" -> StreamSink(Socket().apply { connect(InetSocketAddress(cfg.host, cfg.port), 10_000); soTimeout = 15_000 })
             else -> {
                 // Connect first (with a timeout), then layer TLS over the
@@ -231,15 +234,32 @@ class SiemExporter(private val context: Context, private val settings: SettingsS
         fun write(messages: List<String>)
     }
 
-    private class UdpSink(private val addr: InetAddress, private val port: Int) : Sink {
+    /**
+     * UDP has no connection to notice a server move, so the collector's name
+     * is resolved again every few minutes (keeping the last address if that
+     * lookup fails), and after any send error: the pipeline then closes the
+     * sink and the next one resolves afresh.
+     */
+    private class UdpSink(private val host: String, private val port: Int) : Sink {
         private val socket = DatagramSocket()
+        private var addr: InetAddress = InetAddress.getByName(host)
+        private var resolvedAt = System.nanoTime()
+
         override fun write(messages: List<String>) {
+            if (System.nanoTime() - resolvedAt > RESOLVE_INTERVAL_NS) {
+                runCatching { InetAddress.getByName(host) }.onSuccess { addr = it }
+                resolvedAt = System.nanoTime()
+            }
             for (m in messages) {
                 val bytes = m.toByteArray(Charsets.UTF_8)
                 socket.send(DatagramPacket(bytes, bytes.size, addr, port))
             }
         }
         override fun close() = socket.close()
+
+        private companion object {
+            const val RESOLVE_INTERVAL_NS = 5 * 60 * 1_000_000_000L
+        }
     }
 
     private class StreamSink(private val socket: Socket) : Sink {

@@ -501,13 +501,14 @@ without custom pipelines. A completed flow looks like this:
   "event": {"kind": "event", "category": ["network"], "type": ["connection"], "action": "allow",
             "duration": 514000000, "end": "2026-09-27T18:06:02.628Z", "dataset": "vigil.flow",
             "id": "5f0c3a9e1b7d4c2a8e6f1a2b3c4d5e6f"},
-  "vigil": {"type": "flow", "flow_id": 17, "domain_source": "sni", "tags": []},
+  "vigil": {"type": "flow", "flow_id": 17, "domain_source": "sni", "tags": [], "android": {"api_level": 35}},
   "app": {"package": "com.android.chrome", "name": "Chrome", "uid": 10131, "system": true},
   "network": {"transport": "tcp", "protocol": "tls", "bytes": 5724},
   "source": {"ip": "10.111.222.1", "port": 40312, "bytes": 664},
   "destination": {"ip": "185.15.59.224", "port": 443, "domain": "en.wikipedia.org", "bytes": 5060},
-  "tls": {"version": "TLS1.3", "next_protocol": "h2", "client": {"ja4": "t13d1516h2_8daaf6152771_d8a2da3f94cd", "server_name": "en.wikipedia.org"}, "ech": false},
-  "host": {"id": "<install UUID>", "type": "mobile", "os": {"family": "android", "version": "35"}, "hostname": "Google Pixel 6"},
+  "tls": {"version": "1.3", "version_protocol": "tls", "next_protocol": "h2", "client": {"ja4": "t13d1516h2_8daaf6152771_d8a2da3f94cd", "server_name": "en.wikipedia.org"}, "ech": false},
+  "host": {"id": "<install UUID>", "type": "mobile", "hostname": "Google Pixel 6",
+           "os": {"type": "android", "family": "android", "name": "Android", "version": "15"}},
   "observer": {"vendor": "vigil", "product": "vigil", "version": "0.1.0"}
 }
 ```
@@ -518,8 +519,37 @@ engine knows the destination's autonomous system, ECS
 `destination.as.number` and `destination.as.organization.name` plus
 `vigil.asn_country` (the AS registration country). DNS records carry the
 upstream transport as `vigil.upstream`. DNS records use `dns.question.name/type`, `dns.response_code` and
-`dns.answers[].data`. Alerts use `event.kind: "alert"`, `event.severity`
-(0–100) and `message`.
+`dns.answers[].data`. `host.os.version` is the Android release (`15`,
+`16`) and `vigil.android.api_level` the API level (`35`, `36`).
+
+Alerts use `event.kind: "alert"`, `event.category: ["intrusion_detection",
+"network"]`, `event.type: ["denied"]` when vigil blocked the connection or
+lookup (`threat_domain`, `threat_ip`, and `threat_ja4` with blocking on) and
+`["info"]` otherwise, `event.severity` (0–100), `rule.name` (the alert
+kind, also in `event.action` and `vigil.kind`) and `message`. When the alert
+names a destination, it is in `destination.domain`, `destination.ip` and
+`destination.port` (from the alert `detail`, or the `target` when it is a
+domain or an address; not for AS numbers or JA4 fingerprints):
+
+```json
+{
+  "@timestamp": "2026-09-27T18:10:40.500Z",
+  "event": {"kind": "alert", "category": ["intrusion_detection", "network"], "type": ["denied"],
+            "action": "threat_domain", "severity": 73, "dataset": "vigil.alert", "id": "…"},
+  "message": "Lookup of bad.example sinkholed: listed by feed:urlhaus (bad.example)",
+  "rule": {"name": "threat_domain"},
+  "destination": {"domain": "bad.example"},
+  "vigil": {"type": "alert", "kind": "threat_domain", "severity": "high", "target": "bad.example",
+            "detail": {"category": "malware", "qtype": "A"}, "android": {"api_level": 35}},
+  "app": {"package": "com.example.app", "name": "Example", "uid": 10123, "system": false}
+}
+```
+
+Changed after 0.4.0 (update dashboards and saved searches): `tls.version` was
+`TLS1.3` and is now `1.3` with `tls.version_protocol: "tls"`;
+`host.os.version` was the API level and is now the Android release; alerts
+had `event.type: ["indicator"]` and a single category, and gained
+`rule.name` and `destination.*`.
 
 `event.id` is a deterministic hash of the install id and the record's content,
 so a record re-sent after a lost response carries the same id and can be
@@ -529,7 +559,9 @@ Transports:
 
 - **Syslog:** RFC 5424, facility local0, severity mapped from the alert
   severity, APP-NAME `vigil`, MSGID `flow`/`dns`/`alert`, and the JSON record
-  as the message. Timestamps carry at most six fractional digits. TCP and TLS
+  as the message. The header timestamp is the record's `@timestamp` (when
+  the event happened, not when it was sent), with at most six fractional
+  digits. TCP and TLS
   use RFC 6587 octet counting. TLS sends SNI, verifies the server hostname
   and can present a KeyChain client certificate. Over UDP a message is capped
   at 8 KB: long string values of larger records are shortened (and
@@ -546,7 +578,15 @@ counted when it overflows). The head batch is retried with backoff up to one
 minute until it is delivered or export is turned off (queued records are then
 counted as dropped). While the device is offline the exporter waits for a
 network. Authentication errors (401/403) are retried once a minute until the
-settings change; a batch refused with 400 is counted as rejected.
+settings change. A batch refused as a whole (400, 413 or 422) is split in
+halves, and the halves sent at once, until the refused records are isolated;
+only a single record the collector still refuses is counted as rejected. For
+Splunk HEC, error codes 7 (incorrect index), 10 (data channel missing) and 11
+(invalid data channel) are configuration problems of the token, not of the
+data: the records stay queued, are retried once a minute (at once when the
+settings change) and the Export screen explains the problem. The Export
+screen shows the queue depth (queued and in-flight records) next to the
+sent, dropped and rejected counts.
 
 The export level selects what is sent: alerts only (the default), alerts and
 DNS, or everything.

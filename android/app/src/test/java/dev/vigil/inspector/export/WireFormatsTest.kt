@@ -5,14 +5,18 @@ import dev.vigil.inspector.engine.AlertEvent
 import dev.vigil.inspector.engine.FlowEndEvent
 import dev.vigil.inspector.engine.FlowEvent
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 
 class WireFormatsTest {
     private val app = AppInfo("com.example.app", 10123, "Example", isSystem = false, isInstalledPackage = true)
@@ -62,5 +66,87 @@ class WireFormatsTest {
         assertTrue("record without timestamp has no time", hec[1]["time"] == null)
         assertTrue(hec.all { it["sourcetype"]!!.jsonPrimitive.content == "vigil:json" })
         assertEquals(records[0], hec[0]["event"])
+    }
+
+    private fun JsonObject.path(vararg keys: String): kotlinx.serialization.json.JsonElement? {
+        var cur: kotlinx.serialization.json.JsonElement? = this
+        for (k in keys) cur = (cur as? JsonObject)?.get(k)
+        return cur
+    }
+
+    private fun JsonObject.str(vararg keys: String) = (path(*keys) as? JsonPrimitive)?.content
+
+    private fun JsonObject.list(vararg keys: String) = (path(*keys) as JsonArray).map { it.jsonPrimitive.content }
+
+    @Test
+    fun tlsVersionIsEcsNumberAndProtocol() {
+        val r = ExportRecords.flow(flow, end, app)
+        assertEquals("1.3", r.str("tls", "version"))
+        assertEquals("tls", r.str("tls", "version_protocol"))
+        assertEquals("3", ExportRecords.tlsVersionNumber("SSL3"))
+        assertEquals("ssl", ExportRecords.tlsVersionProtocol("SSL3"))
+        assertNull(ExportRecords.tlsVersionNumber("unknown"))
+        assertNull(ExportRecords.tlsVersionProtocol(null))
+    }
+
+    @Test
+    fun threatAlertIsDeniedIntrusionDetectionWithDestination() {
+        val r = ExportRecords.alert(
+            AlertEvent(ts = 0, kind = "threat_domain", severity = "high", target = "1password-login.example", message = "m",
+                detail = Json.parseToJsonElement("""{"category":"phishing","qtype":"A"}""")),
+            app,
+        )
+        assertEquals("alert", r.str("event", "kind"))
+        assertEquals(listOf("intrusion_detection", "network"), r.list("event", "category"))
+        assertEquals(listOf("denied"), r.list("event", "type"))
+        assertEquals("threat_domain", r.str("rule", "name"))
+        assertEquals("1password-login.example", r.str("destination", "domain"))
+        assertNull(r.path("destination", "ip"))
+    }
+
+    @Test
+    fun alertDestinationsFromTargetAndDetail() {
+        fun dest(kind: String, target: String, detail: String? = null) =
+            ExportRecords.alertDestination(AlertEvent(ts = 0, kind = kind, severity = "medium", target = target, message = "m", detail = detail?.let { Json.parseToJsonElement(it) }))
+
+        assertEquals(ExportRecords.AlertTarget(null, "203.0.113.7", null), dest("threat_ip", "203.0.113.7"))
+        assertEquals(ExportRecords.AlertTarget("163.com", null, null), dest("beacon", "163.com", """{"kind":"connections"}"""))
+        assertEquals(
+            ExportRecords.AlertTarget("c2.example", "198.51.100.4", 443),
+            dest("beacon", "c2.example", """{"kind":"intra_flow","flow_id":3,"dst":"198.51.100.4:443","domain":"c2.example"}"""),
+        )
+        assertEquals(ExportRecords.AlertTarget(null, "2001:db8::1", 853), dest("threat_ja4", "t13d190900_9dc949149365_97f8aa674fd9", """{"dst":"[2001:db8::1]:853","domain":null}"""))
+        assertEquals(ExportRecords.AlertTarget("cdn.example", "192.0.2.9", null), dest("new_asn", "AS64500", """{"destination":"cdn.example","dst_ip":"192.0.2.9"}"""))
+        assertNull("a JA4 or AS number is not a destination", dest("new_asn", "AS64500"))
+    }
+
+    @Test
+    fun beaconAlertIsInfoNotIndicator() {
+        val r = ExportRecords.alert(AlertEvent(ts = 0, kind = "beacon", severity = "medium", target = "x.example", message = "m"), app)
+        assertEquals(listOf("info"), r.list("event", "type"))
+        val ja4Blocked = ExportRecords.alert(
+            AlertEvent(ts = 0, kind = "threat_ja4", severity = "high", target = "t13d", message = "m", detail = Json.parseToJsonElement("""{"blocked":true}""")),
+            app,
+        )
+        assertEquals(listOf("denied"), ja4Blocked.list("event", "type"))
+    }
+
+    @Test
+    fun deviceMetadataUsesAndroidRelease() {
+        val r = ExportRecords.withDevice(ExportRecords.alert(AlertEvent(ts = 0, kind = "beacon", severity = "low", target = "x", message = "m"), app),
+            "id-1", "Google Pixel 8", "16", 36, "0.5.0")
+        assertEquals("16", r.str("host", "os", "version"))
+        assertEquals("android", r.str("host", "os", "type"))
+        assertEquals(36, r.path("vigil", "android", "api_level")!!.jsonPrimitive.int)
+        assertEquals("alert", r.str("vigil", "type"))
+    }
+
+    @Test
+    fun syslogHeaderUsesTheRecordTime() {
+        val r = JsonObject(mapOf("@timestamp" to JsonPrimitive("2026-09-27T18:06:02.114Z")))
+        val now = Instant.parse("2026-09-28T00:00:00Z")
+        assertEquals("2026-09-27T18:06:02.114Z", WireFormats.recordSyslogTimestamp(r, now))
+        assertEquals("2026-09-28T00:00:00Z", WireFormats.recordSyslogTimestamp(JsonObject(emptyMap()), now))
+        assertEquals("2026-09-28T00:00:00Z", WireFormats.recordSyslogTimestamp(JsonObject(mapOf("@timestamp" to JsonPrimitive("garbage"))), now))
     }
 }
