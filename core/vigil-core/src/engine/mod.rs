@@ -21,11 +21,11 @@ mod udp;
 pub(crate) mod upstream;
 
 use crate::config::{Config, ConfigError};
-use crate::detect::{AlertLimiter, BeaconDetector};
+use crate::detect::{AlertLimiter, BeaconDetector, FlowBurstDetector, FlowSample};
 use crate::dnscache::DnsCache;
 use crate::event::{
     now_ms, AlertEvent, EngineEvent, Event, EventQueue, FlowEndEvent, FlowEvent, FlowUpdateEvent,
-    Severity, StatsEvent,
+    Severity, StatsEvent, Verdict,
 };
 use crate::intel::parse_feed_reader_kind;
 use crate::packet::{self, PROTO_TCP, PROTO_UDP};
@@ -137,9 +137,26 @@ impl Limits {
 
 const SHUTDOWN_REASON: &str = "engine stopped";
 
+/// What the in-flow beacon detector reports about an allowed flow.
+struct BeaconMeta {
+    uid: Option<u32>,
+    /// Domain, or the destination address when there is none.
+    target: String,
+    domain: Option<String>,
+    dst: String,
+    proto: &'static str,
+}
+
+struct OpenFlow {
+    counters: Arc<FlowCounters>,
+    /// Set for allowed flows that may be watched for in-flow beaconing
+    /// (not to an ignored or allowlisted name).
+    beacon: Option<Box<BeaconMeta>>,
+}
+
 #[derive(Default)]
 struct OpenFlows {
-    flows: HashMap<u64, Arc<FlowCounters>>,
+    flows: HashMap<u64, OpenFlow>,
     /// The engine has shut down: flows opened from now on end at once.
     closed: bool,
 }
@@ -151,6 +168,8 @@ pub(crate) struct Shared {
     pub events: Arc<EventQueue>,
     pub dns_cache: DnsCache,
     pub beacon: BeaconDetector,
+    /// Periodic bursts inside long-lived flows (sampled by housekeeping).
+    flow_beacon: FlowBurstDetector,
     pub limiter: AlertLimiter,
     pub stats: Stats,
     pub limits: Limits,
@@ -180,6 +199,7 @@ impl Shared {
             events: Arc::new(EventQueue::new(EVENT_QUEUE)),
             dns_cache: DnsCache::new(50_000),
             beacon: BeaconDetector::new(),
+            flow_beacon: FlowBurstDetector::new(),
             limiter: AlertLimiter::new(Duration::from_secs(3600)),
             stats: Stats::default(),
             next_id: AtomicU64::new(1),
@@ -218,6 +238,7 @@ impl Shared {
     /// its `flow_end`.
     pub fn open_flow(&self, ev: FlowEvent, counters: &Arc<FlowCounters>) {
         let id = ev.id;
+        let beacon = self.beacon_meta(&ev);
         // Emitting under the lock orders `flow` before any `flow_end`
         // emitted by `close_all_flows`.
         let mut open = self.open_flows.lock();
@@ -227,15 +248,45 @@ impl Shared {
                 counters.end_event(id, Some(SHUTDOWN_REASON.into())),
             ));
         } else {
-            open.flows.insert(id, counters.clone());
+            open.flows.insert(
+                id,
+                OpenFlow {
+                    counters: counters.clone(),
+                    beacon,
+                },
+            );
         }
+    }
+
+    /// The in-flow beacon detector's view of a flow, or None if the flow
+    /// is never to be watched: blocked, or to a name (sent by the app) on
+    /// `beacon.ignore_domains` or the user allowlist.
+    fn beacon_meta(&self, ev: &FlowEvent) -> Option<Box<BeaconMeta>> {
+        if ev.verdict != Some(Verdict::Allow) {
+            return None;
+        }
+        if let (Some("sni" | "http" | "quic"), Some(d)) = (ev.domain_source, ev.domain.as_deref()) {
+            if self.config().beacon.is_ignored(d) || self.policy.read().is_allowlisted(d) {
+                return None;
+            }
+        }
+        Some(Box::new(BeaconMeta {
+            uid: ev.uid,
+            target: ev.domain.clone().unwrap_or_else(|| ev.dst_ip.clone()),
+            domain: ev.domain.clone(),
+            dst: format!("{}:{}", ev.dst_ip, ev.dst_port),
+            proto: ev.app_proto.unwrap_or(ev.proto),
+        }))
     }
 
     /// Emits the `flow_end` for an open flow (exactly once).
     pub fn finish_flow(&self, id: u64, error: Option<String>) {
-        let c = self.open_flows.lock().flows.remove(&id);
-        if let Some(c) = c {
-            self.emit(Event::FlowEnd(c.end_event(id, error)));
+        let o = self.open_flows.lock().flows.remove(&id);
+        if let Some(o) = o {
+            if o.beacon.is_some() {
+                self.flow_beacon.forget(id);
+            }
+            self.emit(Event::FlowEnd(o.counters.end_event(id, error)));
         }
     }
 
@@ -244,8 +295,81 @@ impl Shared {
         open.closed = true;
         let mut flows: Vec<_> = open.flows.drain().collect();
         flows.sort_by_key(|(id, _)| *id);
-        for (id, c) in flows {
-            self.emit(Event::FlowEnd(c.end_event(id, Some(reason.to_string()))));
+        for (id, o) in flows {
+            self.emit(Event::FlowEnd(
+                o.counters.end_event(id, Some(reason.to_string())),
+            ));
+        }
+        self.flow_beacon.clear();
+    }
+
+    /// One sampling pass of the in-flow beacon detector over the open flows'
+    /// byte counters (no work on the packet path). Raises a `beacon` alert
+    /// with `detail.kind = "intra_flow"` for each flow found periodic.
+    fn sample_flow_bursts(&self) {
+        let cfg = self.config();
+        let now = Instant::now();
+        let hits = {
+            let open = self.open_flows.lock();
+            let samples = open
+                .flows
+                .iter()
+                .filter(|(_, o)| o.beacon.is_some())
+                .map(|(id, o)| {
+                    let c = &o.counters;
+                    FlowSample {
+                        id: *id,
+                        bytes: c.tx.load(Relaxed).wrapping_add(c.rx.load(Relaxed)),
+                        age: now.saturating_duration_since(c.started),
+                    }
+                });
+            let hits = self.flow_beacon.sample(&cfg.beacon, samples, now);
+            // Copy what the alerts need while the flows are known to be open.
+            hits.into_iter()
+                .filter_map(|(id, hit)| {
+                    let o = open.flows.get(&id)?;
+                    let m = o.beacon.as_deref()?;
+                    let age_s = now.saturating_duration_since(o.counters.started).as_secs();
+                    Some((
+                        id,
+                        hit,
+                        m.uid,
+                        m.target.clone(),
+                        serde_json::json!({
+                            "kind": "intra_flow",
+                            "flow_id": id,
+                            "dst": m.dst,
+                            "domain": m.domain,
+                            "proto": m.proto,
+                            "age_s": age_s,
+                        }),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (_, hit, uid, target, mut detail) in hits {
+            if let Some(d) = detail.as_object_mut() {
+                d.insert("interval_s".into(), hit.mean_interval_s.into());
+                d.insert("jitter".into(), hit.jitter.into());
+                d.insert("samples".into(), hit.samples.into());
+                d.insert("burst_bytes".into(), hit.burst_bytes.into());
+            }
+            // Same finding as a connection beacon to the same target: one
+            // alert per app and target per hour, whichever detector saw it.
+            self.alert(
+                "beacon",
+                Severity::Medium,
+                uid,
+                &target,
+                &target,
+                format!(
+                    "Small bursts of data (about {} bytes) every {:.0}s (jitter {:.0}%) inside one open connection to {target}",
+                    hit.burst_bytes,
+                    hit.mean_interval_s,
+                    hit.jitter * 100.0
+                ),
+                detail,
+            );
         }
     }
 
@@ -255,7 +379,7 @@ impl Shared {
             .lock()
             .flows
             .iter()
-            .map(|(id, c)| (*id, c.clone()))
+            .map(|(id, o)| (*id, o.counters.clone()))
             .collect();
         for (id, c) in flows {
             let (tx, rx) = (c.tx.load(Relaxed), c.rx.load(Relaxed));
@@ -690,6 +814,7 @@ async fn housekeeping(shared: Arc<Shared>) {
             shared.emit_flow_updates();
             shared.emit(Event::Stats(shared.snapshot()));
         }
+        shared.sample_flow_bursts();
         // Admitted SYNs whose stream never materialised (e.g. the client
         // gave up). Dropping the metadata releases its slot and key.
         let stale: Vec<tcp::FlowMeta> = {
@@ -762,6 +887,70 @@ mod tests {
         let (opened, ended) = flow_ids(&events);
         assert_eq!(opened, vec![1, 2]);
         assert_eq!(ended, vec![1, 2]);
+    }
+
+    #[test]
+    fn in_flow_beacon_skips_blocked_ignored_and_allowlisted() {
+        let s = test_shared(Config {
+            allow_domains: vec!["trusted.example".into()],
+            ..Default::default()
+        });
+        let flow = |id, domain: &str, source, verdict| FlowEvent {
+            id,
+            domain: Some(domain.into()),
+            domain_source: Some(source),
+            dst_ip: "192.0.2.1".into(),
+            dst_port: 443,
+            verdict: Some(verdict),
+            ..Default::default()
+        };
+        let watched = |ev: &FlowEvent| s.beacon_meta(ev).is_some();
+        assert!(watched(&flow(1, "c2.example", "sni", Verdict::Allow)));
+        assert!(!watched(&flow(2, "c2.example", "sni", Verdict::Block)));
+        assert!(!watched(&flow(
+            3,
+            "mtalk.google.com",
+            "sni",
+            Verdict::Allow
+        )));
+        assert!(!watched(&flow(
+            4,
+            "api.trusted.example",
+            "quic",
+            Verdict::Allow
+        )));
+        // A DNS-derived name is only a hint: it never exempts a flow.
+        assert!(watched(&flow(5, "mtalk.google.com", "dns", Verdict::Allow)));
+        let m = s
+            .beacon_meta(&FlowEvent {
+                dst_ip: "192.0.2.9".into(),
+                dst_port: 8443,
+                proto: "tcp",
+                verdict: Some(Verdict::Allow),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            (m.target.as_str(), m.dst.as_str()),
+            ("192.0.2.9", "192.0.2.9:8443")
+        );
+        // Ending a flow stops its tracking.
+        let c = FlowCounters::new();
+        s.open_flow(flow(6, "c2.example", "sni", Verdict::Allow), &c);
+        let mut beacon = Config::default().beacon;
+        beacon.flow_min_age_s = 0.0;
+        s.flow_beacon.sample(
+            &beacon,
+            [FlowSample {
+                id: 6,
+                bytes: 0,
+                age: Duration::from_secs(1),
+            }],
+            Instant::now(),
+        );
+        assert_eq!(s.flow_beacon.len(), 1);
+        s.finish_flow(6, None);
+        assert!(s.flow_beacon.is_empty());
     }
 
     #[test]

@@ -434,6 +434,15 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
         );
     }
     let cfg = shared.config();
+    // Known push/keep-alive services (by a name the app sent) are exempt.
+    let ignored = matches!(ev.domain_source, Some("sni" | "http" | "quic"))
+        && ev
+            .domain
+            .as_deref()
+            .is_some_and(|d| cfg.beacon.is_ignored(d));
+    if ignored {
+        return;
+    }
     if let Some(hit) = shared
         .beacon
         .observe(&cfg.beacon, ev.uid, &target, Instant::now())
@@ -445,7 +454,7 @@ pub(crate) fn observe_allowed(shared: &Shared, ev: &FlowEvent) {
             &target,
             &target,
             format!("Periodic connections to {target} every {:.0}s (jitter {:.0}%)", hit.mean_interval_s, hit.jitter * 100.0),
-            serde_json::json!({ "interval_s": hit.mean_interval_s, "jitter": hit.jitter, "samples": hit.samples, "proto": ev.proto }),
+            serde_json::json!({ "kind": "connections", "interval_s": hit.mean_interval_s, "jitter": hit.jitter, "samples": hit.samples, "proto": ev.proto }),
         );
     }
 }
