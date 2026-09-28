@@ -104,6 +104,11 @@ data class Socks5Config(
     val udp: String = "auto",
 )
 
+/**
+ * Mirror of the Rust `BeaconConfig`. The in-flow detector's `flow_*` fields
+ * and `ignore_domains` are deliberately not mirrored: omitted, they keep the
+ * engine's defaults (see docs/EVENTS.md, "`beacon`").
+ */
 @Serializable
 data class BeaconConfig(
     val enabled: Boolean = true,

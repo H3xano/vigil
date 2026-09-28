@@ -2,6 +2,7 @@ package dev.vigil.inspector.data
 
 import android.content.Context
 import dev.vigil.inspector.engine.EngineJson
+import dev.vigil.inspector.processing.ExfilSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +49,8 @@ data class Settings(
     /** "low", "normal" or "high" sensitivity. */
     val beaconSensitivity: String = "normal",
     val noveltyAlerts: Boolean = false,
+    /** Alerts for unusually large uploads while an app is in the background. */
+    val exfil: ExfilSettings = ExfilSettings(),
     val notifyAlerts: Boolean = true,
     val retentionDays: Int = 7,
     val export: ExportSettings = ExportSettings(),

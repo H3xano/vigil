@@ -123,7 +123,8 @@ pub enum Severity {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AlertEvent {
     pub ts: u64,
-    /// "beacon", "threat_domain", "threat_ip", "threat_ja4", "encrypted_dns",
+    /// "beacon" (`detail.kind`: "connections" or "intra_flow"),
+    /// "threat_domain", "threat_ip", "threat_ja4", "encrypted_dns",
     /// "hardcoded_dns".
     pub kind: &'static str,
     pub severity: Severity,

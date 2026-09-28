@@ -42,10 +42,10 @@ Run all of these before committing anything that touches the engine or the
 app. Every one was green at the 0.1.0 commit.
 
 ```sh
-cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 113 unit tests
-scripts/e2e-netns.sh          # 156 checks: direct, edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 122 unit tests
+scripts/e2e-netns.sh          # 166 checks: direct, beacon (in-flow beaconing), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
 scripts/jni-smoke.sh          # 28 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest   # 86 JVM tests (1 skipped: TaxiiLiveTest)
+cd android && ./gradlew lintDebug testDebugUnitTest   # 101 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 scripts/android-features.sh   # 12 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed
@@ -171,7 +171,7 @@ would make the second build trivially identical.
   namespace** (`ip link add … type wireguard`); `scripts/e2e/wgconf.py`
   configures them over generic netlink, so wireguard-tools are not needed.
   Without the module the stage prints SKIP. `E2E_STAGES="wireguard"` (or
-  `socks5`, `edns`, `direct`) runs single stages.
+  `socks5`, `edns`, `beacon`, `direct`) runs single stages.
 - **Stopping the engine is two steps:** `nativeShutdown` (stops the runtime and
   queues `flow_end` for every open flow), drain with `nativePollEvents(…, 0)`,
   then `nativeStop` frees the handle. Skipping the drain loses final byte counts.
@@ -206,7 +206,7 @@ core/vigil-core/src/
   ../testdata/edns/ test-only CA and server certificate (dns.vigil.test, 127.0.0.1)
   intel.rs          DomainSet / IpSet / Ja4Set / feed parsing
   policy.rs         Policy, feed categories, DoH host list, JA4 block reasons
-  detect.rs         beacon detector, alert limiter
+  detect.rs         beacon detectors (new connections, bursts inside long-lived flows), alert limiter
   event.rs          event types + bounded queue
   config.rs         Config (JSON contract with the app); config/upstream.rs the upstream section
 core/vigil-jni/src/lib.rs     JNI surface (mirrors engine/VigilNative.kt)
@@ -215,7 +215,7 @@ core/vendor/boringtun         boringtun 0.7.1 built as an rlib only
 android/app/src/main/java/dev/vigil/inspector/
   vpn/              VigilVpnService, routes, config factory, tile, ServiceState
   engine/           VigilNative, PlatformBridge, EngineHandle, event/config models
-  processing/       EventProcessor, ForegroundTracker, AlertNotifier
+  processing/       EventProcessor, ForegroundTracker, AlertNotifier, ExfilDetector (upload-volume alerts)
   data/             Room DB, settings (UpstreamSettings, WgQuick parser), app resolver,
                     feed catalog/repository, JA4 validation and converters (Ja4.kt),
                     STIX pattern reader (Stix.kt), TAXII 2.1 client and indicator state (Taxii.kt)

@@ -344,17 +344,60 @@ pub fn parse_https_url(url: &str) -> Result<(String, u16, String), String> {
     Ok((host, port, target))
 }
 
+/// Beaconing detection. `enabled`, `min_events`, `max_jitter` and the
+/// interval bounds apply to both detectors: new connections to one
+/// destination, and activity bursts inside one long-lived flow (`flow_*`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BeaconConfig {
     pub enabled: bool,
-    /// Number of connections needed before a series is judged.
+    /// Number of connections (or bursts) needed before a series is judged.
     pub min_events: usize,
     /// Maximum coefficient of variation (stddev / mean) of the intervals.
     pub max_jitter: f64,
     pub min_interval_s: f64,
     pub max_interval_s: f64,
+    /// Look for periodic bursts inside long-lived flows.
+    pub flow_enabled: bool,
+    /// A flow is watched only once it is this old (seconds).
+    pub flow_min_age_s: f64,
+    /// Silence (seconds) after which new bytes start a new burst.
+    pub flow_idle_gap_s: f64,
+    /// A flow is watched only while its average rate over its lifetime
+    /// (both directions) stays at or below this (bytes/s).
+    pub flow_max_avg_bps: f64,
+    /// Bounds of the mean burst size (bytes, both directions). Bursts below
+    /// the minimum are protocol keep-alives (HTTP/2, WebSocket, MQTT, QUIC
+    /// pings), which push and chat apps send periodically by design.
+    pub flow_min_burst_bytes: u64,
+    pub flow_max_burst_bytes: u64,
+    /// Flows watched at once (engine-wide); further flows are not watched.
+    pub flow_max_tracked: usize,
+    /// Destinations (and their subdomains) never reported as beaconing by
+    /// either detector: known push and keep-alive services. Matched against
+    /// names the app sent (SNI, QUIC, HTTP Host), not DNS-derived hints.
+    pub ignore_domains: Vec<String>,
 }
+
+/// Push services whose persistent connections carry periodic heartbeats by
+/// design: Firebase Cloud Messaging (the host list of Google's "Configure
+/// your network for FCM"), Apple Push Notification service and Mozilla
+/// WebPush.
+pub const DEFAULT_BEACON_IGNORE: &[&str] = &[
+    "mtalk.google.com",
+    "mtalk4.google.com",
+    "alt1-mtalk.google.com",
+    "alt2-mtalk.google.com",
+    "alt3-mtalk.google.com",
+    "alt4-mtalk.google.com",
+    "alt5-mtalk.google.com",
+    "alt6-mtalk.google.com",
+    "alt7-mtalk.google.com",
+    "alt8-mtalk.google.com",
+    "android.apis.google.com",
+    "push.apple.com",
+    "push.services.mozilla.com",
+];
 
 impl Default for BeaconConfig {
     fn default() -> Self {
@@ -364,7 +407,34 @@ impl Default for BeaconConfig {
             max_jitter: 0.15,
             min_interval_s: 10.0,
             max_interval_s: 3600.0,
+            flow_enabled: true,
+            flow_min_age_s: 60.0,
+            flow_idle_gap_s: 5.0,
+            flow_max_avg_bps: 4096.0,
+            flow_min_burst_bytes: 256,
+            flow_max_burst_bytes: 64 * 1024,
+            flow_max_tracked: 512,
+            ignore_domains: DEFAULT_BEACON_IGNORE
+                .iter()
+                .map(|d| d.to_string())
+                .collect(),
         }
+    }
+}
+
+impl BeaconConfig {
+    /// Whether `domain` is an `ignore_domains` entry or a subdomain of one
+    /// (case-insensitive; a leading `*.` in an entry is accepted).
+    pub fn is_ignored(&self, domain: &str) -> bool {
+        let d = domain.trim_end_matches('.').as_bytes();
+        self.ignore_domains.iter().any(|e| {
+            let e = e.trim().trim_start_matches("*.").trim_end_matches('.');
+            let e = e.as_bytes();
+            !e.is_empty()
+                && d.len() >= e.len()
+                && d[d.len() - e.len()..].eq_ignore_ascii_case(e)
+                && (d.len() == e.len() || d[d.len() - e.len() - 1] == b'.')
+        })
     }
 }
 
@@ -448,6 +518,28 @@ impl Config {
                     "{name} must be a finite, non-negative number (got {v})"
                 ));
             }
+        }
+        for (name, v) in [
+            ("beacon.flow_min_age_s", b.flow_min_age_s),
+            ("beacon.flow_max_avg_bps", b.flow_max_avg_bps),
+        ] {
+            if !v.is_finite() || v < 0.0 {
+                return bad(format!(
+                    "{name} must be a finite, non-negative number (got {v})"
+                ));
+            }
+        }
+        if !b.flow_idle_gap_s.is_finite() || b.flow_idle_gap_s <= 0.0 {
+            return bad(format!(
+                "beacon.flow_idle_gap_s must be a finite, positive number (got {})",
+                b.flow_idle_gap_s
+            ));
+        }
+        if b.flow_min_burst_bytes > b.flow_max_burst_bytes {
+            return bad(format!(
+                "beacon.flow_min_burst_bytes ({}) exceeds beacon.flow_max_burst_bytes ({})",
+                b.flow_min_burst_bytes, b.flow_max_burst_bytes
+            ));
         }
         if b.min_interval_s > b.max_interval_s {
             return bad(format!(
@@ -536,6 +628,27 @@ mod tests {
         assert_eq!(back, c);
     }
 
+    #[test]
+    fn beacon_ignore_domains() {
+        let b = BeaconConfig::default();
+        assert!(b.is_ignored("mtalk.google.com"));
+        assert!(b.is_ignored("MTALK.google.com."));
+        assert!(b.is_ignored("alt3-mtalk.google.com"));
+        assert!(b.is_ignored("courier.push.apple.com"));
+        assert!(b.is_ignored("1-courier.push.apple.com"));
+        assert!(!b.is_ignored("evilmtalk.google.com"));
+        assert!(!b.is_ignored("google.com"));
+        assert!(!b.is_ignored("push.apple.com.evil.example"));
+        let c =
+            Config::from_json(r#"{"beacon":{"ignore_domains":["*.example.org", ""]}}"#).unwrap();
+        assert!(c.beacon.is_ignored("a.example.org"));
+        assert!(c.beacon.is_ignored("example.org"));
+        assert!(
+            !c.beacon.is_ignored("mtalk.google.com"),
+            "a list replaces the defaults"
+        );
+    }
+
     fn rejected(json: &str) -> bool {
         matches!(Config::from_json(json), Err(ConfigError::Invalid(_)))
     }
@@ -546,6 +659,12 @@ mod tests {
         assert!(rejected(r#"{"beacon":{"min_interval_s":-1}}"#));
         assert!(rejected(
             r#"{"beacon":{"min_interval_s":100,"max_interval_s":10}}"#
+        ));
+        assert!(rejected(r#"{"beacon":{"flow_idle_gap_s":0}}"#));
+        assert!(rejected(r#"{"beacon":{"flow_min_age_s":-1}}"#));
+        assert!(rejected(r#"{"beacon":{"flow_max_avg_bps":-1}}"#));
+        assert!(rejected(
+            r#"{"beacon":{"flow_min_burst_bytes":100,"flow_max_burst_bytes":10}}"#
         ));
         assert!(rejected(r#"{"mtu":575}"#));
         assert!(rejected(r#"{"mtu":0}"#));

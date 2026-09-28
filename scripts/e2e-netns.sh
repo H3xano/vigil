@@ -11,15 +11,15 @@
 # servers and public presets) and the upstream paths: a local SOCKS5 proxy
 # (scripts/e2e/upstream-socks5.sh) and a kernel WireGuard peer in a nested
 # namespace (scripts/e2e/upstream-wireguard.sh). E2E_STAGES selects stages
-# (default "direct edns socks5 wireguard").
+# (default "direct beacon edns socks5 wireguard").
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
-trap 'kill ${cli_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'kill ${cli_pid:-} ${beacon_pid:-} ${rst_pid:-} ${edns_pid:-} ${socks_pid:-} 2>/dev/null || true; rm -rf "$work"' EXIT
 export PATH="$HOME/.cargo/bin:$PATH"
 (cd "$root/core" && cargo build -q -p vigil-cli)
 cli="$root/core/target/debug/vigil-cli"
-stages="${E2E_STAGES:-direct edns socks5 wireguard}"
+stages="${E2E_STAGES:-direct beacon edns socks5 wireguard}"
 results="$work/results.txt"; : > "$results"
 
 cat > "$work/feed.txt" <<'FEED'
@@ -71,6 +71,29 @@ unset cli_pid
 
 python3 "$root/scripts/e2e/check_events.py" "$work/events.jsonl" | tee -a "$results"
 cp "$work/events.jsonl" "$root/scripts/e2e/last-events.jsonl"
+fi
+
+if [[ " $stages " == *" beacon "* ]]; then
+echo "--- beaconing inside long-lived connections"
+# Local servers on the host: a 2 s heartbeat inside one connection must raise
+# an intra_flow beacon alert; a bulk upload and irregular chatter must not.
+# Short test thresholds: 250 ms sampling, flows watched after 2 s, 1 s idle
+# gap, no rate cap (so the burst logic itself rejects the bulk upload).
+export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+beacon_port=18770
+python3 "$root/scripts/e2e/beacon_server.py" "$VIGIL_HOST_IP" "$beacon_port" &
+beacon_pid=$!
+echo '{"stats_interval_ms": 250, "beacon": {"min_interval_s": 1.0, "min_events": 6, "max_jitter": 0.25,
+  "flow_min_age_s": 2, "flow_idle_gap_s": 1.0, "flow_min_burst_bytes": 64, "flow_max_avg_bps": 1e12}}' > "$work/beacon.json"
+rm -f "$sock"
+"$cli" run --fd-socket "$sock" --config "$work/beacon.json" > "$work/beacon-events.jsonl" 2> "$work/beacon-cli.log" &
+cli_pid=$!
+unshare -rnm bash "$root/scripts/e2e/inside-beacon.sh" "$sock" "$results" "$beacon_port" || true
+sleep 1
+kill -INT $cli_pid; wait $cli_pid || true
+kill $beacon_pid 2>/dev/null || true
+unset cli_pid beacon_pid
+python3 "$root/scripts/e2e/check_beacon.py" "$work/beacon-events.jsonl" "$beacon_port" | tee -a "$results"
 fi
 
 if [[ " $stages " == *" edns "* ]]; then

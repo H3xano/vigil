@@ -39,9 +39,16 @@ import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.EmptyState
 import dev.vigil.inspector.ui.components.SeverityDot
 import dev.vigil.inspector.ui.components.Tag
+import dev.vigil.inspector.engine.EngineJson
+import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.formatDateTime
 import dev.vigil.inspector.ui.formatRelative
 import dev.vigil.inspector.ui.theme.VigilColors
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
+import java.util.Locale
 
 @Composable
 fun AlertsScreen(vm: MainViewModel, nav: NavController) {
@@ -54,7 +61,7 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
         if (alerts.isEmpty()) {
             EmptyState(
                 "No alerts",
-                "vigil raises alerts for threat-feed hits, periodic beaconing, apps bypassing the system resolver and encrypted DNS use.",
+                "vigil raises alerts for threat-feed hits, periodic beaconing, unusual background uploads, apps bypassing the system resolver and encrypted DNS use.",
             )
             return@Column
         }
@@ -92,7 +99,10 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
                     Text(a.message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
                     if (expanded) {
                         Text(formatDateTime(a.ts), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                        alertHelp(a.kind)?.let { (term, text) ->
+                        alertNumbers(a.kind, a.detail)?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+                        }
+                        alertHelp(a.kind, a.detail)?.let { (term, text) ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("What does this mean?", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 HelpIcon(term, text)
@@ -115,8 +125,13 @@ fun AlertsScreen(vm: MainViewModel, nav: NavController) {
     }
 }
 
-private fun alertHelp(kind: String): Pair<String, String>? = when (kind) {
-    "beacon" -> "Beaconing" to Glossary.BEACONING
+private fun alertHelp(kind: String, detail: String): Pair<String, String>? = when (kind) {
+    "beacon" -> if (detailObject(detail)?.str("kind") == "intra_flow") {
+        "Beaconing inside a connection" to Glossary.BEACONING_IN_CONNECTION
+    } else {
+        "Beaconing" to Glossary.BEACONING
+    }
+    "exfil_volume" -> "Exfiltration" to Glossary.EXFILTRATION
     "threat_domain", "threat_ip" -> "Threat feed hit" to
         "The destination is listed in an enabled threat-intelligence feed (malware, phishing or C2). ${Glossary.C2}"
     "threat_ja4" -> "JA4 match" to Glossary.JA4_MATCH
@@ -126,4 +141,56 @@ private fun alertHelp(kind: String): Pair<String, String>? = when (kind) {
     "hardcoded_dns" -> "Bypassing system DNS" to
         "The app sent DNS queries straight to its own resolver instead of the one Android configured."
     else -> null
+}
+
+private fun detailObject(detail: String): JsonObject? =
+    runCatching { EngineJson.json.parseToJsonElement(detail) as? JsonObject }.getOrNull()
+
+private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+private fun JsonObject.num(key: String): Double? = (this[key] as? JsonPrimitive)?.doubleOrNull
+private fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
+
+private fun seconds(s: Double): String = if (s >= 100) String.format(Locale.US, "%.0f s", s) else String.format(Locale.US, "%.1f s", s)
+
+/**
+ * The numbers behind a beacon or upload-volume alert in plain words, or
+ * null for other kinds and unreadable details (older alerts, other versions).
+ */
+internal fun alertNumbers(kind: String, detail: String): String? {
+    val d = detailObject(detail) ?: return null
+    return when (kind) {
+        "beacon" -> {
+            val interval = d.num("interval_s") ?: return null
+            val jitter = d.num("jitter") ?: 0.0
+            val samples = d.long("samples")
+            val every = "every ${seconds(interval)} ± ${seconds(interval * jitter)}"
+            if (d.str("kind") == "intra_flow") {
+                val burst = d.long("burst_bytes")?.let { "a burst of about ${formatBytes(it)} " }.orEmpty()
+                val to = d.str("domain") ?: d.str("dst")
+                "Inside one open connection${to?.let { " to $it" }.orEmpty()}: $burst$every" +
+                    (samples?.let { " ($it bursts)" }.orEmpty())
+            } else {
+                "A new connection $every" + (samples?.let { " ($it connections)" }.orEmpty())
+            }
+        }
+        "exfil_volume" -> {
+            val up = d.long("uploaded_bytes") ?: return null
+            val window = d.str("window") ?: "the window"
+            val base = d.long("baseline_bytes_per_hour")
+            val factor = d.num("factor") ?: 3.0
+            val baseText = if (base != null) {
+                "usual busiest hour ${formatBytes(base)} (alerts above ${String.format(Locale.US, "%.0f", factor)}× that)"
+            } else {
+                "no upload history yet"
+            }
+            val dest = d.str("destination")
+            val destText = if (dest != null) {
+                "\nTo $dest: ${formatBytes(d.long("dest_tx_bytes") ?: 0)} sent, ${formatBytes(d.long("dest_rx_bytes") ?: 0)} received"
+            } else {
+                ""
+            }
+            "Uploaded ${formatBytes(up)} in $window; $baseText; floor ${formatBytes(d.long("floor_bytes") ?: 0)}$destText"
+        }
+        else -> null
+    }
 }

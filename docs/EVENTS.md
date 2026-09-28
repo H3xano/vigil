@@ -160,10 +160,84 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `threat_domain` | high | a lookup or connection matches a malware, phishing or C2 feed |
 | `threat_ip` | high | a connection's address, or a hard-coded DNS server's address, matches a threat IP feed |
 | `threat_ja4` | high | a TLS or QUIC ClientHello's JA4 fingerprint is listed by a feed. `target` is the fingerprint; `detail`: `ja4`, `rule`, `label`, `feed`, `dst` (`ip:port`), `domain`, `proto`, `blocked` |
-| `beacon` | medium | ≥ 6 connections to one destination at a near-constant interval (10 s–1 h, jitter ≤ 15 % by default) |
+| `beacon` | medium | ≥ 6 connections to one destination at a near-constant interval (10 s–1 h, jitter ≤ 15 % by default), or ≥ 6 bursts of data at such an interval inside one long-lived connection. `detail.kind` says which (see "Beaconing" below) |
 | `encrypted_dns` | low | an app uses DoH, DoT or DoQ, so its lookups are invisible |
 | `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver |
 | `new_destination` | info | (opt-in, app-side) after a 24 h learning period, an app contacts a domain it never used before |
+| `exfil_volume` | medium (low when the foreground state is unknown) | (app-side) an app uploads an unusual volume while not in the foreground (see "Upload volume" below) |
+
+#### Beaconing
+
+`beacon` alerts come from two detectors that share the thresholds of the
+`beacon` config section and the suppression key (kind, app, `target`), so
+one destination raises at most one `beacon` alert per app and hour,
+whichever detector saw it. `target` is the domain (else the address).
+
+`detail.kind = "connections"`: new connections to the target at a regular
+interval. `detail`: `interval_s` (mean), `jitter` (coefficient of
+variation of the intervals, 0.05 = 5 %), `samples` (connections), `proto`.
+Alerts stored by older versions have no `kind`.
+
+`detail.kind = "intra_flow"`: one connection (TCP or UDP/QUIC) that stays
+open and moves a burst of data at a regular interval, the way an implant
+checks in over a kept-alive TLS or QUIC connection. `detail`: `interval_s`,
+`jitter`, `samples` (bursts), `burst_bytes` (mean size of the completed
+bursts, both directions), `flow_id` (the `flow` event's `id`), `dst`
+(`ip:port`), `domain`, `proto` (`tls`, `quic`, `http`, `tcp`, `udp`…),
+`age_s` (flow age when detected). Raised at most once per flow.
+
+How it works: the engine samples the open flows' byte counters on every
+housekeeping tick (`stats_interval_ms`, at most 1 s; nothing is added to the
+packet path). A *burst* starts when bytes move after at least
+`flow_idle_gap_s` of silence. The start times of the last 12 bursts are
+judged like connection times; a silence longer than 3 × `max_interval_s`
+restarts the series. Only flows older than `flow_min_age_s` whose lifetime
+average rate is at most `flow_max_avg_bps` are watched (streaming, downloads
+and uploads are not), at most `flow_max_tracked` at once. Timing resolution
+is one tick. Not watched: blocked flows, and flows whose name as sent by the
+app (SNI, QUIC, HTTP Host; not a DNS-derived name) is on `ignore_domains`
+or the user allowlist (`allow_domains`); `ignore_domains` also exempts those
+names from the connection detector.
+
+False positives it avoids by design: push channels (FCM, Apple push,
+Mozilla WebPush: on `ignore_domains` by default), protocol keep-alives of
+chat apps and gRPC/HTTP/2 clients (WebSocket, HTTP/2, MQTT and QUIC pings are
+tens of bytes, below `flow_min_burst_bytes`), a person chatting (irregular),
+and bulk transfers (one continuous burst, and above the rate cap). An app
+that polls its server every minute over a kept-alive connection with real
+requests *is* reported: that is a beacon by definition, as for the
+connection detector.
+
+#### Upload volume
+
+`exfil_volume` is computed by the app (`processing/ExfilDetector.kt`) from
+the `flow_update`/`flow_end` byte counters, because it needs the app's
+foreground state and its upload history over days. For each app it sums
+the bytes uploaded while the app was **not** in the foreground over the
+last 5 minutes and the last hour, and alerts when a window's upload is
+
+1. at least the absolute floor (settings: 50 MB per hour by default, half
+   of it for the 5-minute window), and
+2. at least `factor` (3) × the app's baseline, when it has one: the 95th
+   percentile of its hourly upload (all states) over the hours with any
+   upload in the last 7 days, excluding the current hour; with fewer than
+   3 such hours only the floor applies, and
+3. one-way: the destination the app uploaded most to in the window sent
+   back at most a quarter as much.
+
+Foreground uploads never count. Without usage access the foreground state
+is unknown; such uploads count, and the alert has severity `low`. A few
+backup/sync apps (Google Photos, Drive, Dropbox, OneDrive, Nextcloud,
+ownCloud, Synology, Amazon Photos, MEGA, Syncthing) are exempt. One alert
+per app per 6 hours. The hourly history is kept in the app's files
+(`exfil_baseline.json`, at most 500 apps × 168 hours), not in Room.
+
+`target` is the top destination (domain, else address). `detail`: `window`
+(`5 min` or `1 h`), `window_s`, `uploaded_bytes` (in the window, not in the
+foreground), `baseline_bytes_per_hour` (null without enough history),
+`floor_bytes`, `factor`, `destination`, `dest_tx_bytes`, `dest_rx_bytes`
+(that destination in the window), `background` (`yes` or `unknown`),
+`package`. The alert is stored, notified and exported like engine alerts.
 
 Repeated alerts with the same kind, app and *finding* are suppressed for an
 hour. For `threat_ja4` the finding is the fingerprint (one alert per
@@ -195,6 +269,27 @@ added after 0.1.0:
 
 The four caps are read when the engine starts; a later config update does
 not resize them.
+
+### `beacon`
+
+Thresholds of both beaconing detectors (see "Beaconing" above). The app
+sends `enabled`, `min_events`, `max_jitter` and the interval bounds (from
+the sensitivity setting) and leaves the `flow_*` fields and
+`ignore_domains` at their defaults.
+
+| field | type | default | meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Both detectors. |
+| `min_events` | integer | 6 | Connections (or bursts) needed before a series is judged (at least 3). |
+| `max_jitter` | number | 0.15 | Largest coefficient of variation of the intervals. |
+| `min_interval_s`, `max_interval_s` | number | 10, 3600 | Range of the mean interval. |
+| `flow_enabled` | bool | `true` | The in-flow detector. |
+| `flow_min_age_s` | number | 60 | Flows are watched once this old. |
+| `flow_idle_gap_s` | number > 0 | 5 | Silence after which bytes start a new burst. |
+| `flow_max_avg_bps` | number | 4096 | Flows whose lifetime average (bytes/s, both directions) is above this are not watched. |
+| `flow_min_burst_bytes`, `flow_max_burst_bytes` | integer | 256, 65536 | Range of the mean burst size (bytes, both directions). |
+| `flow_max_tracked` | integer | 512 | Flows watched at once; others are skipped until a slot frees. |
+| `ignore_domains` | list of names | FCM (`mtalk.google.com`, `mtalk4.google.com`, `alt1-mtalk.google.com` … `alt8-mtalk.google.com`, `android.apis.google.com`), `push.apple.com`, `push.services.mozilla.com` | Names and their subdomains exempt from both detectors (a leading `*.` is accepted). A list replaces the defaults. |
 
 ### `encrypted_dns`
 
@@ -322,6 +417,9 @@ false (and the running config is kept) when the JSON does not parse or:
 
 - `beacon.max_jitter`, `beacon.min_interval_s` or `beacon.max_interval_s`
   is negative or not finite, or `min_interval_s > max_interval_s`;
+- `beacon.flow_min_age_s` or `beacon.flow_max_avg_bps` is negative or not
+  finite, `beacon.flow_idle_gap_s` is not positive and finite, or
+  `flow_min_burst_bytes > flow_max_burst_bytes`;
 - `mtu` is outside 576..=65535;
 - `tcp_connect_timeout_ms` or `udp_idle_timeout_s` is 0;
 - `upstream_dns` is empty;
