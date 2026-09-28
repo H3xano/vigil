@@ -20,6 +20,12 @@ aes.workspace = true
 aes-gcm.workspace = true
 hkdf.workspace = true
 sha2.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+h2.workspace = true
+http.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

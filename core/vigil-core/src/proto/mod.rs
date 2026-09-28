@@ -3,6 +3,7 @@
 //! host.
 
 pub mod dns;
+pub mod doh;
 pub mod http;
 pub mod quic;
 pub mod tls;

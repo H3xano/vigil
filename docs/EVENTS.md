@@ -10,9 +10,9 @@ prints them as JSON lines; the app polls them in batches (JSON arrays).
 | `flow` | `id`, `ts` (ms), `proto` (`tcp`/`udp`), `uid`, `src`, `dst_ip`, `dst_port`, `domain`, `domain_source` (`sni`, `quic`, `http`, `dns`), `app_proto` (`tls`, `quic`, `http`, `dot`, `doq`), `alpn`, `tls_version`, `ja4`, `ech`, `http_method`, `verdict` (`allow`/`block`), `reason`, `tags` (`encrypted_dns`, `plaintext_http`, `ech`) |
 | `flow_update` | `id`, `ts`, `tx`, `rx` (running totals of long-lived flows) |
 | `flow_end` | `id`, `ts`, `tx` (bytes sent by the app), `rx`, `duration_ms`, `error` |
-| `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` |
+| `dns` | `ts`, `uid`, `qname`, `qtype`, `rcode`, `answers`, `verdict`, `reason`, `latency_ms`, `server` (`virtual` or the hard-coded resolver), `transport` (app → vigil: `udp`/`tcp`), `upstream` (vigil → resolver: `udp`, `tcp`, `dot`, `doh`; null when no resolver was asked) |
 | `alert` | `ts`, `kind`, `severity` (`info`, `low`, `medium`, `high`), `uid`, `target`, `message`, `detail` |
-| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size |
+| `stats` | packet/byte counters, active flows, DNS queries, blocked, dropped packets/events, DNS cache size, encrypted upstream DNS counters (below) |
 | `engine` | `state` (`started`, `stopped`, `error`), `message` |
 
 The engine emits exactly one `flow_end` for every `flow`, with the same
@@ -36,6 +36,23 @@ queried a hard-coded resolver whose address is on an IP feed. Queries with
 more than one question (or none) are answered REFUSED and not logged. DNS
 over TCP to any resolver, not only the virtual one, is inspected and logged
 with `transport: tcp`; such connections do not produce `flow` events.
+
+`dns.upstream` is the transport that produced the answer: `udp` (or `tcp`
+after a truncated UDP answer) for plain DNS, `dot`/`doh` when
+`encrypted_dns` is on. For a SERVFAIL caused by unreachable resolvers it
+names the transport that failed, and `reason` says why (for example
+`upstream unreachable (dot: dns.quad9.net (9.9.9.9:853): timed out)`). With
+`fallback_plain`, an answer fetched in cleartext after the encrypted servers
+failed has `upstream: udp`. Queries to hard-coded resolvers are always
+forwarded as the app sent them (plain). Sinkholed and refused queries have
+`upstream: null`.
+
+`stats` carries the encrypted upstream counters (all 0 while it is off):
+`encrypted_dns_ok` (answers over DoT/DoH), `encrypted_dns_failed` (queries
+for which every encrypted server failed), `encrypted_dns_fallback` (of
+those, answered in cleartext), `encrypted_dns_last_ok_ts`,
+`encrypted_dns_last_error_ts` (ms, 0 = never) and `encrypted_dns_last_error`
+(text or null).
 
 `dst_ip` is always the address the app used. For NAT64 addresses (see
 `nat64_prefixes` below) IP feeds are matched on the embedded IPv4 address,
@@ -84,6 +101,55 @@ added after 0.1.0:
 The four caps are read when the engine starts; a later config update does
 not resize them.
 
+### `encrypted_dns`
+
+Forwards the virtual resolver's queries over DNS-over-TLS (RFC 7858) or
+DNS-over-HTTPS (RFC 8484) instead of plain DNS to `upstream_dns`. Only the
+transport changes: policy, sinkholing, CNAME-cloaking checks and `dns`
+events work as before. Queries an app sends to a hard-coded resolver are
+still forwarded to that resolver in cleartext.
+
+```json
+"encrypted_dns": {
+  "mode": "doh",
+  "servers": [
+    {"url": "https://dns.quad9.net/dns-query", "addrs": ["9.9.9.9", "149.112.112.112"]}
+  ],
+  "fallback_plain": false
+}
+```
+
+| field | type | default | meaning |
+|---|---|---|---|
+| `mode` | `off`, `dot`, `doh` | `off` | `off` keeps plain DNS. |
+| `servers` | list (1–8 when on) | `[]` | Tried in order; an address that failed is tried after the others for 30 s. |
+| `servers[].url` | string | | DoH only: `https://host[:port][/path][?query]` (no credentials or fragment; an empty path means `/dns-query`). |
+| `servers[].host` | string | | DoT: the TLS name (a hostname with at least two labels, or an IP literal). DoH: optional, must equal the URL's host. |
+| `servers[].port` | integer | 853 (DoT), from the URL (DoH) | DoH: optional, must equal the URL's port. |
+| `servers[].addrs` | list of IP strings (≤ 8) | `[]` | Bootstrap addresses to connect to. Required unless `host` is an IP literal or `fallback_plain` is true (then the name is looked up over plain `upstream_dns`, cached up to 1 h). |
+| `fallback_plain` | bool | false | When every encrypted server fails, answer from `upstream_dns` in cleartext. When false, such queries get SERVFAIL and nothing leaves in cleartext. |
+| `extra_root_ca_pem` | string | absent | PEM certificates trusted in addition to the built-in Mozilla roots (`webpki-roots`), for private resolvers and tests. |
+
+TLS is rustls with the *ring* provider (TLS 1.2 and 1.3, session
+resumption). The certificate must be valid for the server's name, which is
+also sent as SNI (IP literals are verified against IP SANs and send no SNI).
+DoT keeps up to two long-lived connections per server address and sends
+many queries on each (matched by ID and question); DoH offers `h2` and
+`http/1.1` via ALPN and uses one multiplexed HTTP/2 connection, or a pool
+of up to six keep-alive HTTP/1.1 connections, per server address. Queries
+use DNS ID 0 over DoH. Connections close after 30 s idle. A query tries at
+most three server addresses within 8 s (4 s each). Answers that exceed a
+UDP client's EDNS payload size (512 without EDNS) are returned truncated
+(TC set) so the client retries over TCP, as with plain DNS.
+
+**Validation** rejects: an unknown `mode`; `mode` other than `off` without
+servers; more than 8 servers or 8 addresses per server; a DoH server
+without a valid `https://` URL, or with a mismatching `host`/`port`; a DoT
+server without a valid `host`, or with a `url`; port 0; unspecified or
+multicast addresses; a server without `addrs` (and without an IP literal
+host) unless `fallback_plain`; an `extra_root_ca_pem` without any valid
+certificate. While `mode` is `off` only the server count is checked.
+
 **Validation.** `nativeStart` returns 0 and `nativeUpdateConfig` returns
 false (and the running config is kept) when the JSON does not parse or:
 
@@ -92,7 +158,8 @@ false (and the running config is kept) when the JSON does not parse or:
 - `mtu` is outside 576..=65535;
 - `tcp_connect_timeout_ms` or `udp_idle_timeout_s` is 0;
 - `upstream_dns` is empty;
-- any of the four caps above is 0.
+- any of the four caps above is 0;
+- `encrypted_dns` is invalid (see its section above).
 
 UDP flows end `udp_idle_timeout_s` after the last datagram *received from
 the server*; outbound datagrams alone do not keep a flow alive. A flow

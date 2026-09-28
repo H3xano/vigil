@@ -51,6 +51,288 @@ pub struct Config {
     /// Maximum DNS queries being answered concurrently. Queries beyond it
     /// get SERVFAIL.
     pub max_dns_inflight: usize,
+    /// Forwarding of the virtual resolver's queries over DNS-over-TLS or
+    /// DNS-over-HTTPS instead of plain DNS to `upstream_dns`.
+    pub encrypted_dns: EncryptedDnsConfig,
+}
+
+/// Transport used to forward the virtual resolver's queries.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptedDnsMode {
+    /// Plain DNS to `upstream_dns` (UDP, TCP when truncated).
+    #[default]
+    Off,
+    /// DNS over TLS (RFC 7858).
+    Dot,
+    /// DNS over HTTPS (RFC 8484), HTTP/1.1 POST.
+    Doh,
+}
+
+impl EncryptedDnsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EncryptedDnsMode::Off => "off",
+            EncryptedDnsMode::Dot => "dot",
+            EncryptedDnsMode::Doh => "doh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct EncryptedDnsConfig {
+    pub mode: EncryptedDnsMode,
+    /// Tried in order (a failing server is skipped for a while).
+    pub servers: Vec<EncryptedDnsServer>,
+    /// When every encrypted server fails, answer from `upstream_dns` in
+    /// cleartext instead of SERVFAIL. Also allows servers without `addrs`
+    /// (their name is then looked up in cleartext).
+    pub fallback_plain: bool,
+    /// Extra trusted root certificates (PEM), added to the built-in Mozilla
+    /// roots. For private resolvers and tests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_root_ca_pem: Option<String>,
+}
+
+/// One encrypted resolver. DoH: `url` (`https://host[:port]/path`). DoT:
+/// `host` (the TLS name, or an IP literal) and optional `port` (853).
+/// `addrs` are the bootstrap addresses to connect to; they are required
+/// unless `host` is an IP literal or `fallback_plain` is set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct EncryptedDnsServer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    pub addrs: Vec<IpAddr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+}
+
+/// A validated [`EncryptedDnsServer`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EncryptedTarget {
+    /// TLS server name (SNI and certificate check) and HTTP `Host`.
+    pub host: String,
+    pub port: u16,
+    /// DoH request target (path and query); empty for DoT.
+    pub path: String,
+    /// Bootstrap addresses; empty means "look `host` up in cleartext".
+    pub addrs: Vec<IpAddr>,
+}
+
+impl EncryptedTarget {
+    /// The `Host` header value (with the port when not 443, IPv6 bracketed).
+    pub fn authority(&self) -> String {
+        let h = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        if self.port == 443 {
+            h
+        } else {
+            format!("{h}:{}", self.port)
+        }
+    }
+}
+
+/// Limits on the `encrypted_dns` object.
+pub const MAX_ENCRYPTED_SERVERS: usize = 8;
+pub const MAX_SERVER_ADDRS: usize = 8;
+
+impl EncryptedDnsServer {
+    /// Validates this server for `mode` and returns the connection target.
+    pub fn target(
+        &self,
+        mode: EncryptedDnsMode,
+        fallback_plain: bool,
+    ) -> Result<EncryptedTarget, String> {
+        let (host, port, path) = match mode {
+            EncryptedDnsMode::Doh => {
+                let url = self.url.as_deref().ok_or("DoH server needs a url")?;
+                let (host, port, path) = parse_https_url(url)?;
+                if let Some(h) = &self.host {
+                    if !h.trim_end_matches('.').eq_ignore_ascii_case(&host) {
+                        return Err(format!("host {h:?} does not match the url"));
+                    }
+                }
+                if self.port.is_some_and(|p| p != port) {
+                    return Err("port does not match the url".into());
+                }
+                (host, port, path)
+            }
+            EncryptedDnsMode::Dot | EncryptedDnsMode::Off => {
+                if self.url.is_some() {
+                    return Err("DoT server takes host/port, not a url".into());
+                }
+                let host = self.host.as_deref().ok_or("DoT server needs a host")?;
+                (check_host(host)?, self.port.unwrap_or(853), String::new())
+            }
+        };
+        if port == 0 {
+            return Err("port must be positive".into());
+        }
+        let mut addrs = self.addrs.clone();
+        if addrs.len() > MAX_SERVER_ADDRS {
+            return Err(format!("more than {MAX_SERVER_ADDRS} addrs"));
+        }
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if !addrs.contains(&ip) {
+                addrs.insert(0, ip);
+            }
+        }
+        if let Some(a) = addrs
+            .iter()
+            .find(|a| a.is_unspecified() || a.is_multicast())
+        {
+            return Err(format!("unusable address {a}"));
+        }
+        if addrs.is_empty() && !fallback_plain {
+            return Err(format!(
+                "{host}: bootstrap addrs are required (or enable fallback_plain)"
+            ));
+        }
+        Ok(EncryptedTarget {
+            host,
+            port,
+            path,
+            addrs,
+        })
+    }
+}
+
+impl EncryptedDnsConfig {
+    /// The validated servers (empty when off).
+    pub fn targets(&self) -> Result<Vec<EncryptedTarget>, String> {
+        if self.mode == EncryptedDnsMode::Off {
+            return Ok(Vec::new());
+        }
+        self.servers
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                s.target(self.mode, self.fallback_plain)
+                    .map_err(|e| format!("encrypted_dns.servers[{i}]: {e}"))
+            })
+            .collect()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.servers.len() > MAX_ENCRYPTED_SERVERS {
+            return Err(format!(
+                "encrypted_dns: more than {MAX_ENCRYPTED_SERVERS} servers"
+            ));
+        }
+        if self.mode != EncryptedDnsMode::Off && self.servers.is_empty() {
+            return Err("encrypted_dns: no servers".into());
+        }
+        self.targets()?;
+        if let Some(pem) = &self.extra_root_ca_pem {
+            parse_root_pem(pem).map_err(|e| format!("encrypted_dns.extra_root_ca_pem: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Parses PEM certificates into trust anchors (at least one).
+pub(crate) fn parse_root_pem(pem: &str) -> Result<rustls::RootCertStore, String> {
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+        let cert = cert.map_err(|e| format!("bad PEM: {e}"))?;
+        roots
+            .add(cert)
+            .map_err(|e| format!("bad certificate: {e}"))?;
+    }
+    if roots.is_empty() {
+        return Err("no certificate found".into());
+    }
+    Ok(roots)
+}
+
+/// A DNS hostname (LDH labels, at least two) or an IP literal, lowercased.
+fn check_host(raw: &str) -> Result<String, String> {
+    let h = raw.trim_end_matches('.').to_ascii_lowercase();
+    if h.parse::<IpAddr>().is_ok() {
+        return Ok(h);
+    }
+    let ok = h.len() <= 253
+        && h.contains('.')
+        && h.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    if ok {
+        Ok(h)
+    } else {
+        Err(format!("invalid host name {raw:?}"))
+    }
+}
+
+/// Splits `https://host[:port][/path][?query]` into host, port and request
+/// target. An empty path becomes `/dns-query`.
+pub fn parse_https_url(url: &str) -> Result<(String, u16, String), String> {
+    let bad = |why: &str| Err(format!("invalid DoH url {url:?}: {why}"));
+    if url.len() > 512 || url.bytes().any(|b| !b.is_ascii_graphic()) {
+        return bad("must be printable ASCII without spaces");
+    }
+    let Some(rest) = url
+        .get(..8)
+        .filter(|p| p.eq_ignore_ascii_case("https://"))
+        .map(|_| &url[8..])
+    else {
+        return bad("must start with https://");
+    };
+    if rest.contains('#') {
+        return bad("fragments are not allowed");
+    }
+    let split = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, target) = rest.split_at(split);
+    if authority.contains('@') {
+        return bad("credentials are not allowed");
+    }
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let Some((h, after)) = v6.split_once(']') else {
+            return bad("unclosed [");
+        };
+        if h.parse::<Ipv6Addr>().is_err() {
+            return bad("invalid IPv6 literal");
+        }
+        match after {
+            "" => (h, None),
+            a => match a.strip_prefix(':') {
+                Some(p) => (h, Some(p)),
+                None => return bad("junk after ]"),
+            },
+        }
+    } else {
+        match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    let port = match port {
+        None => 443,
+        Some(p) => match p.parse::<u16>() {
+            Ok(p) if p > 0 => p,
+            _ => return bad("invalid port"),
+        },
+    };
+    let Ok(host) = check_host(host) else {
+        return bad("invalid host");
+    };
+    let target = match target {
+        "" => "/dns-query".to_string(),
+        t if t.starts_with('?') => format!("/{t}"),
+        t => t.to_string(),
+    };
+    Ok((host, port, target))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -110,6 +392,7 @@ impl Default for Config {
             max_tcp_flows: 4096,
             max_pending_connects: 256,
             max_dns_inflight: 256,
+            encrypted_dns: EncryptedDnsConfig::default(),
         }
     }
 }
@@ -183,6 +466,9 @@ impl Config {
                 return bad(format!("{name} must be positive"));
             }
         }
+        self.encrypted_dns
+            .validate()
+            .map_err(ConfigError::Invalid)?;
         Ok(())
     }
 
@@ -283,13 +569,118 @@ mod tests {
                       "min_interval_s":10.0,"max_interval_s":3600.0},
             "mtu":1500,"tcp_connect_timeout_ms":15000,"udp_idle_timeout_s":60,
             "stats_interval_ms":2000,"worker_threads":2,
-            "nat64_prefixes":["64:ff9b:1::/96"]}"#;
+            "nat64_prefixes":["64:ff9b:1::/96"],
+            "encrypted_dns":{"mode":"dot","servers":[{"host":"dns.quad9.net",
+                "addrs":["9.9.9.9","149.112.112.112"],"port":853}],"fallback_plain":false}}"#;
         let c = Config::from_json(app).unwrap();
         assert_eq!(c.max_tcp_flows, 4096);
         assert!(Config::from_json(r#"{"mtu":576}"#).is_ok());
         assert!(Config::from_json(r#"{"mtu":65535}"#).is_ok());
         assert!(Config::from_json(r#"{"beacon":{"min_interval_s":0,"max_interval_s":0}}"#).is_ok());
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn encrypted_dns_config_validated() {
+        let ok = |j: &str| {
+            Config::from_json(&format!(r#"{{"encrypted_dns":{j}}}"#))
+                .unwrap_or_else(|e| panic!("{j}: {e}"))
+        };
+        let bad = |j: &str| rejected(&format!(r#"{{"encrypted_dns":{j}}}"#));
+        assert_eq!(Config::default().encrypted_dns.mode, EncryptedDnsMode::Off);
+        ok(r#"{"mode":"off"}"#);
+        let c = ok(
+            r#"{"mode":"doh","servers":[{"url":"https://dns.quad9.net/dns-query",
+            "addrs":["9.9.9.9","2620:fe::fe"]}]}"#,
+        );
+        let t = c.encrypted_dns.targets().unwrap();
+        assert_eq!(t[0].host, "dns.quad9.net");
+        assert_eq!((t[0].port, t[0].path.as_str()), (443, "/dns-query"));
+        assert_eq!(t[0].authority(), "dns.quad9.net");
+        let c = ok(
+            r#"{"mode":"dot","servers":[{"host":"Dns.Quad9.Net.","addrs":["9.9.9.9"]},
+            {"host":"1.1.1.1"}]}"#,
+        );
+        let t = c.encrypted_dns.targets().unwrap();
+        assert_eq!((t[0].host.as_str(), t[0].port), ("dns.quad9.net", 853));
+        assert_eq!(t[1].addrs, vec!["1.1.1.1".parse::<IpAddr>().unwrap()]);
+        // No addresses: only allowed with fallback_plain.
+        ok(r#"{"mode":"doh","fallback_plain":true,"servers":[{"url":"https://dns.google"}]}"#);
+        assert!(bad(
+            r#"{"mode":"doh","servers":[{"url":"https://dns.google"}]}"#
+        ));
+        assert!(bad(r#"{"mode":"dot","servers":[]}"#));
+        assert!(Config::from_json(r#"{"encrypted_dns":{"mode":"tls"}}"#).is_err());
+        assert!(Config::from_json(
+            r#"{"encrypted_dns":{"mode":"dot","servers":[{"host":"x.example","addrs":["nope"]}]}}"#
+        )
+        .is_err());
+        for s in [
+            r#"{"url":"http://dns.example/dns-query","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://user@dns.example/","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://dns.example:0/","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://dns.example:99999/","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://dns example/","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://dns.example/#x","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://-bad.example/","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://[::1/","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://dns.example/","host":"other.example","addrs":["192.0.2.1"]}"#,
+            r#"{"url":"https://dns.example/","addrs":["0.0.0.0"]}"#,
+            r#"{"host":"dns.example","addrs":["192.0.2.1"]}"#,
+        ] {
+            assert!(
+                bad(&format!(r#"{{"mode":"doh","servers":[{s}]}}"#)),
+                "doh {s}"
+            );
+        }
+        for s in [
+            r#"{"url":"https://dns.example/","addrs":["192.0.2.1"]}"#,
+            r#"{"host":"dns..example","addrs":["192.0.2.1"]}"#,
+            r#"{"host":"localhost","addrs":["192.0.2.1"]}"#,
+            r#"{"host":"dns.example","port":0,"addrs":["192.0.2.1"]}"#,
+            r#"{"host":"dns.example","addrs":["224.0.0.1"]}"#,
+            r#"{"addrs":["192.0.2.1"]}"#,
+        ] {
+            assert!(
+                bad(&format!(r#"{{"mode":"dot","servers":[{s}]}}"#)),
+                "dot {s}"
+            );
+        }
+        let many = [r#"{"host":"1.1.1.1"}"#; MAX_ENCRYPTED_SERVERS + 1].join(",");
+        assert!(bad(&format!(r#"{{"mode":"dot","servers":[{many}]}}"#)));
+        // IPv6 literals and ports in URLs.
+        let (h, p, path) = parse_https_url("https://[2620:fe::fe]:8443?x=1").unwrap();
+        assert_eq!(
+            (h.as_str(), p, path.as_str()),
+            ("2620:fe::fe", 8443, "/?x=1")
+        );
+        let t = EncryptedTarget {
+            host: h,
+            port: p,
+            path,
+            addrs: vec![],
+        };
+        assert_eq!(t.authority(), "[2620:fe::fe]:8443");
+        // Extra roots must be real certificates.
+        assert!(bad(
+            r#"{"mode":"dot","servers":[{"host":"1.1.1.1"}],"extra_root_ca_pem":"junk"}"#
+        ));
+        let ca = include_str!("../testdata/edns/ca.pem");
+        let c = Config {
+            encrypted_dns: EncryptedDnsConfig {
+                mode: EncryptedDnsMode::Dot,
+                servers: vec![EncryptedDnsServer {
+                    host: Some("1.1.1.1".into()),
+                    ..Default::default()
+                }],
+                extra_root_ca_pem: Some(ca.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        c.validate().unwrap();
+        let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 
     #[test]
