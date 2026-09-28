@@ -23,11 +23,14 @@
 //! `fallback_plain` off nothing ever leaves in cleartext: a failure is
 //! SERVFAIL.
 //!
-//! Every socket comes from [`connect_encrypted_upstream`], and the TLS and
-//! HTTP code is generic over the stream, so upstream chaining (proxy,
-//! WireGuard) only has to change that function and [`UpstreamStream`].
+//! Every socket comes from [`connect_encrypted_upstream`], which goes through
+//! the upstream dialer (`upstream.rs`): direct, through the WireGuard tunnel,
+//! or as a TCP connection through the SOCKS5 proxy. The TLS and HTTP code is
+//! generic over the stream. When the upstream path changes, the session (and
+//! with it every open connection) is rebuilt, as with the pooled plain DNS
+//! sockets.
 
-use super::{dns, sock, Shared};
+use super::{dns, upstream, Shared};
 use crate::config::{parse_root_pem, EncryptedDnsConfig, EncryptedDnsMode, EncryptedTarget};
 use crate::event::now_ms;
 use crate::proto::{dns as dns_proto, doh, Reader};
@@ -45,18 +48,19 @@ use tokio::time::Instant;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
-/// The byte stream TLS runs over. Upstream chaining swaps this (e.g. for a
-/// boxed `AsyncRead + AsyncWrite` stream) together with
-/// [`connect_encrypted_upstream`].
-pub(crate) type UpstreamStream = tokio::net::TcpStream;
+/// The byte stream TLS runs over: a TCP connection over the configured
+/// upstream path (direct, WireGuard or SOCKS5).
+pub(crate) type UpstreamStream = upstream::UpstreamTcp;
 
 /// Opens the transport connection to an encrypted resolver. **All** sockets
-/// of this module are created here.
+/// of this module are created here. The dialer has no timeout of its own
+/// ([`CONNECT_TIMEOUT`] covers it) and never falls back to a direct
+/// connection unless the upstream config allows it (`fail_closed: false`).
 pub(crate) async fn connect_encrypted_upstream(
     shared: &Shared,
     addr: SocketAddr,
 ) -> io::Result<UpstreamStream> {
-    sock::connect_tcp(shared.platform.clone(), addr).await
+    upstream::connect_tcp(shared, addr).await
 }
 
 /// TCP connect plus TLS handshake.
@@ -123,18 +127,26 @@ pub(crate) struct EncryptedUpstream {
 }
 
 impl EncryptedUpstream {
-    /// The session for `cfg`, (re)built when the configuration changed;
-    /// `None` when encrypted DNS is off.
-    fn session(&self, cfg: &EncryptedDnsConfig) -> Result<Option<Arc<Session>>, String> {
+    /// The session for `cfg`, (re)built when the configuration or the
+    /// upstream path (dialer `generation`) changed; `None` when encrypted
+    /// DNS is off.
+    fn session(
+        &self,
+        cfg: &EncryptedDnsConfig,
+        generation: u64,
+    ) -> Result<Option<Arc<Session>>, String> {
         let mut cur = self.session.lock();
         if cfg.mode == EncryptedDnsMode::Off {
             *cur = None;
             return Ok(None);
         }
-        if let Some(s) = cur.as_ref().filter(|s| s.config == *cfg) {
+        if let Some(s) = cur
+            .as_ref()
+            .filter(|s| s.config == *cfg && s.generation == generation)
+        {
             return Ok(Some(s.clone()));
         }
-        let s = Arc::new(Session::new(cfg)?);
+        let s = Arc::new(Session::new(cfg, generation)?);
         *cur = Some(s.clone());
         Ok(Some(s))
     }
@@ -171,7 +183,8 @@ pub(crate) async fn forward(
     transport: &'static str,
 ) -> Result<(Vec<u8>, &'static str), (&'static str, String)> {
     let cfg = shared.config();
-    let session = match shared.encrypted_dns.session(&cfg.encrypted_dns) {
+    let generation = shared.upstream.generation();
+    let session = match shared.encrypted_dns.session(&cfg.encrypted_dns, generation) {
         Ok(s) => s,
         Err(e) => {
             // Validation makes this unreachable; never fall back silently.
@@ -223,6 +236,8 @@ async fn plain(
 /// One `encrypted_dns` configuration's servers and connections.
 struct Session {
     config: EncryptedDnsConfig,
+    /// Upstream dialer generation the connections were made with.
+    generation: u64,
     mode: EncryptedDnsMode,
     fallback_plain: bool,
     targets: Vec<Arc<EncryptedTarget>>,
@@ -235,7 +250,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(cfg: &EncryptedDnsConfig) -> Result<Self, String> {
+    fn new(cfg: &EncryptedDnsConfig, generation: u64) -> Result<Self, String> {
         let targets = cfg.targets()?.into_iter().map(Arc::new).collect();
         let alpn: &[&[u8]] = match cfg.mode {
             EncryptedDnsMode::Doh => &[b"h2", b"http/1.1"],
@@ -243,6 +258,7 @@ impl Session {
         };
         Ok(Self {
             config: cfg.clone(),
+            generation,
             mode: cfg.mode,
             fallback_plain: cfg.fallback_plain,
             targets,
@@ -1870,5 +1886,96 @@ mod tls_tests {
         });
         assert_eq!(forward(&shared, &q, "udp").await.unwrap().1, "udp");
         assert!(shared.encrypted_dns.session.lock().is_none());
+    }
+
+    /// A minimal SOCKS5 proxy (no auth, CONNECT to IPv4 only) that records
+    /// the targets it was asked to connect to.
+    async fn socks5_proxy() -> (SocketAddr, Arc<Mutex<Vec<SocketAddr>>>) {
+        use tokio::net::{TcpListener, TcpStream};
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = l.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut hdr = [0u8; 2];
+                    c.read_exact(&mut hdr).await?;
+                    let mut methods = vec![0u8; hdr[1] as usize];
+                    c.read_exact(&mut methods).await?;
+                    assert!(methods.contains(&0), "no-auth offered");
+                    c.write_all(&[5, 0]).await?;
+                    let mut req = [0u8; 10];
+                    c.read_exact(&mut req).await?;
+                    assert_eq!(&req[..4], &[5, 1, 0, 1], "CONNECT to an IPv4 address");
+                    let ip = std::net::Ipv4Addr::new(req[4], req[5], req[6], req[7]);
+                    let dst = SocketAddr::from((ip, u16::from_be_bytes([req[8], req[9]])));
+                    log.lock().push(dst);
+                    let mut up = TcpStream::connect(dst).await?;
+                    c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+                    tokio::io::copy_bidirectional(&mut c, &mut up).await?;
+                    io::Result::Ok(())
+                });
+            }
+        });
+        (addr, seen)
+    }
+
+    #[tokio::test]
+    async fn dot_goes_through_the_socks5_proxy() {
+        use crate::config::upstream::Socks5Config;
+        use crate::config::{UpstreamConfig, UpstreamMode};
+        let (addr, accepted) = server(Kind::Dot).await;
+        let (plain, leaks) = plain_resolver().await;
+        let (proxy, seen) = socks5_proxy().await;
+        let mut cfg = config(
+            EncryptedDnsMode::Dot,
+            vec![(HOST.into(), addr)],
+            plain,
+            false,
+            true,
+        );
+        // Direct first: one connection to the resolver, no proxy contact.
+        let shared = test_shared(cfg.clone());
+        let q = dns_proto::build_query(7, "a.example", dns_proto::TYPE_A);
+        assert_eq!(forward(&shared, &q, "udp").await.unwrap().1, "dot");
+        assert_eq!(accepted.load(Relaxed), 1);
+        assert!(seen.lock().is_empty());
+
+        // Switching the upstream path to SOCKS5 rebuilds the session: the
+        // next query opens a new TLS connection, through the proxy.
+        cfg.upstream = UpstreamConfig {
+            mode: UpstreamMode::Socks5,
+            fail_closed: true,
+            socks5: Some(Socks5Config {
+                server: proxy.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cfg.validate().unwrap();
+        shared.upstream.apply(&cfg.upstream, &shared.platform);
+        *shared.config.write() = Arc::new(cfg.clone());
+        let (r, via) = forward(&shared, &q, "tcp").await.unwrap();
+        assert_eq!(via, "dot");
+        assert_eq!(a_ips(&r), vec![IpAddr::from(ANSWER_IP)]);
+        assert_eq!(accepted.load(Relaxed), 2);
+        assert_eq!(*seen.lock(), vec![addr], "DoT connection via the proxy");
+
+        // A dead proxy with fail_closed: SERVFAIL, nothing direct or plain.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        cfg.upstream.socks5.as_mut().unwrap().server = dead.to_string();
+        shared.upstream.apply(&cfg.upstream, &shared.platform);
+        *shared.config.write() = Arc::new(cfg);
+        let (via, why) = forward(&shared, &q, "udp").await.unwrap_err();
+        assert_eq!(via, "dot");
+        assert!(why.contains("socks5 proxy"), "{why}");
+        assert_eq!(accepted.load(Relaxed), 2, "no direct connection");
+        assert_eq!(leaks.load(Relaxed), 0, "nothing in cleartext");
     }
 }
