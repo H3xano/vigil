@@ -30,7 +30,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
@@ -111,7 +111,10 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
                     id = "probe", name = "probe", url = url, category = "c2", enabled = false, builtin = false,
                     authHeader = authValue?.takeIf { it.isNotBlank() }, authHeaderName = authHeaderName?.takeIf { it.isNotBlank() },
                 )
-                Result.success(TaxiiClient(taxiiTransport(probe)).collections(url))
+                // With credentials, API roots on other hosts (or plain HTTP) are refused:
+                // the collection's URL is stored and polled with the credentials later.
+                val origin = probe.authHeader?.let { url }
+                Result.success(TaxiiClient(taxiiTransport(probe), credentialOrigin = origin).collections(url))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IOException) {
@@ -263,62 +266,63 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             (poll.nextAddedAfter ?: feed.taxiiAddedAfter.takeIf { incremental })
     }
 
-    /** HTTP for the TAXII client: Accept header, credentials, size cap, disconnect on cancellation. */
+    /**
+     * HTTP for the TAXII client: Accept header, credentials (only for the
+     * host the user entered, see [FeedHttp]), size cap, disconnect on cancellation.
+     */
     private fun CoroutineScope.taxiiTransport(feed: FeedEntity): TaxiiTransport = TaxiiTransport { url ->
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 20_000
-        conn.readTimeout = 60_000
-        conn.instanceFollowRedirects = true
-        conn.setRequestProperty("Accept", TaxiiClient.MEDIA_TYPE)
-        conn.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+TAXII poller)")
-        feed.authHeader?.let { conn.setRequestProperty(feed.authHeaderName ?: "Authorization", it) }
+        val current = AtomicReference<HttpURLConnection?>()
         val watchdog = launch(Dispatchers.IO) {
             try {
                 awaitCancellation()
             } finally {
-                conn.disconnect()
+                current.get()?.disconnect()
             }
         }
+        var conn: HttpURLConnection? = null
         try {
+            conn = FeedHttp.get(url, credentialOf(feed), { c ->
+                c.connectTimeout = 20_000
+                c.readTimeout = 60_000
+                c.setRequestProperty("Accept", TaxiiClient.MEDIA_TYPE)
+                c.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+TAXII poller)")
+            }) { c -> current.set(c); ensureActive() }
             val code = conn.responseCode
-            val body = if (code in 200..299) readCapped(conn, MAX_TAXII_PAGE_BYTES) else ""
+            // Bytes, then one String, then the JSON tree: the cap bounds all three.
+            val body = if (code in 200..299) {
+                conn.inputStream.use { String(FeedHttp.readCapped(it, MAX_TAXII_PAGE_BYTES, "TAXII response"), Charsets.UTF_8) }
+            } else {
+                ""
+            }
             val headers = conn.headerFields.orEmpty().mapNotNull { (k, v) -> k?.lowercase()?.let { it to v.lastOrNull().orEmpty() } }.toMap()
             TaxiiResponse(code, conn.contentType, headers, body)
         } finally {
             watchdog.cancel()
-            conn.disconnect()
+            conn?.disconnect()
         }
     }
 
-    private fun readCapped(conn: HttpURLConnection, max: Long): String = conn.inputStream.use { input ->
-        val buf = java.io.ByteArrayOutputStream()
-        val chunk = ByteArray(64 * 1024)
-        while (true) {
-            val n = input.read(chunk)
-            if (n < 0) break
-            if (buf.size() + n > max) throw IOException("TAXII response larger than ${max / 1_000_000} MB")
-            buf.write(chunk, 0, n)
-        }
-        buf.toString(Charsets.UTF_8.name())
-    }
+    /** The feed's credential, bound to the host of its URL (the one the user entered). */
+    private fun credentialOf(feed: FeedEntity): FeedCredential? =
+        feed.authHeader?.let { FeedCredential(feed.authHeaderName ?: "Authorization", it, feed.url) }
 
     /** Blocking download that still honours cancellation (WorkManager stop, REPLACE). */
     private suspend fun download(feed: FeedEntity, dest: File) = coroutineScope {
-        val conn = URL(feed.url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 20_000
-        conn.readTimeout = 60_000
-        conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+feed updater)")
-        feed.authHeader?.let { conn.setRequestProperty(feed.authHeaderName ?: "Authorization", it) }
         // Disconnecting from another thread unblocks a read stuck in the socket.
+        val current = AtomicReference<HttpURLConnection?>()
         val watchdog = launch(Dispatchers.IO) {
             try {
                 awaitCancellation()
             } finally {
-                conn.disconnect()
+                current.get()?.disconnect()
             }
         }
         try {
+            val conn = FeedHttp.get(feed.url, credentialOf(feed), { c ->
+                c.connectTimeout = 20_000
+                c.readTimeout = 60_000
+                c.setRequestProperty("User-Agent", "vigil/${dev.vigil.inspector.BuildConfig.VERSION_NAME} (+feed updater)")
+            }) { c -> current.set(c); ensureActive() }
             if (conn.responseCode !in 200..299) throw IOException("HTTP ${conn.responseCode}")
             conn.inputStream.use { input ->
                 dest.outputStream().use { out ->
@@ -380,7 +384,8 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         private const val TAG = "vigil.feeds"
         private const val MAX_FEED_BYTES = 150L * 1024 * 1024
         const val MAX_AGE_MS = 20L * 3600 * 1000
-        private const val MAX_TAXII_PAGE_BYTES = 32L * 1024 * 1024
+        /** One page of up to [TaxiiClient.PAGE_LIMIT] objects is a few MB at most. */
+        private const val MAX_TAXII_PAGE_BYTES = 8L * 1024 * 1024
         private const val TAXII_FULL_SYNC_MS = 7L * 24 * 3600 * 1000
         private val networkConstraint = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
@@ -396,7 +401,7 @@ class FeedUpdateWorker(context: Context, params: WorkerParameters) : CoroutineWo
         val force = inputData.getBoolean(KEY_FORCE, false) && runAttemptCount == 0
         val failures = app.feeds.refreshStale(FeedRepository.MAX_AGE_MS, force)
         app.pruneOldData()
-        app.vacuumIfDue()
+        app.vacuumIfDue(allowWhileInspecting = false)
         return if (failures > 0 && runAttemptCount < 3) Result.retry() else Result.success()
     }
 

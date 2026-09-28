@@ -1,9 +1,11 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.BeaconConfig
 import dev.vigil.inspector.engine.EngineConfig
+import dev.vigil.inspector.engine.FeedFileConfig
 import dev.vigil.inspector.engine.Socks5Config
 import dev.vigil.inspector.engine.UpstreamConfig
 import dev.vigil.inspector.engine.WireGuardConfig
@@ -64,6 +66,24 @@ object ConfigFactory {
             workerThreads = workerThreads(s),
         )
     }
+
+    /**
+     * The feeds the engine should hold: enabled ones with a downloaded file
+     * ([hasFile]). The service preloads exactly these at start and keeps the
+     * engine in sync with this selection afterwards.
+     */
+    fun loadableFeeds(feeds: List<FeedEntity>, hasFile: (String) -> Boolean): List<FeedEntity> =
+        feeds.filter { it.enabled && hasFile(it.id) }
+
+    /**
+     * [base] as a start config: [feeds] (already filtered by [loadableFeeds])
+     * are loaded by the engine before it processes the first packet, so
+     * blocking and threat alerts apply from the first connection.
+     */
+    fun startConfig(base: EngineConfig, feeds: List<FeedEntity>, pathFor: (String) -> String): EngineConfig = base.copy(
+        feeds = feeds.map { FeedFileConfig(id = it.id, category = it.category, path = pathFor(it.id)) },
+        feedsPreloadTimeoutMs = EngineConfig.FEEDS_PRELOAD_TIMEOUT_MS,
+    )
 
     /** Engine worker threads: 1 by default (battery), 2 with "Maximum throughput". */
     fun workerThreads(s: Settings): Int = if (s.maxThroughput) 2 else 1

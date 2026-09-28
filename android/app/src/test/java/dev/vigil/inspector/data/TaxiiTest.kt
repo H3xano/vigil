@@ -50,6 +50,30 @@ class TaxiiTest {
     }
 
     @Test
+    fun credentialedDiscoveryRefusesForeignApiRoots() {
+        val server = FakeServer(
+            mapOf(
+                "https://ti.example/taxii2/" to ok(
+                    """{"api_roots":["https://attacker.example/api/","http://ti.example/plain/","/api2/"]}""",
+                ),
+                "https://attacker.example/api/collections/" to ok("""{"collections":[{"id":"x","title":"Foreign"}]}"""),
+                "http://ti.example/plain/collections/" to ok("""{"collections":[{"id":"p","title":"Plain"}]}"""),
+                "https://ti.example/api2/collections/" to ok("""{"collections":[{"id":"c3","title":"Own"}]}"""),
+            ),
+        )
+        // With credentials: only the root on the entered host over HTTPS is asked.
+        val own = TaxiiClient(server, credentialOrigin = "https://ti.example/taxii2/").collections("https://ti.example/taxii2/")
+        assertEquals(listOf("Own"), own.map { it.title })
+        assertTrue(server.requests.none { it.startsWith("https://attacker.example") || it.startsWith("http://") })
+        // Only foreign roots: the refusal is the error.
+        val onlyForeign = FakeServer(mapOf("https://ti.example/taxii2/" to ok("""{"api_roots":["https://attacker.example/api/"]}""")))
+        val e = runCatching { TaxiiClient(onlyForeign, "https://ti.example/taxii2/").collections("https://ti.example/taxii2/") }.exceptionOrNull()
+        assertTrue("$e", e is IOException && e.message!!.contains("does not send the credentials"))
+        // Without credentials every root is fine.
+        assertEquals(3, TaxiiClient(server).collections("https://ti.example/taxii2/").size)
+    }
+
+    @Test
     fun rejectsNonTaxiiAnswers() {
         val client = TaxiiClient(
             FakeServer(

@@ -95,4 +95,20 @@ class VpnRoutesV6Test {
         assertEquals("global prefix already covered, not duplicated", VpnRoutes.ipv6(true).size + 1, r.size)
         assertEquals(listOf(VpnRoutes.Cidr("::", 0)), VpnRoutes.ipv6(excludeLan = false, extra = listOf("fd00:64::/96")))
     }
+
+    /** The service restarts the session when [VpnRoutes.all] changes (routes are fixed at establish()). */
+    @Test
+    fun routeSetChangesOnlyWithRouteRelevantNat64Prefixes() {
+        val base = VpnRoutes.all(excludeLan = true)
+        // A NAT64 prefix in ULA space needs an extra route: a restart.
+        assertTrue(VpnRoutes.all(true, listOf("fd00:64::/96")) != base)
+        assertTrue(VpnRoutes.all(true, listOf("fd00:64::/96")) != VpnRoutes.all(true, listOf("fd00:65::/96")))
+        // Prefixes already tunnelled, or unparseable, change nothing: no restart.
+        assertEquals(base, VpnRoutes.all(true, listOf("64:ff9b::/96")))
+        assertEquals(base, VpnRoutes.all(true, listOf("2001:db8:64::/96", "bogus")))
+        // Without LAN exclusion everything is tunnelled anyway.
+        assertEquals(VpnRoutes.all(false), VpnRoutes.all(false, listOf("fd00:64::/96")))
+        assertTrue(VpnRoutes.all(false) != base)
+        assertEquals(VpnRoutes.ipv4(true) + VpnRoutes.ipv6(true, listOf("fd00:64::/96")), VpnRoutes.all(true, listOf("fd00:64::/96")))
+    }
 }

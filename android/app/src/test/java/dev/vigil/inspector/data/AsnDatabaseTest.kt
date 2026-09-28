@@ -66,6 +66,34 @@ class AsnDatabaseTest {
         AsnDatabase.convert(tmp().apply { writeBytes(bytes.copyOf(bytes.size / 2)) }, tmp())
     }
 
+    /** A gzip bomb without newlines must fail on the line cap, not build a huge String. */
+    @Test
+    fun gzipBombWithoutNewlinesFailsEarly() {
+        val out = ByteArrayOutputStream()
+        GZIPOutputStream(out).use { gz ->
+            val zeros = ByteArray(1 shl 20) { 'A'.code.toByte() }
+            repeat(64) { gz.write(zeros) } // 64 MB decompressed, one "line"
+        }
+        val e = runCatching { AsnDatabase.convert(tmp().apply { writeBytes(out.toByteArray()) }, tmp()) }.exceptionOrNull()
+        assertTrue("$e", e is IOException && e.message!!.contains("line longer"))
+    }
+
+    @Test
+    fun boundedLineReaderLimits() {
+        fun reader(text: String, maxLine: Int = 8, maxTotal: Long = 100) =
+            BoundedLineReader(text.byteInputStream(), maxLine, maxTotal, "test file")
+        val r = reader("a\r\nbb\n\nccc")
+        assertEquals(listOf("a", "bb", "", "ccc", null), List(5) { r.readLine() })
+        assertEquals(10L, r.totalBytes)
+        assertNull(reader("").readLine())
+        // UTF-8 is decoded per line, not per read.
+        assertEquals("Zürich", reader("Zürich\n", maxLine = 16).readLine())
+        val long = runCatching { reader("123456789\n").readLine() }.exceptionOrNull()
+        assertTrue("$long", long is IOException && long.message!!.contains("longer than 8 bytes"))
+        val big = runCatching { reader("a\n".repeat(60), maxTotal = 100).let { rr -> while (rr.readLine() != null) Unit } }.exceptionOrNull()
+        assertTrue("$big", big is IOException && big.message!!.contains("test file larger"))
+    }
+
     @Test
     fun validation() {
         fun stats(routed: Int, rejected: Int = 0) = AsnDatabase.Stats(routed, unrouted = 10, rejected = rejected, asCount = routed / 5)

@@ -27,6 +27,14 @@ data class EngineConfig(
     /** Upstream DNS over TLS/HTTPS for the virtual resolver's lookups. */
     @SerialName("encrypted_dns") val encryptedDns: EncryptedDnsConfig = EncryptedDnsConfig(),
     val upstream: UpstreamConfig = UpstreamConfig(),
+    /**
+     * Start config only: feed files the engine loads before it processes the
+     * first TUN packet (null: omitted from the JSON, as in every
+     * `nativeUpdateConfig` call; later feed changes use `nativeLoadFeedFile`).
+     */
+    val feeds: List<FeedFileConfig>? = null,
+    /** Start config only: how long the engine waits for [feeds] before processing packets. */
+    @SerialName("feeds_preload_timeout_ms") val feedsPreloadTimeoutMs: Long? = null,
 ) {
     fun toJson(): String = EngineJson.json.encodeToString(serializer(), this)
 
@@ -40,8 +48,22 @@ data class EngineConfig(
         const val VIRTUAL_DNS_V6 = "fd76:6967:696c::2"
         const val MTU = 1500
         val FALLBACK_UPSTREAMS = listOf("1.1.1.1:53", "9.9.9.9:53")
+
+        /** The engine's default too; sent explicitly with a feed list. */
+        const val FEEDS_PRELOAD_TIMEOUT_MS = 10_000L
     }
 }
+
+/**
+ * One feed file of the start config: loaded exactly as
+ * `nativeLoadFeedFile(handle, id, category, path)` would load it.
+ */
+@Serializable
+data class FeedFileConfig(
+    val id: String,
+    val category: String,
+    val path: String,
+)
 
 /** Mirror of the Rust `EncryptedDnsConfig` (see docs/EVENTS.md). */
 @Serializable

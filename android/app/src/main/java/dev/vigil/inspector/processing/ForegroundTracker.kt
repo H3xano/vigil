@@ -17,7 +17,7 @@ import android.os.Process
 class ForegroundTracker(private val context: Context) {
     private val usm = context.getSystemService(UsageStatsManager::class.java)
     private val power = context.getSystemService(PowerManager::class.java)
-    @Volatile private var current: String? = null
+    private val state = ForegroundState()
     @Volatile private var permitted = false
     @Volatile private var interactive = true
     private var lastQuery = 0L
@@ -38,23 +38,72 @@ class ForegroundTracker(private val context: Context) {
         permitted = hasPermission()
         interactive = power.isInteractive
         if (!permitted) return
-        val from = if (lastQuery == 0L) now - 10 * 60_000 else lastQuery
+        // The app on screen may have been resumed long ago: look back far on
+        // the first query. Until a resume is seen, the foreground app is unknown.
+        val from = if (lastQuery == 0L) now - ForegroundState.INITIAL_LOOKBACK_MS else lastQuery
         val events = runCatching { usm.queryEvents(from, now) }.getOrNull() ?: return
         val e = UsageEvents.Event()
         while (events.hasNextEvent()) {
             events.getNextEvent(e)
             when (e.eventType) {
-                UsageEvents.Event.ACTIVITY_RESUMED -> current = e.packageName
-                UsageEvents.Event.ACTIVITY_PAUSED -> if (e.packageName == current) current = null
+                UsageEvents.Event.ACTIVITY_RESUMED -> state.resumed(e.packageName)
+                UsageEvents.Event.ACTIVITY_PAUSED -> state.paused(e.packageName)
             }
         }
         lastQuery = now
     }
 
-    /** true/false for installed packages when known, null when undeterminable. Uses state cached by [refresh]. */
-    fun isBackground(appKey: String): Boolean? {
+    /**
+     * true/false for installed packages when known, null when undeterminable
+     * (no usage access, or the foreground app is not known yet). Uses state
+     * cached by [refresh]. For flow tagging.
+     */
+    fun isBackground(appKey: String): Boolean? = state.isBackground(appKey, permitted, interactive)
+
+    /**
+     * For [ExfilDetector]: like [isBackground], but while usage access is
+     * granted and the foreground app is not known yet, uploads are treated as
+     * foreground (not counted) instead of unknown, so the app on screen is
+     * never reported as uploading in the background. null only without
+     * usage access (the detector then counts uploads as "unknown").
+     */
+    fun isBackgroundForExfil(appKey: String): Boolean? = state.isBackgroundForExfil(appKey, permitted, interactive)
+}
+
+/**
+ * The foreground app as folded from usage events. Pure, so it is testable;
+ * [ForegroundTracker] owns one.
+ */
+class ForegroundState {
+    @Volatile private var current: String? = null
+
+    /** False until the first ACTIVITY_RESUMED: before that, "not current" means nothing. */
+    @Volatile var known = false
+        private set
+
+    fun resumed(pkg: String) {
+        current = pkg
+        known = true
+    }
+
+    fun paused(pkg: String) {
+        if (pkg == current) current = null
+    }
+
+    fun isBackground(appKey: String, permitted: Boolean, interactive: Boolean): Boolean? {
         if (!appKey.contains('.') || appKey.startsWith("uid:") || !permitted) return null
         if (!interactive) return true
+        if (!known) return null
         return appKey != current
+    }
+
+    fun isBackgroundForExfil(appKey: String, permitted: Boolean, interactive: Boolean): Boolean? {
+        val bg = isBackground(appKey, permitted, interactive)
+        return if (bg == null && permitted && !known && appKey.contains('.') && !appKey.startsWith("uid:")) false else bg
+    }
+
+    companion object {
+        /** First usage-events query: the app on screen may have been opened hours ago. */
+        const val INITIAL_LOOKBACK_MS = 24L * 3600 * 1000
     }
 }

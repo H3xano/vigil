@@ -32,7 +32,10 @@ downloads; custom feeds go to the URL you enter, with the Authorization
 header you configure. TAXII 2.1 sources are polled with the same daily
 update: vigil sends GET requests (User-Agent `vigil/<version> (+TAXII
 poller)`, your credentials, and an `added_after` timestamp) to the API root
-you entered. JA4 fingerprints of your connections are matched on the device
+you entered. Credentials only ever go to the host you entered: a redirect to
+another host is followed without them, a redirect from HTTPS to plain HTTP is
+refused, and with credentials a TAXII discovery document's API roots on other
+hosts (or over plain HTTP) are not used. JA4 fingerprints of your connections are matched on the device
 and never sent anywhere.
 
 The IP-to-ASN database is also on by default: once a week vigil downloads

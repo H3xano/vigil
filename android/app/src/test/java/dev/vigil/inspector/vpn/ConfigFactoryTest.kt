@@ -1,6 +1,8 @@
 package dev.vigil.inspector.vpn
 
 import dev.vigil.inspector.data.EncryptedDnsSettings
+import dev.vigil.inspector.data.FeedEntity
+import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.Settings
 import dev.vigil.inspector.data.Socks5Settings
 import dev.vigil.inspector.data.UpstreamSettings
@@ -167,7 +169,42 @@ class ConfigFactoryTest {
         }
     }
 
+    private fun feed(id: String, category: String, enabled: Boolean = true, lastUpdated: Long? = 1L, kind: String = FeedKinds.LIST) =
+        FeedEntity(id = id, name = id, url = "https://feeds.example/$id", category = category, enabled = enabled, builtin = true, lastUpdated = lastUpdated, kind = kind)
+
+    @Test
+    fun startConfigPreloadsExactlyTheLoadableFeeds() {
+        val all = listOf(
+            feed("urlhaus", "malware"),
+            feed("ads", "ads", enabled = false),
+            feed("never-downloaded", "c2", lastUpdated = null),
+            feed("iptoasn", "asn", kind = FeedKinds.ASN),
+            feed("ja4-foxio", "ja4", kind = FeedKinds.JA4),
+        )
+        val onDisk = setOf("urlhaus", "ads", "iptoasn", "ja4-foxio")
+        val loadable = ConfigFactory.loadableFeeds(all) { it in onDisk }
+        // Enabled and downloaded, the ASN table included: what syncFeeds would load.
+        assertEquals(listOf("urlhaus", "iptoasn", "ja4-foxio"), loadable.map { it.id })
+        val base = ConfigFactory.build(Settings(), emptyList(), emptyList())
+        val start = ConfigFactory.startConfig(base, loadable) { "/data/feeds/$it.txt" }
+        assertEquals(base, start.copy(feeds = null, feedsPreloadTimeoutMs = null))
+        val json = start.toJson()
+        assertTrue(json, json.contains(FEEDS_JSON))
+        assertTrue(json, json.contains("\"feeds_preload_timeout_ms\":10000"))
+        // Update configs never carry the start-only fields.
+        val update = base.toJson()
+        assertFalse(update, update.contains("\"feeds\""))
+        assertFalse(update, update.contains("feeds_preload_timeout_ms"))
+        // No feeds: an empty list (the engine then starts at once).
+        assertTrue(ConfigFactory.startConfig(base, emptyList()) { it }.toJson().contains("\"feeds\":[]"))
+    }
+
     private companion object {
+        /** Start-config feed list (engine `feeds`; see docs/EVENTS.md). */
+        const val FEEDS_JSON = "\"feeds\":[{\"id\":\"urlhaus\",\"category\":\"malware\",\"path\":\"/data/feeds/urlhaus.txt\"}," +
+            "{\"id\":\"iptoasn\",\"category\":\"asn\",\"path\":\"/data/feeds/iptoasn.txt\"}," +
+            "{\"id\":\"ja4-foxio\",\"category\":\"ja4\",\"path\":\"/data/feeds/ja4-foxio.txt\"}]"
+
         /** Also parsed by the Rust test `upstream_json_contract`. */
         const val COMBINED_EDNS = "\"encrypted_dns\":{\"mode\":\"dot\",\"servers\":[{\"host\":\"dns.quad9.net\"," +
             "\"addrs\":[\"9.9.9.9\",\"149.112.112.112\",\"2620:fe::fe\",\"2620:fe::9\"]}],\"fallback_plain\":false}"
