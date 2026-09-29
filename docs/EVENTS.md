@@ -619,8 +619,8 @@ proxy app changes (that needs a new VPN interface).
   any connection: with the path down they fail (SERVFAIL unless
   `fallback_plain`), never going direct. When the path changes, open
   encrypted DNS connections are dropped and new ones use the new path.
-  With WireGuard and `fail_closed: false` this also happens whenever the
-  tunnel goes down or comes back, so connections (and pooled plain DNS
+  With WireGuard or SOCKS5 and `fail_closed: false` this also happens
+  whenever the tunnel or proxy goes down or comes back, so connections (and pooled plain DNS
   sockets) opened direct during an outage are not kept once it is back.
 - **Plain DNS** (encrypted DNS off, `fallback_plain`, bootstrap lookups of
   server names, hard-coded resolvers) goes to `upstream_dns` or the

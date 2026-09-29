@@ -31,7 +31,7 @@
 //! and UDP flows already open keep the path they were opened on until they
 //! end (a replaced WireGuard tunnel lives on until its last connection
 //! closes). Pooled DNS sockets from the old path are not reused (nor, with
-//! WireGuard and `fail_closed: false`, ones from before the tunnel went
+//! WireGuard or SOCKS5 and `fail_closed: false`, ones from before the tunnel went
 //! down or came back: see [`Upstream::generation`]). A change of
 //! `network_id` alone makes WireGuard re-create its socket and re-resolve
 //! the endpoint, keeping the session (roaming).
@@ -144,15 +144,16 @@ impl Upstream {
     }
 
     /// Identifies the current dialer; changes whenever the path does, and
-    /// in fail-open WireGuard mode whenever the tunnel goes down or comes
-    /// back (pooled DNS connections opened direct while it was down are
-    /// then not reused through the tunnel's recovery, nor tunnelled ones
-    /// while it is down).
+    /// in fail-open WireGuard and SOCKS5 modes whenever the tunnel or proxy
+    /// goes down or comes back (pooled DNS connections opened direct while
+    /// it was down are then not reused after its recovery, nor tunnelled or
+    /// proxied ones while it is down).
     pub fn generation(&self) -> u64 {
         let st = self.state.read();
         let d = &st.dialer;
         let epoch = match &d.path {
             Path::Wireguard(t) if !d.fail_closed => t.health_epoch(),
+            Path::Socks5(s) if !d.fail_closed => s.health_epoch(),
             _ => 0,
         };
         (d.generation << 32) | (epoch & 0xffff_ffff)
@@ -879,6 +880,49 @@ mod tests {
         cfg.network_id = "net-2".into();
         shared.upstream.apply(&cfg, &shared.platform);
         assert_eq!(shared.upstream.generation(), gen);
+    }
+
+    #[tokio::test]
+    async fn socks5_down_and_up_renews_pooled_dns_when_fail_open() {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dst = server.local_addr().unwrap();
+        tokio::spawn(async move { while server.accept().await.is_ok() {} });
+        let dead = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let shared = test_shared(Config::default());
+        for fail_closed in [false, true] {
+            shared
+                .upstream
+                .apply(&socks_cfg(dead, fail_closed), &shared.platform);
+            let socks = match &shared.upstream.dialer().path {
+                Path::Socks5(s) => s.clone(),
+                _ => unreachable!(),
+            };
+            let idle = shared.upstream.generation();
+            // The proxy fails: fail-open dials direct, under a new
+            // generation, so what the DNS pools open now is not kept.
+            let r = connect_tcp(&shared, dst).await;
+            assert_eq!(r.is_ok(), !fail_closed);
+            let down = shared.upstream.generation();
+            // Still down: no churn.
+            let _ = connect_tcp(&shared, dst).await;
+            assert_eq!(shared.upstream.generation(), down);
+            // Back: the direct connections pooled while down are dropped.
+            socks.note(Ok(()));
+            let up = shared.upstream.generation();
+            if fail_closed {
+                // Nothing goes direct: no need to renew anything.
+                assert_eq!((idle, down), (up, up));
+            } else {
+                assert_ne!(idle, down);
+                assert_ne!(down, up);
+                socks.note(Ok(()));
+                assert_eq!(shared.upstream.generation(), up);
+            }
+        }
     }
 
     fn wg_cfg(allowed: &[&str], fail_closed: bool) -> UpstreamConfig {

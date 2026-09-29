@@ -249,7 +249,10 @@ receive-with-callback), and says which path it took (`via`).
   CONNECT refused by the destination (a reply code) is reported to the app
   like a direct refusal. A proxy host name is looked up with a 3 s timeout
   and cached for 5 minutes (re-resolved after a failed connect; the last
-  address is kept if the lookup fails).
+  address is kept if the lookup fails). As with WireGuard, with
+  `fail_closed: false` the dialer generation changes whenever the proxy
+  goes down or comes back (noticed by the next connection tried through
+  it), so DNS connections opened direct during an outage are not reused.
 - **fail closed** (default): errors are returned, never replaced by a direct
   connection. With `fail_closed: false` the dialer goes direct while the path
   is down. WireGuard destinations outside AllowedIPs go direct, as
