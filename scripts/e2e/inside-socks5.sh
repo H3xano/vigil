@@ -30,7 +30,8 @@ ip=$(dig +short +time=5 +tries=2 example.com A @10.111.222.2 | grep -E "^[0-9.]+
 check "dns-resolves"       retry bash -c 'dig +short +time=5 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
 check "https"              retry curl -sS -o /dev/null --max-time 20 https://example.com/
 check "http"               retry curl -sS -o /dev/null --max-time 20 http://example.com/
-check "hardcoded-dns"      retry bash -c 'dig +short +time=5 +tries=2 example.org A @9.9.9.9 | grep -Eq "^[0-9.]+$"'
+# Cloudflare, not Quad9: TCP/53 to 9.9.9.9 from GitHub runners fails often.
+check "hardcoded-dns"      retry bash -c 'dig +short +time=5 +tries=2 example.org A @1.1.1.1 | grep -Eq "^[0-9.]+$"'
 check "quic-over-udp-associate" retry bash -c '"$0" quic-probe 1.1.1.1:443 www.cloudflare.com | grep -q "^reply"' "$cli"
 touch "$work/phase1.done"
 

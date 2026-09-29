@@ -45,7 +45,7 @@ if phase == "socks5-dot":
     flows = [e for e in events if e["type"] == "flow"]
     check("dot-via-proxy", "CONNECT 127.0.0.1:18853" in proxy, proxy)
     hard = [d for d in allowed if d.get("server") != "virtual"]
-    check("hardcoded-dns-tcp-via-proxy", any(d.get("upstream") == "tcp" for d in hard) and any(l.startswith("CONNECT 9.9.9.9:53") for l in proxy), (hard[:2], proxy))
+    check("hardcoded-dns-tcp-via-proxy", any(d.get("upstream") == "tcp" for d in hard) and any(l.startswith("CONNECT 1.1.1.1:53") for l in proxy), (hard[:2], proxy))
     ja4 = [f for f in flows if f.get("domain") == "ja4-blocked.vigil-test.example"]
     check("ja4-block-event", any(f["verdict"] == "block" and f.get("ja4_match") and (f.get("reason") or "").startswith("ja4:") for f in ja4), ja4)
     check("ja4-block-no-proxy-contact", not any("ja4-blocked" in l or l == "CONNECT 1.1.1.1:443" for l in proxy), proxy)
