@@ -42,13 +42,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import android.content.Intent
 import android.provider.Settings as AndroidSettings
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.AppDomainRule
+
 import dev.vigil.inspector.data.AppInfo
 import dev.vigil.inspector.data.AppRule
 import dev.vigil.inspector.data.AppRules
@@ -66,7 +70,8 @@ import dev.vigil.inspector.ui.components.Tag
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.formatCount
 import dev.vigil.inspector.ui.formatRelative
-import dev.vigil.inspector.ui.plural
+import dev.vigil.inspector.ui.AlertText
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.theme.VigilColors
 
 @Composable
@@ -79,18 +84,18 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
     val label = rememberAppLabels(vm, apps.map { it.pkg })
     val filtered = apps.filter { query.isBlank() || label(it.pkg).contains(query, true) || it.pkg.contains(query, true) }
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Apps · ${windowLabel(days)}")
+        VigilTopBar(stringResource(R.string.apps_title, windowLabel(days)))
         OutlinedTextField(
-            value = query, onValueChange = { query = it }, singleLine = true, placeholder = { Text("Search apps") },
+            value = query, onValueChange = { query = it }, singleLine = true, placeholder = { Text(stringResource(R.string.apps_search)) },
             leadingIcon = { Icon(Icons.Default.Search, null) },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         )
         if (apps.isEmpty()) {
-            EmptyState("No apps yet", "Apps appear here once they use the network while inspection is running.")
+            EmptyState(stringResource(R.string.apps_empty_title), stringResource(R.string.apps_empty_body))
             return@Column
         }
         if (filtered.isEmpty()) {
-            EmptyState("No matches", "No app seen in the ${windowLabel(days)} matches “${query.trim()}”.")
+            EmptyState(stringResource(R.string.apps_no_matches), pluralStringResource(R.plurals.apps_no_matches_body, days, days, query.trim()))
             return@Column
         }
         LazyColumn {
@@ -105,22 +110,28 @@ fun AppsScreen(vm: MainViewModel, nav: NavController) {
                     Column(Modifier.weight(1f)) {
                         Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            "${formatBytes(a.tx + a.rx)} · ${plural(a.destinations, "destination")} · ${formatRelative(a.lastSeen)}",
+                            listOf(
+                                formatBytes(a.tx + a.rx),
+                                pluralStringResource(R.plurals.apps_count_destinations, quantity(a.destinations), a.destinations.toString()),
+                                formatRelative(a.lastSeen),
+                            ).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         val blockedAlways = a.pkg in settings.blockedPackages
-                        trackerCounts[a.pkg]?.let { Tag(plural(it.toLong(), "tracker"), VigilColors.Medium) }
-                        if (!blockedAlways && settings.appRules[a.pkg]?.isEmpty == false) Tag("RULES", VigilColors.Medium)
-                        if (!blockedAlways && a.blocked > 0) Tag("${formatCount(a.blocked)} blocked", VigilColors.Block, filled = true)
+                        trackerCounts[a.pkg]?.let { Tag(pluralStringResource(R.plurals.apps_count_trackers, it, it.toString()), VigilColors.Medium) }
+                        if (!blockedAlways && settings.appRules[a.pkg]?.isEmpty == false) Tag(stringResource(R.string.apps_tag_rules), VigilColors.Medium)
+                        if (!blockedAlways && a.blocked > 0) {
+                            Tag(pluralStringResource(R.plurals.activity_count_blocked, quantity(a.blocked), formatCount(a.blocked)), VigilColors.Block, filled = true)
+                        }
                         if (a.pkg != "unknown") {
                             // NetGuard-style one-tap block of all network access.
                             IconButton(onClick = { vm.setAppBlocked(a.pkg, !blockedAlways) }) {
                                 Icon(
                                     Icons.Default.Lock,
-                                    if (blockedAlways) "$name has no network access; allow it" else "Block all network access of $name",
+                                    stringResource(if (blockedAlways) R.string.apps_allow_network else R.string.apps_block_network, name),
                                     tint = if (blockedAlways) VigilColors.Block else MaterialTheme.colorScheme.outlineVariant,
                                 )
                             }
@@ -166,8 +177,8 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(info.label, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                        Text(pkg + (info.uid?.let { " · uid $it" } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (info.isSystem) Text("System component", style = MaterialTheme.typography.bodySmall, color = VigilColors.Low)
+                        Text(info.uid?.let { stringResource(R.string.apps_package_uid, pkg, it) } ?: pkg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (info.isSystem) Text(stringResource(R.string.apps_system_component), style = MaterialTheme.typography.bodySmall, color = VigilColors.Low)
                     }
                 }
             }
@@ -182,22 +193,31 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
             }
             item {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatTile("Destinations", destinations.size.toString(), Modifier.weight(1f), caption = windowLabel(days))
-                    StatTile("Traffic", formatBytes(destinations.sumOf { it.bytes }), Modifier.weight(1f), caption = windowLabel(days))
-                    StatTile("Alerts", alerts.size.toString(), Modifier.weight(1f), accent = if (alerts.isNotEmpty()) VigilColors.Medium else MaterialTheme.colorScheme.primary)
+                    StatTile(stringResource(R.string.apps_tile_destinations), destinations.size.toString(), Modifier.weight(1f), caption = windowLabel(days))
+                    StatTile(stringResource(R.string.apps_tile_traffic), formatBytes(destinations.sumOf { it.bytes }), Modifier.weight(1f), caption = windowLabel(days))
+                    StatTile(stringResource(R.string.apps_tile_alerts), alerts.size.toString(), Modifier.weight(1f), accent = if (alerts.isNotEmpty()) VigilColors.Medium else MaterialTheme.colorScheme.primary)
                 }
             }
             item { AppTrackersSection(vm, pkg, days) }
             item {
                 SecondaryTabRow(selectedTabIndex = tab) {
-                    listOf("Hosts", "Flows", "DNS", "Alerts").forEachIndexed { i, t ->
+                    listOf(
+                        stringResource(R.string.apps_tab_hosts),
+                        stringResource(R.string.apps_tab_flows),
+                        "DNS",
+                        stringResource(R.string.apps_tab_alerts),
+                    ).forEachIndexed { i, t ->
                         Tab(tab == i, onClick = { tab = i }, text = { Text(t, maxLines = 1) })
                     }
                 }
             }
             when (tab) {
                 0 -> {
-                    if (destinationsOrNull?.isEmpty() == true) item { EmptyState("Nothing yet", "No destinations in the ${windowLabel(days)}.") }
+                    if (destinationsOrNull?.isEmpty() == true) {
+                        item {
+                            EmptyState(stringResource(R.string.empty_nothing_yet), pluralStringResource(R.plurals.apps_no_destinations, days, days))
+                        }
+                    }
                     items(destinations, key = { "d-" + it.destination }) { d ->
                         val named = DomainNames.isDomainName(d.destination)
                         Row(
@@ -209,7 +229,12 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                             Column(Modifier.weight(1f)) {
                                 Text(d.destination, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     color = if (d.blocked == d.flows) VigilColors.Block else MaterialTheme.colorScheme.onSurface)
-                                Text("${plural(d.flows, "connection")} · ${formatBytes(d.bytes)} · first ${formatRelative(d.firstSeen)}",
+                                Text(
+                                    listOf(
+                                        pluralStringResource(R.plurals.activity_count_connections, quantity(d.flows), d.flows.toString()),
+                                        formatBytes(d.bytes),
+                                        stringResource(R.string.apps_first_seen, formatRelative(d.firstSeen)),
+                                    ).joinToString(" · "),
                                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 AsnDatabase.networksLabel(d.asns, d.asnName)?.let {
                                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -217,29 +242,29 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                                 }
                             }
                             AppRules.matchingDomainRule(settings, pkg, d.destination)?.let { r ->
-                                Tag(if (r.isBlock) "BLOCKED FOR APP" else "ALLOWED FOR APP", if (r.isBlock) VigilColors.Block else VigilColors.Allow)
+                                Tag(stringResource(if (r.isBlock) R.string.apps_tag_blocked_for_app else R.string.apps_tag_allowed_for_app), if (r.isBlock) VigilColors.Block else VigilColors.Allow)
                                 Spacer(Modifier.width(4.dp))
                             }
-                            if (d.blocked > 0) Tag("${d.blocked} blocked", VigilColors.Block, filled = true)
+                            if (d.blocked > 0) Tag(pluralStringResource(R.plurals.activity_count_blocked, quantity(d.blocked), d.blocked.toString()), VigilColors.Block, filled = true)
                         }
                     }
                 }
                 1 -> {
-                    if (flowsOrNull?.isEmpty() == true) item { EmptyState("Nothing yet", "No recorded connections.") }
+                    if (flowsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.empty_nothing_yet), stringResource(R.string.apps_no_connections)) }
                     items(flows, key = { "f-" + it.id }) { f -> FlowRow(f, info.label) { nav.navigate("flow/${f.id}") } }
                 }
                 2 -> {
-                    if (dnsOrNull?.isEmpty() == true) item { EmptyState("Nothing yet", "No recorded DNS lookups.") }
+                    if (dnsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.empty_nothing_yet), stringResource(R.string.apps_no_lookups)) }
                     items(dns, key = { "q-" + it.id }) { d -> DnsRow(d, info.label) { dnsSheet = d.id } }
                 }
                 else -> {
-                    if (alertsOrNull?.isEmpty() == true) item { EmptyState("No alerts", "Nothing suspicious recorded for this app.") }
+                    if (alertsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.apps_no_alerts), stringResource(R.string.apps_no_alerts_body)) }
                     items(alerts, key = { "a-" + it.id }) { a ->
                         Row(Modifier.fillMaxWidth().padding(16.dp)) {
                             SeverityDot(a.severity)
                             Spacer(Modifier.width(10.dp))
                             Column {
-                                Text(a.message, style = MaterialTheme.typography.bodyMedium)
+                                Text(AlertText.message(a, info.label).asString(), style = MaterialTheme.typography.bodyMedium)
                                 Text(formatRelative(a.ts), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -268,28 +293,32 @@ private fun NetworkAccessCard(vm: MainViewModel, pkg: String, label: String, blo
     val usageAccess = usageAccessGranted(vm)
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(Modifier.padding(vertical = 8.dp)) {
-            Text("Network access", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.titleMedium)
-            RuleSwitch("Block always", "Connections are refused and DNS lookups sinkholed while inspection runs.", blockedAlways) {
+            Text(stringResource(R.string.apps_network_access), Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.titleMedium)
+            RuleSwitch(stringResource(R.string.apps_block_always), stringResource(R.string.apps_block_always_detail), blockedAlways) {
                 vm.setAppBlocked(pkg, it)
             }
-            val conditional = if (blockedAlways) "Blocked always; these apply when that is off." else null
-            RuleSwitch("Block on Wi-Fi", conditional, rule.blockWifi, enabled = !blockedAlways) { vm.setAppRule(pkg, rule.copy(blockWifi = it)) }
-            RuleSwitch("Block on mobile data", conditional, rule.blockCellular, enabled = !blockedAlways) { vm.setAppRule(pkg, rule.copy(blockCellular = it)) }
+            val conditional = if (blockedAlways) stringResource(R.string.apps_conditions_overridden) else null
+            RuleSwitch(stringResource(R.string.apps_block_wifi), conditional, rule.blockWifi, enabled = !blockedAlways) {
+                vm.setAppRule(pkg, rule.copy(blockWifi = it))
+            }
+            RuleSwitch(stringResource(R.string.apps_block_mobile), conditional, rule.blockCellular, enabled = !blockedAlways) {
+                vm.setAppRule(pkg, rule.copy(blockCellular = it))
+            }
             RuleSwitch(
-                "Block in the background",
-                "While $label is not on screen. Open connections are cut when it leaves the screen.",
+                stringResource(R.string.apps_block_background),
+                stringResource(R.string.apps_block_background_detail, label),
                 rule.blockBackground, enabled = !blockedAlways,
             ) { vm.setAppRule(pkg, rule.copy(blockBackground = it)) }
             if (rule.blockBackground && !usageAccess) {
                 Column(Modifier.padding(horizontal = 16.dp)) {
                     Text(
-                        "vigil needs usage access to know which app is on screen. Without it this rule only applies while the screen is off.",
+                        stringResource(R.string.apps_usage_access_needed),
                         style = MaterialTheme.typography.bodySmall, color = VigilColors.Medium,
                     )
-                    TextButton(onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text("Grant usage access") }
+                    TextButton(onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text(stringResource(R.string.apps_grant_usage_access)) }
                 }
             }
-            RuleSwitch("Block when the screen is off", null, rule.blockScreenOff, enabled = !blockedAlways) {
+            RuleSwitch(stringResource(R.string.apps_block_screen_off), null, rule.blockScreenOff, enabled = !blockedAlways) {
                 vm.setAppRule(pkg, rule.copy(blockScreenOff = it))
             }
         }
@@ -323,18 +352,17 @@ private fun AppDomainRulesCard(vm: MainViewModel, pkg: String, label: String, ru
     val valid = DomainNames.isDomainName(candidate)
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Rules for this app", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.apps_rules_title), style = MaterialTheme.typography.titleMedium)
             Text(
-                "Allow or block a domain and its subdomains for $label only. An allow rule here overrides feeds " +
-                    "and global rules for this app; blocking the whole app still wins.",
+                stringResource(R.string.apps_rules_body, label),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             rules.forEach { r ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Tag(if (r.isBlock) "BLOCK" else "ALLOW", if (r.isBlock) VigilColors.Block else VigilColors.Allow, filled = true)
+                    Tag(stringResource(if (r.isBlock) R.string.apps_tag_block else R.string.apps_tag_allow), if (r.isBlock) VigilColors.Block else VigilColors.Allow, filled = true)
                     Spacer(Modifier.width(8.dp))
                     Text(r.domain, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    IconButton(onClick = { vm.removeAppDomainRule(pkg, r.domain) }) { Icon(Icons.Default.Delete, "Remove rule for ${r.domain}") }
+                    IconButton(onClick = { vm.removeAppDomainRule(pkg, r.domain) }) { Icon(Icons.Default.Delete, stringResource(R.string.apps_remove_rule, r.domain)) }
                 }
             }
             OutlinedTextField(
@@ -342,12 +370,13 @@ private fun AppDomainRulesCard(vm: MainViewModel, pkg: String, label: String, ru
                 isError = input.isNotBlank() && !valid, leadingIcon = { Icon(Icons.Default.Add, null) },
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.BLOCK); input = "" }) { Text("Block") }
-                OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.ALLOW); input = "" }) { Text("Allow") }
+                OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.BLOCK); input = "" }) { Text(stringResource(R.string.action_block)) }
+                OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.ALLOW); input = "" }) { Text(stringResource(R.string.apps_action_allow)) }
             }
         }
     }
 }
 
 /** "last 7 days", "last day". */
-internal fun windowLabel(days: Int) = if (days == 1) "last day" else "last $days days"
+@Composable
+internal fun windowLabel(days: Int) = pluralStringResource(R.plurals.apps_window, days, days)

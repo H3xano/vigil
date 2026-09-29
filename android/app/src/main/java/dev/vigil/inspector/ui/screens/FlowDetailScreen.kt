@@ -23,11 +23,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.AsnDatabase
+
 import dev.vigil.inspector.data.FlowEntity
 import dev.vigil.inspector.engine.PcapFilter
 import dev.vigil.inspector.ui.BlockReasons
@@ -56,11 +59,11 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Connection", nav)
+        VigilTopBar(stringResource(R.string.flow_title), nav)
         val loaded = lookup ?: return@Column
         val f = loaded.flow
         if (f == null) {
-            EmptyState("Connection not found", "It may have been pruned by the history retention setting or cleared.")
+            EmptyState(stringResource(R.string.flow_not_found), stringResource(R.string.flow_not_found_body))
             return@Column
         }
         val label = rememberAppLabels(vm, listOf(f.pkg))(f.pkg)
@@ -74,74 +77,89 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                     Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            SectionTitle("Verdict")
-            Field("Verdict", if (f.isBlocked) "Blocked" else "Allowed")
-            Field("Reason", f.reason)
-            Field("Error", f.error)
-            SectionTitle("Destination")
-            Field("Domain", f.domain)
-            Field("Name source", when (f.domainSource) {
-                "sni" -> "TLS ClientHello (SNI)"
-                "quic" -> "QUIC Initial (SNI)"
-                "http" -> "HTTP Host header"
-                "dns" -> "Earlier DNS answer (hint)"
+            SectionTitle(stringResource(R.string.flow_verdict))
+            Field(stringResource(R.string.flow_verdict), stringResource(if (f.isBlocked) R.string.state_blocked else R.string.state_allowed))
+            Field(stringResource(R.string.flow_reason), f.reason)
+            Field(stringResource(R.string.flow_error), f.error)
+            SectionTitle(stringResource(R.string.flow_destination))
+            Field(stringResource(R.string.flow_domain), f.domain)
+            Field(stringResource(R.string.flow_name_source), when (f.domainSource) {
+                "sni" -> stringResource(R.string.flow_source_sni)
+                "quic" -> stringResource(R.string.flow_source_quic)
+                "http" -> stringResource(R.string.flow_source_http)
+                "dns" -> stringResource(R.string.flow_source_dns)
                 else -> null
             }, help = Glossary.NAME_SOURCE + "\n\n" + Glossary.SNI)
-            Field("Address", "${f.dstIp}:${f.dstPort}", mono = true)
+            Field(stringResource(R.string.flow_address), "${f.dstIp}:${f.dstPort}", mono = true)
+            val network = AsnDatabase.label(f.asn, f.asnName)
+            val country = f.asnCountry
             Field(
-                "Network",
-                AsnDatabase.label(f.asn, f.asnName)?.let { l -> l + (f.asnCountry?.let { " · registered in $it" } ?: "") },
+                stringResource(R.string.flow_network),
+                if (network != null && country != null) stringResource(R.string.flow_network_registered, network, country) else network,
                 help = Glossary.ASN,
             )
             TrackerFields(f.domain)
-            Field("Path", when (f.via) {
-                "direct" -> "Direct"
-                "wireguard" -> "Through the WireGuard tunnel"
-                "socks5" -> "Through the SOCKS5 proxy"
+            Field(stringResource(R.string.flow_path), when (f.via) {
+                "direct" -> stringResource(R.string.activity_path_direct)
+                "wireguard" -> stringResource(R.string.flow_path_wireguard)
+                "socks5" -> stringResource(R.string.flow_path_socks5)
                 null -> null
                 else -> f.via
             }, help = Glossary.VIA)
-            Field("Transport", f.proto.uppercase())
-            Field("Protocol", f.appProto?.uppercase())
-            SectionTitle("Handshake")
-            Field("TLS version", f.tlsVersion)
+            Field(stringResource(R.string.flow_transport), f.proto.uppercase())
+            Field(stringResource(R.string.flow_protocol), f.appProto?.uppercase())
+            SectionTitle(stringResource(R.string.flow_handshake))
+            Field(stringResource(R.string.flow_tls_version), f.tlsVersion)
             Field("ALPN", f.alpn, help = Glossary.ALPN)
             Field("JA4", f.ja4, mono = true, help = Glossary.JA4)
-            if (f.ja4Feed != null) {
+            val ja4Feed = f.ja4Feed
+            if (ja4Feed != null) {
+                val ja4Label = f.ja4Label
+                val blocked = f.isBlocked && f.reason?.startsWith("ja4:") == true
                 Field(
-                    "JA4 match",
-                    (f.ja4Label?.let { "Listed as “$it”" } ?: "Listed") + " by feed ${f.ja4Feed}" +
-                        if (f.isBlocked && f.reason?.startsWith("ja4:") == true) "; connection blocked" else "",
+                    stringResource(R.string.flow_ja4_match),
+                    when {
+                        ja4Label != null && blocked -> stringResource(R.string.flow_ja4_listed_as_blocked, ja4Label, ja4Feed)
+                        ja4Label != null -> stringResource(R.string.flow_ja4_listed_as, ja4Label, ja4Feed)
+                        blocked -> stringResource(R.string.flow_ja4_listed_blocked, ja4Feed)
+                        else -> stringResource(R.string.flow_ja4_listed, ja4Feed)
+                    },
                     help = Glossary.JA4_MATCH,
                 )
             }
-            Field("ECH", if (f.ech) "Offered — the real destination name is encrypted" else null, help = Glossary.ECH)
-            Field("HTTP method", f.httpMethod)
-            SectionTitle("Traffic")
-            Field("Started", formatDateTime(f.ts))
-            Field("Duration", f.durationMs?.let(::formatDuration) ?: if (f.isActive) "active" else null)
-            Field("Received", formatBytes(f.rx))
-            Field("Sent", formatBytes(f.tx))
-            Field("App state", when (f.background) { true -> "Background"; false -> "Foreground"; null -> null })
-            Field("Source", f.src, mono = true)
-            Field("UID", f.uid?.toString())
-            Field("Tags", f.tags.takeIf { it.isNotEmpty() })
+            Field("ECH", if (f.ech) stringResource(R.string.flow_ech_offered) else null, help = Glossary.ECH)
+            Field(stringResource(R.string.flow_http_method), f.httpMethod)
+            SectionTitle(stringResource(R.string.flow_traffic))
+            Field(stringResource(R.string.flow_started), formatDateTime(f.ts))
+            Field(stringResource(R.string.flow_duration), f.durationMs?.let(::formatDuration) ?: if (f.isActive) stringResource(R.string.flow_active) else null)
+            Field(stringResource(R.string.flow_received), formatBytes(f.rx))
+            Field(stringResource(R.string.flow_sent), formatBytes(f.tx))
+            Field(
+                stringResource(R.string.flow_app_state),
+                when (f.background) {
+                    true -> stringResource(R.string.flow_background)
+                    false -> stringResource(R.string.flow_foreground)
+                    null -> null
+                },
+            )
+            Field(stringResource(R.string.flow_source), f.src, mono = true)
+            Field(stringResource(R.string.flow_uid), f.uid?.toString())
+            Field(stringResource(R.string.flow_tags), f.tags.takeIf { it.isNotEmpty() })
 
-            SectionTitle("Actions")
+            SectionTitle(stringResource(R.string.flow_actions))
             val domain = f.domain
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (domain != null) {
                     BlockDomainButtons(domain, settings, vm, pkg = f.pkg, appLabel = label)
                     if (DomainNames.matchingRule(domain, settings.denyDomains) == null && f.domainSource == "dns") {
                         Text(
-                            "This name is a hint from an earlier DNS answer; other sites may share ${f.dstIp}. " +
-                                "Blocking it blocks lookups of $domain (and connections that name it), not this IP address.",
+                            stringResource(R.string.flow_dns_hint_note, f.dstIp, domain),
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     val allowRule = DomainNames.matchingRule(domain, settings.allowDomains)
                     if (f.isBlocked && allowRule == null && !BlockReasons.isPerApp(f.reason)) {
-                        OutlinedButton(onClick = { vm.allowDomainWithUndo(domain) }, Modifier.fillMaxWidth()) { Text("Always allow $domain") }
+                        OutlinedButton(onClick = { vm.allowDomainWithUndo(domain) }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.flow_always_allow, domain)) }
                     }
                     if (f.isBlocked) {
                         Text(
@@ -151,21 +169,21 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                     }
                 } else if (f.pkg != "unknown" && f.pkg !in settings.blockedPackages) {
                     // No name to block: vigil's rules match names, not single addresses.
-                    OutlinedButton(onClick = { vm.blockApp(f.pkg, label) }, Modifier.fillMaxWidth()) { Text("Block all network access of $label") }
+                    OutlinedButton(onClick = { vm.blockApp(f.pkg, label) }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.apps_block_network, label)) }
                     Text(
-                        "vigil blocks by name; this connection has none, and single IP addresses cannot be blocked.",
+                        stringResource(R.string.flow_no_name),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (f.pkg != "unknown") OutlinedButton(onClick = { nav.openApp(f.pkg) }, Modifier.fillMaxWidth()) { Text("Open $label") }
+                if (f.pkg != "unknown") OutlinedButton(onClick = { nav.openApp(f.pkg) }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.flow_open_app, label)) }
                 ExportPacketsButton(
-                    vm, nav, "Export packets (PCAPng)",
+                    vm, nav, stringResource(R.string.flow_export_packets),
                     PcapRequest(PcapFilter(flowIds = listOf(f.engineId)), CaptureExport.fileName("flow-${f.engineId}-${f.domain ?: f.dstIp}"), session = f.session),
                 )
                 OutlinedButton(onClick = {
                     val text = listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")
                     scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("indicators", text))) }
-                }, Modifier.fillMaxWidth()) { Text("Copy indicators") }
+                }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.flow_copy_indicators)) }
             }
             Spacer(Modifier.height(32.dp))
         }

@@ -1,0 +1,336 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monitoring screens: Overview (dashboard), Activity, connection detail, Apps, app detail and Encrypted DNS. -->
+<resources>
+
+    <!-- Relative times, used on many screens ("5m ago"). Keep them short. -->
+    <string name="activity_time_now">now</string>
+    <plurals name="activity_time_seconds_ago">
+        <item quantity="one">%1$ds ago</item>
+        <item quantity="other">%1$ds ago</item>
+    </plurals>
+    <plurals name="activity_time_minutes_ago">
+        <item quantity="one">%1$dm ago</item>
+        <item quantity="other">%1$dm ago</item>
+    </plurals>
+    <plurals name="activity_time_hours_ago">
+        <item quantity="one">%1$dh ago</item>
+        <item quantity="other">%1$dh ago</item>
+    </plurals>
+    <plurals name="activity_time_days_ago">
+        <item quantity="one">%1$dd ago</item>
+        <item quantity="other">%1$dd ago</item>
+    </plurals>
+
+    <!-- Counts shown in list rows, joined with " · ". %1$s = the number, possibly shortened (1.2k) -->
+    <plurals name="activity_count_connections">
+        <item quantity="one">%1$s connection</item>
+        <item quantity="other">%1$s connections</item>
+    </plurals>
+    <plurals name="activity_count_lookups">
+        <item quantity="one">%1$s lookup</item>
+        <item quantity="other">%1$s lookups</item>
+    </plurals>
+    <!-- Connections or lookups that were blocked -->
+    <plurals name="activity_count_blocked">
+        <item quantity="one">%1$s blocked</item>
+        <item quantity="other">%1$s blocked</item>
+    </plurals>
+
+    <!-- Overview -->
+    <string name="dashboard_settings_unreadable_title">Settings could not be read</string>
+    <!-- Button, keep short -->
+    <string name="dashboard_settings_unreadable_action">Dismiss and start anyway</string>
+    <string name="dashboard_upstream_warning_title">Route through VPN / proxy</string>
+    <!-- Button, keep short -->
+    <string name="dashboard_open_settings">Open settings</string>
+    <!-- %1$s = host name of the Private DNS server -->
+    <string name="dashboard_private_dns_title">Private DNS is set to %1$s</string>
+    <string name="dashboard_private_dns_body">Android encrypts DNS lookups before vigil can see them, so domain names come only from TLS/QUIC handshakes.</string>
+    <!-- Follows dashboard_private_dns_body. %1$s = vigil's encrypted DNS setting (e.g. "DNS over HTTPS · Quad9") -->
+    <string name="dashboard_private_dns_encrypted">vigil already sends lookups encrypted (%1$s), so you can set Private DNS to Off or Automatic for full DNS inspection without losing privacy.</string>
+    <!-- Follows dashboard_private_dns_body -->
+    <string name="dashboard_private_dns_plain">Set Private DNS to Automatic or Off for full DNS inspection, and turn on Encrypted DNS in vigil\'s settings to keep lookups private.</string>
+    <!-- Follows the two sentences above when that setting is on -->
+    <string name="dashboard_private_dns_blocked">With “Block encrypted DNS” enabled, lookups will fail.</string>
+    <string name="dashboard_usage_access_title">Background detection is off</string>
+    <string name="dashboard_usage_access_body">Grant usage access so vigil can tell traffic from apps you are using apart from background traffic.</string>
+    <!-- Button, keep short -->
+    <string name="dashboard_usage_access_action">Grant</string>
+    <plurals name="dashboard_feeds_missing_title">
+        <item quantity="one">%1$d feed not downloaded yet</item>
+        <item quantity="other">%1$d feeds not downloaded yet</item>
+    </plurals>
+    <string name="dashboard_feeds_downloading">Downloading feeds…</string>
+    <string name="dashboard_feeds_waiting">Feeds will download as soon as the device is online.</string>
+    <!-- %1$s = error message -->
+    <string name="dashboard_feeds_last_error">Last error: %1$s</string>
+    <string name="dashboard_feeds_automatic">Feeds download automatically when the device is online.</string>
+    <!-- Button, keep short -->
+    <string name="dashboard_feeds_update_now">Update now</string>
+    <string name="dashboard_feeds_updating">Updating threat feeds…</string>
+    <string name="dashboard_last_24_hours">Last 24 hours</string>
+    <!-- Term explained by a help dialog: a blocked lookup answered with no real address -->
+    <string name="dashboard_sinkholed">Sinkholed</string>
+    <!-- Tile titles, keep short -->
+    <string name="dashboard_tile_connections">Connections</string>
+    <string name="dashboard_tile_dns">DNS lookups</string>
+    <string name="dashboard_tile_blocked">Blocked</string>
+    <string name="dashboard_tile_unread_alerts">Unread alerts</string>
+    <!-- Tile caption. %1$s = number of lookups, possibly shortened (1.2k) -->
+    <plurals name="dashboard_tile_dns_sinkholed">
+        <item quantity="one">%1$s sinkholed</item>
+        <item quantity="other">%1$s sinkholed</item>
+    </plurals>
+    <string name="dashboard_health_check_title">Spyware health check</string>
+    <string name="dashboard_health_check_body">Look for known spyware and stalkerware in installed apps and recorded activity</string>
+    <string name="dashboard_top_apps">Most active apps</string>
+    <string name="dashboard_no_traffic_title">No traffic yet</string>
+    <string name="dashboard_no_traffic_running">Connections will appear here as apps use the network.</string>
+    <string name="dashboard_no_traffic_stopped">Start inspection to see which apps talk to whom.</string>
+    <string name="dashboard_top_blocked">Most blocked domains</string>
+    <!-- Accessibility: action of a blocked domain row -->
+    <string name="dashboard_why_blocked">Why blocked</string>
+    <!-- Number of blocks of a domain. %1$d = count -->
+    <plurals name="dashboard_blocked_hits">
+        <item quantity="one">%1$d×</item>
+        <item quantity="other">%1$d×</item>
+    </plurals>
+    <string name="dashboard_status_running">Inspecting traffic</string>
+    <string name="dashboard_status_starting">Starting…</string>
+    <string name="dashboard_status_failed">Not running</string>
+    <string name="dashboard_status_stopped">Inspection is off</string>
+    <!-- %1$d = open connections, %2$s = download speed (e.g. 12 KB), %3$s = upload speed -->
+    <plurals name="dashboard_status_live">
+        <item quantity="one">%1$d active · ↓ %2$s/s ↑ %3$s/s</item>
+        <item quantity="other">%1$d active · ↓ %2$s/s ↑ %3$s/s</item>
+    </plurals>
+    <!-- %1$s = relative time (e.g. "5m ago") -->
+    <string name="dashboard_status_since">Since %1$s</string>
+    <string name="dashboard_status_hint">Tap the switch to start the on-device inspector</string>
+    <string name="dashboard_config_error_title">Settings change not applied</string>
+    <!-- %1$s = the inspector's error message -->
+    <string name="dashboard_config_error_body">The inspector rejected the new settings and keeps running with the previous ones: %1$s</string>
+
+    <!-- Activity -->
+    <string name="activity_title">Activity</string>
+    <!-- Filter chip: the lists stop or keep following new traffic. Keep short -->
+    <string name="activity_paused">Paused</string>
+    <string name="activity_live">Live</string>
+    <string name="activity_resume">Resume live updates</string>
+    <!-- Tab, keep short -->
+    <string name="activity_tab_connections">Connections</string>
+    <!-- Filter chip for one app, keep short -->
+    <string name="activity_filter_app">App</string>
+    <string name="activity_filter_all_apps">Show all apps</string>
+    <string name="activity_no_apps">No apps seen yet</string>
+    <string name="activity_search_connections">Domain, IP, network or app</string>
+    <string name="activity_search_lookups">Domain or app</string>
+    <!-- Filter chips, keep short -->
+    <string name="activity_path_tunnel">Via tunnel/proxy</string>
+    <string name="activity_path_direct">Direct</string>
+    <string name="activity_no_connections">No connections</string>
+    <string name="activity_no_match">Nothing matches the current filter.</string>
+    <string name="activity_no_connections_body">Connections appear here while inspection is running.</string>
+    <string name="activity_no_lookups">No lookups</string>
+    <string name="activity_no_lookups_body">DNS lookups appear here while inspection is running.</string>
+    <plurals name="activity_limit_connections">
+        <item quantity="one">Showing the newest %1$d connection. Search to find older ones.</item>
+        <item quantity="other">Showing the newest %1$d connections. Search to find older ones.</item>
+    </plurals>
+    <plurals name="activity_limit_lookups">
+        <item quantity="one">Showing the newest %1$d lookup. Search to find older ones.</item>
+        <item quantity="other">Showing the newest %1$d lookups. Search to find older ones.</item>
+    </plurals>
+    <!-- Accessibility: the dot in front of a connection that is still open -->
+    <string name="activity_active_connection">Active connection</string>
+    <!-- Small tags, keep short -->
+    <string name="activity_tag_background">background</string>
+    <string name="activity_tag_cleartext">cleartext</string>
+    <!-- Accessibility: action of a DNS row -->
+    <string name="activity_block_or_allow">Block or allow</string>
+
+    <!-- Connection detail -->
+    <string name="flow_title">Connection</string>
+    <string name="flow_not_found">Connection not found</string>
+    <string name="flow_not_found_body">It may have been pruned by the history retention setting or cleared.</string>
+    <!-- Section title and field label -->
+    <string name="flow_verdict">Verdict</string>
+    <string name="flow_reason">Reason</string>
+    <string name="flow_error">Error</string>
+    <string name="flow_destination">Destination</string>
+    <string name="flow_domain">Domain</string>
+    <string name="flow_name_source">Name source</string>
+    <string name="flow_source_sni">TLS ClientHello (SNI)</string>
+    <string name="flow_source_quic">QUIC Initial (SNI)</string>
+    <string name="flow_source_http">HTTP Host header</string>
+    <string name="flow_source_dns">Earlier DNS answer (hint)</string>
+    <string name="flow_address">Address</string>
+    <string name="flow_network">Network</string>
+    <!-- %1$s = network (e.g. AS13335 Cloudflare), %2$s = country code -->
+    <string name="flow_network_registered">%1$s · registered in %2$s</string>
+    <string name="flow_path">Path</string>
+    <string name="flow_path_wireguard">Through the WireGuard tunnel</string>
+    <string name="flow_path_socks5">Through the SOCKS5 proxy</string>
+    <string name="flow_transport">Transport</string>
+    <string name="flow_protocol">Protocol</string>
+    <string name="flow_handshake">Handshake</string>
+    <string name="flow_tls_version">TLS version</string>
+    <string name="flow_ja4_match">JA4 match</string>
+    <!-- %1$s = malware or tool name from the feed, %2$s = feed id -->
+    <string name="flow_ja4_listed_as">Listed as “%1$s” by feed %2$s</string>
+    <string name="flow_ja4_listed_as_blocked">Listed as “%1$s” by feed %2$s; connection blocked</string>
+    <!-- %1$s = feed id -->
+    <string name="flow_ja4_listed">Listed by feed %1$s</string>
+    <string name="flow_ja4_listed_blocked">Listed by feed %1$s; connection blocked</string>
+    <string name="flow_ech_offered">Offered — the real destination name is encrypted</string>
+    <string name="flow_http_method">HTTP method</string>
+    <string name="flow_traffic">Traffic</string>
+    <string name="flow_started">Started</string>
+    <string name="flow_duration">Duration</string>
+    <!-- Duration of a connection that is still open -->
+    <string name="flow_active">active</string>
+    <string name="flow_received">Received</string>
+    <string name="flow_sent">Sent</string>
+    <string name="flow_app_state">App state</string>
+    <string name="flow_background">Background</string>
+    <string name="flow_foreground">Foreground</string>
+    <!-- Source address and port -->
+    <string name="flow_source">Source</string>
+    <!-- Android user ID of the app -->
+    <string name="flow_uid">UID</string>
+    <string name="flow_tags">Tags</string>
+    <string name="flow_actions">Actions</string>
+    <!-- %1$s = IP address, %2$s = domain name -->
+    <string name="flow_dns_hint_note">This name is a hint from an earlier DNS answer; other sites may share %1$s. Blocking it blocks lookups of %2$s (and connections that name it), not this IP address.</string>
+    <!-- %1$s = domain name -->
+    <string name="flow_always_allow">Always allow %1$s</string>
+    <string name="flow_no_name">vigil blocks by name; this connection has none, and single IP addresses cannot be blocked.</string>
+    <!-- %1$s = app name -->
+    <string name="flow_open_app">Open %1$s</string>
+    <string name="flow_export_packets">Export packets (PCAPng)</string>
+    <string name="flow_copy_indicators">Copy indicators</string>
+
+    <!-- Apps -->
+    <!-- %1$s = time window (apps_window) -->
+    <string name="apps_title">Apps · %1$s</string>
+    <!-- Time window the app statistics cover -->
+    <plurals name="apps_window">
+        <item quantity="one">last day</item>
+        <item quantity="other">last %1$d days</item>
+    </plurals>
+    <string name="apps_search">Search apps</string>
+    <string name="apps_empty_title">No apps yet</string>
+    <string name="apps_empty_body">Apps appear here once they use the network while inspection is running.</string>
+    <string name="apps_no_matches">No matches</string>
+    <!-- %1$d = days, %2$s = search text -->
+    <plurals name="apps_no_matches_body">
+        <item quantity="one">No app seen in the last day matches “%2$s”.</item>
+        <item quantity="other">No app seen in the last %1$d days matches “%2$s”.</item>
+    </plurals>
+    <!-- %1$s = number of destinations -->
+    <plurals name="apps_count_destinations">
+        <item quantity="one">%1$s destination</item>
+        <item quantity="other">%1$s destinations</item>
+    </plurals>
+    <!-- Tag. %1$s = number of tracker companies -->
+    <plurals name="apps_count_trackers">
+        <item quantity="one">%1$s tracker</item>
+        <item quantity="other">%1$s trackers</item>
+    </plurals>
+    <!-- Tag: the app has its own rules. Short, upper case -->
+    <string name="apps_tag_rules">RULES</string>
+    <!-- %1$s = app name -->
+    <string name="apps_allow_network">%1$s has no network access; allow it</string>
+    <!-- %1$s = app name -->
+    <string name="apps_block_network">Block all network access of %1$s</string>
+    <!-- %1$s = package name, %2$d = Android user ID -->
+    <string name="apps_package_uid">%1$s · uid %2$d</string>
+    <string name="apps_system_component">System component</string>
+    <!-- Tile titles, keep short -->
+    <string name="apps_tile_destinations">Destinations</string>
+    <string name="apps_tile_traffic">Traffic</string>
+    <string name="apps_tile_alerts">Alerts</string>
+    <!-- Tabs, keep short -->
+    <string name="apps_tab_hosts">Hosts</string>
+    <string name="apps_tab_flows">Flows</string>
+    <string name="apps_tab_alerts">Alerts</string>
+    <!-- %1$d = days -->
+    <plurals name="apps_no_destinations">
+        <item quantity="one">No destinations in the last day.</item>
+        <item quantity="other">No destinations in the last %1$d days.</item>
+    </plurals>
+    <!-- %1$s = relative time (e.g. "3d ago") -->
+    <string name="apps_first_seen">first %1$s</string>
+    <!-- Tags, short, upper case -->
+    <string name="apps_tag_blocked_for_app">BLOCKED FOR APP</string>
+    <string name="apps_tag_allowed_for_app">ALLOWED FOR APP</string>
+    <string name="apps_no_connections">No recorded connections.</string>
+    <string name="apps_no_lookups">No recorded DNS lookups.</string>
+    <string name="apps_no_alerts">No alerts</string>
+    <string name="apps_no_alerts_body">Nothing suspicious recorded for this app.</string>
+    <string name="apps_network_access">Network access</string>
+    <string name="apps_block_always">Block always</string>
+    <string name="apps_block_always_detail">Connections are refused and DNS lookups sinkholed while inspection runs.</string>
+    <string name="apps_conditions_overridden">Blocked always; these apply when that is off.</string>
+    <string name="apps_block_wifi">Block on Wi-Fi</string>
+    <string name="apps_block_mobile">Block on mobile data</string>
+    <string name="apps_block_background">Block in the background</string>
+    <!-- %1$s = app name -->
+    <string name="apps_block_background_detail">While %1$s is not on screen. Open connections are cut when it leaves the screen.</string>
+    <string name="apps_usage_access_needed">vigil needs usage access to know which app is on screen. Without it this rule only applies while the screen is off.</string>
+    <string name="apps_grant_usage_access">Grant usage access</string>
+    <string name="apps_block_screen_off">Block when the screen is off</string>
+    <string name="apps_rules_title">Rules for this app</string>
+    <!-- %1$s = app name -->
+    <string name="apps_rules_body">Allow or block a domain and its subdomains for %1$s only. An allow rule here overrides feeds and global rules for this app; blocking the whole app still wins.</string>
+    <!-- Tags on a rule, short, upper case -->
+    <string name="apps_tag_block">BLOCK</string>
+    <string name="apps_tag_allow">ALLOW</string>
+    <!-- %1$s = domain name -->
+    <string name="apps_remove_rule">Remove rule for %1$s</string>
+    <!-- Button, keep short -->
+    <string name="apps_action_allow">Allow</string>
+
+    <!-- Encrypted DNS -->
+    <string name="dns_title">Encrypted DNS</string>
+    <string name="dns_intro">vigil answers every app\'s lookups itself and forwards them to a resolver. Encrypting that hop keeps the network (Wi-Fi operator, carrier) from reading or altering your lookups, as Android\'s Private DNS does. Blocking, alerts and the DNS log work the same.</string>
+    <string name="dns_status_inactive">Takes effect while inspection is running.</string>
+    <string name="dns_status_waiting">Waiting for the first lookup…</string>
+    <plurals name="dns_status_answered">
+        <item quantity="one">%1$d answered encrypted</item>
+        <item quantity="other">%1$d answered encrypted</item>
+    </plurals>
+    <plurals name="dns_status_failed">
+        <item quantity="one">%1$d failed</item>
+        <item quantity="other">%1$d failed</item>
+    </plurals>
+    <plurals name="dns_status_fallback">
+        <item quantity="one">%1$d answered over plain DNS</item>
+        <item quantity="other">%1$d answered over plain DNS</item>
+    </plurals>
+    <!-- %1$s = dns_status_answered, %2$s = dns_status_failed -->
+    <string name="dns_status_counts">%1$s, %2$s</string>
+    <!-- %1$s = dns_status_answered, %2$s = dns_status_failed, %3$s = dns_status_fallback -->
+    <string name="dns_status_counts_fallback">%1$s, %2$s (%3$s)</string>
+    <!-- %1$s = relative time (e.g. "now", "5m ago"), %2$s = error message, %3$s = dns_status_counts -->
+    <string name="dns_status_failing">Failing (last error %1$s): %2$s · %3$s</string>
+    <string name="dns_status_unknown_error">unknown error</string>
+    <!-- %1$s = relative time (e.g. "10s ago"), %2$s = dns_status_counts -->
+    <string name="dns_status_working">Working: last encrypted answer %1$s · %2$s</string>
+    <string name="dns_protocol">Protocol</string>
+    <string name="dns_dot_description">DNS over TLS (RFC 7858), port 853. Easy for a network to recognise (and block) by its port.</string>
+    <string name="dns_doh_description">DNS over HTTPS (RFC 8484), port 443. Looks like ordinary HTTPS; HTTP/2 when the server offers it.</string>
+    <string name="dns_off_description">Lookups leave in cleartext to the resolvers chosen under Settings → Upstream DNS resolver.</string>
+    <string name="dns_provider">Provider</string>
+    <string name="dns_custom">Custom</string>
+    <string name="dns_custom_summary">Your own server</string>
+    <string name="dns_url">URL</string>
+    <string name="dns_server_name">Server name</string>
+    <string name="dns_port">Port</string>
+    <string name="dns_ip_addresses">IP addresses</string>
+    <string name="dns_ip_addresses_help">Where to connect. The certificate is still checked against the name. Without addresses the name is looked up over plain DNS, which needs the fallback below.</string>
+    <string name="dns_when_fails">When the encrypted server fails</string>
+    <string name="dns_fallback">Fall back to plain DNS</string>
+    <string name="dns_fallback_on">On: if the server cannot be reached (a network that blocks it, a captive portal), lookups are sent unencrypted to the plain resolvers instead of failing. Convenient, but the network can then read them.</string>
+    <string name="dns_fallback_off">Off: lookups fail rather than leave unencrypted. Captive portal sign-in pages may not load until you turn encrypted DNS off.</string>
+</resources>

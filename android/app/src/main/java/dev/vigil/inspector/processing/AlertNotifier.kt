@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import dev.vigil.inspector.R
 import dev.vigil.inspector.data.AlertEntity
 import dev.vigil.inspector.data.AppResolver
+import dev.vigil.inspector.ui.AlertText
 import dev.vigil.inspector.ui.MainActivity
 
 class AlertNotifier(private val context: Context, private val apps: AppResolver) {
@@ -19,13 +20,13 @@ class AlertNotifier(private val context: Context, private val apps: AppResolver)
 
     fun createChannels() {
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ALERTS, "Security alerts", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Threat hits, beaconing, unusual uploads and other suspicious behaviour"
+            NotificationChannel(CHANNEL_ALERTS, context.getString(R.string.alert_channel_alerts_name), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = context.getString(R.string.alert_channel_alerts_description)
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_SERVICE, "Inspector status", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Shown while vigil is inspecting traffic"
+            NotificationChannel(CHANNEL_SERVICE, context.getString(R.string.alert_channel_service_name), NotificationManager.IMPORTANCE_LOW).apply {
+                description = context.getString(R.string.alert_channel_service_description)
                 setShowBadge(false)
             },
         )
@@ -40,11 +41,14 @@ class AlertNotifier(private val context: Context, private val apps: AppResolver)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // Shown in the app's language; the stored (and exported) message stays English.
+        val title = context.getString(R.string.alert_notification_title, app.label, AlertText.title(alert.kind).resolve(context))
+        val text = AlertText.message(alert, app.label).resolve(context)
         val n = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_stat_vigil)
-            .setContentTitle("${app.label}: ${titleFor(alert.kind)}")
-            .setContentText(alert.message)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(alert.message))
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(if (alert.severity == "high") NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setContentIntent(open)
@@ -58,17 +62,5 @@ class AlertNotifier(private val context: Context, private val apps: AppResolver)
         const val CHANNEL_ALERTS = "alerts"
         const val CHANNEL_SERVICE = "service"
         private const val GROUP = "vigil-alerts"
-
-        fun titleFor(kind: String) = when (kind) {
-            "threat_domain" -> "threat domain blocked"
-            "threat_ip" -> "threat IP blocked"
-            "threat_ja4" -> "known malicious TLS fingerprint"
-            "beacon" -> "periodic beaconing"
-            "exfil_volume" -> "unusual upload volume"
-            "encrypted_dns" -> "encrypted DNS in use"
-            "hardcoded_dns" -> "bypasses system DNS"
-            "new_destination" -> "new destination"
-            else -> kind.replace('_', ' ')
-        }
     }
 }

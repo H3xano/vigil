@@ -33,6 +33,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,7 +55,7 @@ import dev.vigil.inspector.ui.components.StatTile
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.formatCount
 import dev.vigil.inspector.ui.formatRelative
-import dev.vigil.inspector.ui.plural
+import dev.vigil.inspector.R
 import dev.vigil.inspector.ui.theme.VigilColors
 import dev.vigil.inspector.vpn.VpnStatus
 
@@ -87,7 +90,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding()) {
         item {
             Text(
-                "vigil",
+                stringResource(R.string.app_name),
                 Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
@@ -100,68 +103,71 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
             item { ConfigErrorCard(msg) { vm.dismissConfigError() } }
         }
         loadProblem?.let { msg ->
-            item { Warning("Settings could not be read", msg, "Dismiss and start anyway") { vm.app.settings.acknowledgeLoadProblem() } }
+            item { Warning(
+                    stringResource(R.string.dashboard_settings_unreadable_title), msg, stringResource(R.string.dashboard_settings_unreadable_action),
+                ) { vm.app.settings.acknowledgeLoadProblem() } }
         }
         upstreamWarning?.let { msg ->
-            item { Warning("Route through VPN / proxy", msg, "Open settings") { nav.navigate("upstream") } }
+            item { Warning(stringResource(R.string.dashboard_upstream_warning_title), msg, stringResource(R.string.dashboard_open_settings)) { nav.navigate("upstream") } }
         }
         network.privateDnsStrictHost?.let { host ->
             item {
                 Warning(
-                    "Private DNS is set to $host",
-                    "Android encrypts DNS lookups before vigil can see them, so domain names come only from TLS/QUIC " +
-                        "handshakes. " +
+                    stringResource(R.string.dashboard_private_dns_title, host),
+                    // Separate sentences, each translated whole.
+                    listOfNotNull(
+                        stringResource(R.string.dashboard_private_dns_body),
                         if (settings.encryptedDns.enabled) {
-                            "vigil already sends lookups encrypted (${settings.encryptedDns.summary()}), so you can set " +
-                                "Private DNS to Off or Automatic for full DNS inspection without losing privacy."
+                            stringResource(R.string.dashboard_private_dns_encrypted, settings.encryptedDns.summary())
                         } else {
-                            "Set Private DNS to Automatic or Off for full DNS inspection, and turn on Encrypted DNS in " +
-                                "vigil's settings to keep lookups private."
-                        } +
-                        if (settings.blockEncryptedDns) " With “Block encrypted DNS” enabled, lookups will fail." else "",
-                    "Open settings",
+                            stringResource(R.string.dashboard_private_dns_plain)
+                        },
+                        if (settings.blockEncryptedDns) stringResource(R.string.dashboard_private_dns_blocked) else null,
+                    ).joinToString(" "),
+                    stringResource(R.string.dashboard_open_settings),
                 ) { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
             }
         }
         if (!usageAccess) {
             item {
                 Warning(
-                    "Background detection is off",
-                    "Grant usage access so vigil can tell traffic from apps you are using apart from background traffic.",
-                    "Grant",
+                    stringResource(R.string.dashboard_usage_access_title),
+                    stringResource(R.string.dashboard_usage_access_body),
+                    stringResource(R.string.dashboard_usage_access_action),
                 ) { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
             }
         }
         if (missing.isNotEmpty()) {
             item {
+                val updating = stringResource(R.string.dashboard_feeds_updating)
                 Warning(
-                    "${missing.size} feed${if (missing.size > 1) "s" else ""} not downloaded yet",
+                    pluralStringResource(R.plurals.dashboard_feeds_missing_title, missing.size, missing.size),
                     when (feedWork) {
-                        FeedWork.RUNNING -> "Downloading feeds…"
-                        FeedWork.WAITING -> "Feeds will download as soon as the device is online."
-                        FeedWork.IDLE -> missing.firstNotNullOfOrNull { it.lastError }?.let { "Last error: $it" }
-                            ?: "Feeds download automatically when the device is online."
+                        FeedWork.RUNNING -> stringResource(R.string.dashboard_feeds_downloading)
+                        FeedWork.WAITING -> stringResource(R.string.dashboard_feeds_waiting)
+                        FeedWork.IDLE -> missing.firstNotNullOfOrNull { it.lastError }?.let { stringResource(R.string.dashboard_feeds_last_error, it) }
+                            ?: stringResource(R.string.dashboard_feeds_automatic)
                     },
-                    "Update now",
+                    stringResource(R.string.dashboard_feeds_update_now),
                     busy = feedWork != FeedWork.IDLE,
                 ) {
                     vm.refreshFeeds()
-                    vm.showMessage("Updating threat feeds…")
+                    vm.showMessage(updating)
                 }
             }
         }
 
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("Last 24 hours")
-                HelpIcon("Sinkholed", Glossary.SINKHOLED)
+                SectionTitle(stringResource(R.string.dashboard_last_24_hours))
+                HelpIcon(stringResource(R.string.dashboard_sinkholed), Glossary.SINKHOLED)
             }
         }
         item {
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     StatTile(
-                        "Connections", formatCount(totals.flows), Modifier.weight(1f), caption = "${formatBytes(totals.rx)} ↓  ${formatBytes(totals.tx)} ↑",
+                        stringResource(R.string.dashboard_tile_connections), formatCount(totals.flows), Modifier.weight(1f), caption = "${formatBytes(totals.rx)} ↓  ${formatBytes(totals.tx)} ↑",
                         onClick = {
                             vm.clearActivityFilters()
                             vm.activityTab.value = 0
@@ -169,7 +175,8 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                         },
                     )
                     StatTile(
-                        "DNS lookups", formatCount(dnsCount), Modifier.weight(1f), caption = "${formatCount(dnsBlocked)} sinkholed",
+                        stringResource(R.string.dashboard_tile_dns), formatCount(dnsCount), Modifier.weight(1f),
+                        caption = pluralStringResource(R.plurals.dashboard_tile_dns_sinkholed, quantity(dnsBlocked), formatCount(dnsBlocked)),
                         onClick = {
                             vm.clearActivityFilters()
                             vm.activityTab.value = 1
@@ -179,8 +186,11 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     StatTile(
-                        "Blocked", formatCount(totals.blocked + dnsBlocked), Modifier.weight(1f), accent = VigilColors.Block,
-                        caption = "${formatCount(totals.blocked)} connections · ${formatCount(dnsBlocked)} lookups",
+                        stringResource(R.string.dashboard_tile_blocked), formatCount(totals.blocked + dnsBlocked), Modifier.weight(1f), accent = VigilColors.Block,
+                        caption = listOf(
+                            pluralStringResource(R.plurals.activity_count_connections, quantity(totals.blocked), formatCount(totals.blocked)),
+                            pluralStringResource(R.plurals.activity_count_lookups, quantity(dnsBlocked), formatCount(dnsBlocked)),
+                        ).joinToString(" · "),
                         onClick = {
                             // Both Activity tabs show only blocked entries; open the one that has any.
                             vm.showBlockedActivity(preferDns = totals.blocked == 0L && dnsBlocked > 0)
@@ -188,7 +198,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                         },
                     )
                     StatTile(
-                        "Unread alerts", unseen.toString(), Modifier.weight(1f),
+                        stringResource(R.string.dashboard_tile_unread_alerts), unseen.toString(), Modifier.weight(1f),
                         accent = if (unseen > 0) VigilColors.Medium else MaterialTheme.colorScheme.primary,
                         onClick = { nav.navigateTab("alerts") },
                     )
@@ -198,15 +208,20 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
 
         item {
             ListItem(
-                headlineContent = { Text("Spyware health check") },
-                supportingContent = { Text("Look for known spyware and stalkerware in installed apps and recorded activity") },
+                headlineContent = { Text(stringResource(R.string.dashboard_health_check_title)) },
+                supportingContent = { Text(stringResource(R.string.dashboard_health_check_body)) },
                 modifier = Modifier.fillMaxWidth().clickable { nav.navigate("health") },
             )
         }
 
-        item { SectionTitle("Most active apps") }
+        item { SectionTitle(stringResource(R.string.dashboard_top_apps)) }
         if (topApps.isEmpty()) {
-            item { EmptyState("No traffic yet", if (running) "Connections will appear here as apps use the network." else "Start inspection to see which apps talk to whom.") }
+            item {
+                EmptyState(
+                    stringResource(R.string.dashboard_no_traffic_title),
+                    stringResource(if (running) R.string.dashboard_no_traffic_running else R.string.dashboard_no_traffic_stopped),
+                )
+            }
         }
         items(shownApps, key = { it.pkg }) { a ->
             val name = label(a.pkg)
@@ -227,7 +242,11 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                         drawStopIndicator = {},
                     )
                     Text(
-                        "${plural(a.flows, "connection")} · ${plural(a.destinations, "destination")}" + if (a.blocked > 0) " · ${a.blocked} blocked" else "",
+                        listOfNotNull(
+                            pluralStringResource(R.plurals.activity_count_connections, quantity(a.flows), a.flows.toString()),
+                            pluralStringResource(R.plurals.apps_count_destinations, quantity(a.destinations), a.destinations.toString()),
+                            if (a.blocked > 0) pluralStringResource(R.plurals.activity_count_blocked, quantity(a.blocked), a.blocked.toString()) else null,
+                        ).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -236,14 +255,14 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         }
 
         if (topBlocked.isNotEmpty()) {
-            item { SectionTitle("Most blocked domains") }
+            item { SectionTitle(stringResource(R.string.dashboard_top_blocked)) }
             items(topBlocked, key = { "b-" + it.name }) { b ->
                 Row(
-                    Modifier.fillMaxWidth().clickable(onClickLabel = "Why blocked") { blockedSheet = b.name }
+                    Modifier.fillMaxWidth().clickable(onClickLabel = stringResource(R.string.dashboard_why_blocked)) { blockedSheet = b.name }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
                     Text(b.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${b.hits}×", color = VigilColors.Block)
+                    Text(pluralStringResource(R.plurals.dashboard_blocked_hits, quantity(b.hits), b.hits), color = VigilColors.Block)
                 }
             }
         }
@@ -273,12 +292,14 @@ private fun StatusCard(vm: MainViewModel, status: VpnStatus, onStart: () -> Unit
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    when (status) {
-                        is VpnStatus.Running -> "Inspecting traffic"
-                        VpnStatus.Starting -> "Starting…"
-                        is VpnStatus.Failed -> "Not running"
-                        VpnStatus.Stopped -> "Inspection is off"
-                    },
+                    stringResource(
+                        when (status) {
+                            is VpnStatus.Running -> R.string.dashboard_status_running
+                            VpnStatus.Starting -> R.string.dashboard_status_starting
+                            is VpnStatus.Failed -> R.string.dashboard_status_failed
+                            VpnStatus.Stopped -> R.string.dashboard_status_stopped
+                        },
+                    ),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -287,11 +308,15 @@ private fun StatusCard(vm: MainViewModel, status: VpnStatus, onStart: () -> Unit
                         val stats by vm.stats.collectAsStateWithLifecycle()
                         val throughput by vm.throughput.collectAsStateWithLifecycle()
                         stats?.let {
-                            "${it.tcpActive + it.udpActive} active · ↓ ${formatBytes(throughput.downBps)}/s ↑ ${formatBytes(throughput.upBps)}/s"
-                        } ?: "Since ${formatRelative(status.since)}"
+                            val active = it.tcpActive + it.udpActive
+                            pluralStringResource(
+                                R.plurals.dashboard_status_live, quantity(active), active,
+                                formatBytes(throughput.downBps), formatBytes(throughput.upBps),
+                            )
+                        } ?: stringResource(R.string.dashboard_status_since, formatRelative(status.since))
                     }
                     is VpnStatus.Failed -> status.message
-                    else -> "Tap the switch to start the on-device inspector"
+                    else -> stringResource(R.string.dashboard_status_hint)
                 }
                 Text(
                     sub,
@@ -321,10 +346,13 @@ internal fun Warning(title: String, body: String, action: String, busy: Boolean 
 
 @Composable
 fun ConfigErrorCard(message: String, onDismiss: () -> Unit) = ErrorCard(
-    "Settings change not applied",
-    "The inspector rejected the new settings and keeps running with the previous ones: $message",
+    stringResource(R.string.dashboard_config_error_title),
+    stringResource(R.string.dashboard_config_error_body, message),
     onDismiss,
 )
+
+/** A count as a plural quantity (clamped to Int). */
+internal fun quantity(n: Long): Int = n.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
 
 /** Navigates to a bottom-bar destination the same way the navigation bar does. */
 fun NavController.navigateTab(route: String) = navigate(route) {
