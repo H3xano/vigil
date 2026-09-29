@@ -24,7 +24,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 
 const SNIFF_WINDOW: Duration = Duration::from_secs(3);
-const SNIFF_MAX: usize = 32 * 1024;
+/// Bytes buffered while sniffing: the largest ClientHello parsed plus room
+/// for its handshake and record headers (64 records of 5 bytes, e.g.
+/// 16 KiB records or fragments down to about 1 KiB). Held only until the
+/// sniffed bytes are forwarded.
+const SNIFF_MAX: usize = tls::MAX_HELLO_LEN + 4 + 64 * 5;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 const COPY_BUF: usize = 16 * 1024;
 
@@ -592,6 +596,8 @@ async fn relay(
                     .map_err(RelayError::on(Side::Upstream))?;
                 counters.tx.fetch_add(buf.len() as u64, Relaxed);
             }
+            // Not kept for the connection's lifetime (up to SNIFF_MAX).
+            drop(buf);
             if matches!(sniff_end, SniffEnd::Open) {
                 let dirs = (Side::Client, Side::Upstream);
                 copy_counting(&mut cr, &mut uw, dirs, &counters.tx, &last, started).await?;
@@ -697,6 +703,26 @@ async fn relay(
 mod tests {
     use super::super::tests::test_shared_with_tun;
     use super::*;
+
+    #[tokio::test]
+    async fn sniffs_client_hellos_up_to_the_parser_limit() {
+        // Post-quantum key shares and padding make hellos of tens of KiB.
+        for (padding, frag) in [(40_000, 16_384), (60_000, 16_384), (40_000, 1_000)] {
+            let hello = tls::build_client_hello(Some("big.example"), &["h2"], padding);
+            assert!(hello.len() > 32 * 1024 && hello.len() <= tls::MAX_HELLO_LEN);
+            let wire = tls::wrap_records(&hello, frag);
+            let mut r: &[u8] = &wire;
+            let mut buf = Vec::new();
+            let (sniffed, end) = sniff(&mut r, &mut buf).await;
+            let Sniffed::Tls(ch) = sniffed else {
+                panic!("{padding}/{frag}: not sniffed as TLS");
+            };
+            assert_eq!(ch.sni.as_deref(), Some("big.example"));
+            assert!(matches!(end, SniffEnd::Open));
+            // Everything read is kept for forwarding.
+            assert_eq!(buf, wire);
+        }
+    }
     use crate::config::Config;
     use crate::event::Event;
     use crate::packet::{TCP_RST, TCP_SYN};
