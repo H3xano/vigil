@@ -1,7 +1,9 @@
 package dev.vigil.inspector.export
 
 import dev.vigil.inspector.BuildConfig
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.ExportSettings
+import dev.vigil.inspector.ui.UiText
 import kotlinx.serialization.json.JsonObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -13,9 +15,10 @@ import javax.net.ssl.SSLSocketFactory
 /**
  * The collector's settings (not the records) prevent delivery, e.g. the URL
  * redirects elsewhere or does not name an Elasticsearch index. Records stay
- * queued and are retried slowly (see [FailureKind.CONFIG]).
+ * queued and are retried slowly (see [FailureKind.CONFIG]). [problem] is
+ * shown on the Export screen.
  */
-class ExportConfigException(message: String) : IOException(message)
+class ExportConfigException(val problem: UiText) : IOException("export configuration problem: $problem")
 
 /** HTTP transport: one POST per batch in the configured body format. */
 internal object HttpSender {
@@ -23,9 +26,9 @@ internal object HttpSender {
      * A problem with [cfg]'s endpoint URL that makes every delivery fail,
      * or null. Meant for the settings screen's save-time validation too.
      */
-    fun urlProblem(cfg: ExportSettings): String? {
+    fun urlProblem(cfg: ExportSettings): UiText? {
         if (cfg.mode != "http") return null
-        if (!(cfg.url.startsWith("https://") || cfg.url.startsWith("http://"))) return "The URL must start with https:// or http://."
+        if (!(cfg.url.startsWith("https://") || cfg.url.startsWith("http://"))) return UiText.of(R.string.export_error_url_scheme)
         if (cfg.httpFormat == "elastic_bulk") return elasticBulkUrlProblem(cfg.url)
         return null
     }
@@ -35,11 +38,11 @@ internal object HttpSender {
      * vigil's action lines carry no `_index`, so a bare `/_bulk` makes
      * Elasticsearch refuse every request.
      */
-    fun elasticBulkUrlProblem(url: String): String? {
-        val path = runCatching { URI(url).path }.getOrNull() ?: return "The URL is not valid."
+    fun elasticBulkUrlProblem(url: String): UiText? {
+        val path = runCatching { URI(url).path }.getOrNull() ?: return UiText.of(R.string.export_error_url_invalid)
         val segments = path.trimEnd('/').split('/').filter { it.isNotEmpty() }
         val ok = segments.size >= 2 && segments.last() == "_bulk" && !segments[segments.size - 2].startsWith("_")
-        return if (ok) null else "An Elastic _bulk URL must name the index, e.g. https://host:9200/vigil-events/_bulk."
+        return if (ok) null else UiText.of(R.string.export_error_bulk_index)
     }
 
     fun send(cfg: ExportSettings, originals: List<JsonObject>, records: List<JsonObject>, sslSocketFactory: () -> SSLSocketFactory?): SendOutcome {
@@ -63,8 +66,8 @@ internal object HttpSender {
             if (code in 300..399) {
                 val location = conn.getHeaderField("Location")?.takeIf { it.isNotBlank() }
                 throw ExportConfigException(
-                    location?.let { "collector redirected to $it (HTTP $code); use that URL" }
-                        ?: "collector answered with a redirect (HTTP $code); check the URL",
+                    location?.let { UiText.of(R.string.export_error_redirected, it, code) }
+                        ?: UiText.of(R.string.export_error_redirect, code),
                 )
             }
             if (code !in 200..299) {

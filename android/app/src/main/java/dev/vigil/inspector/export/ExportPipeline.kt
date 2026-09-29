@@ -1,6 +1,8 @@
 package dev.vigil.inspector.export
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.ExportSettings
+import dev.vigil.inspector.ui.UiText
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
@@ -26,7 +28,8 @@ data class ExportStatus(
     val dropped: Long = 0,
     /** Records the collector refused (malformed or rejected documents); retrying would not help. */
     val rejected: Long = 0,
-    val lastError: String? = null,
+    /** Shown on the Export screen; the collector's own error text is [UiText.Raw]. */
+    val lastError: UiText? = null,
     val lastSuccess: Long? = null,
     /** True while the exporter holds records it could not deliver yet. */
     val retrying: Boolean = false,
@@ -38,7 +41,7 @@ data class ExportStatus(
      * index). The records stay queued and are retried once a minute, or at
      * once when the settings change. Cleared by the next successful delivery.
      */
-    val configProblem: String? = null,
+    val configProblem: UiText? = null,
 )
 
 /** The collector answered with a non-2xx HTTP status. [body] is the response body, if any. */
@@ -84,9 +87,9 @@ object ExportRetry {
 
     /** Splunk HEC status codes that mean the token or collector is misconfigured, not the data. */
     private val HEC_CONFIG_CODES = mapOf(
-        7 to "incorrect index. The token may not write to the index; check the HEC token's allowed indexes.",
-        10 to "data channel is missing. Indexer acknowledgement is enabled for this HEC token; turn it off for vigil's token.",
-        11 to "invalid data channel. Indexer acknowledgement is enabled for this HEC token; turn it off for vigil's token.",
+        7 to R.string.export_error_hec_code7,
+        10 to R.string.export_error_hec_code10,
+        11 to R.string.export_error_hec_code11,
     )
 
     /** The `code` of a Splunk HEC error body such as `{"text":"Incorrect index","code":7}`. */
@@ -111,18 +114,18 @@ object ExportRetry {
     }
 
     /** A user-facing explanation if [e] is a collector configuration error, else null. */
-    fun configProblem(e: Throwable, cfg: ExportSettings): String? {
-        if (e is ExportConfigException) return e.message
+    fun configProblem(e: Throwable, cfg: ExportSettings): UiText? {
+        if (e is ExportConfigException) return e.problem
         val http = e as? HttpStatusException ?: return null
         if (cfg.mode != "http") return null
         if (http.code == 400) {
             elasticValidationError(http.body)?.let {
-                return "Elasticsearch refuses the request ($it). The URL must name the index: https://host:9200/<index>/_bulk."
+                return UiText.of(R.string.export_error_elastic_validation, it)
             }
         }
         if (cfg.httpFormat != "splunk_hec") return null
         val code = splunkHecCode(http.body) ?: return null
-        return HEC_CONFIG_CODES[code]?.let { "Splunk HEC refuses events (code $code): $it" }
+        return HEC_CONFIG_CODES[code]?.let { UiText.of(it) }
     }
 
     fun classify(e: Throwable, cfg: ExportSettings? = null): FailureKind {
@@ -195,7 +198,7 @@ class ExportPipeline(
         publishQueued()
     }
 
-    fun reportError(message: String?) = _status.update { it.copy(lastError = message) }
+    fun reportError(message: String?) = _status.update { it.copy(lastError = message?.let(UiText::Raw)) }
 
     /**
      * Refusal bookkeeping of the head batch: single records refused while
@@ -251,7 +254,7 @@ class ExportPipeline(
                     backoff = ExportRetry.MIN_BACKOFF_MS
                 }
                 if (!online.value) {
-                    _status.update { it.copy(retrying = true, lastError = it.lastError ?: "waiting for a network connection") }
+                    _status.update { it.copy(retrying = true, lastError = it.lastError ?: UiText.of(R.string.export_error_waiting_network)) }
                     combine(online, config) { o, c -> o || c != cfg }.first { it }
                     continue
                 }
@@ -271,7 +274,8 @@ class ExportPipeline(
                             sent = s.sent + out.delivered,
                             rejected = s.rejected + out.rejected + heldRejected,
                             lastSuccess = if (out.delivered > 0) clock() else s.lastSuccess,
-                            lastError = out.detail ?: if (heldRejected > 0) "$heldRejected record(s) refused by the collector (rejected)" else null,
+                            lastError = out.detail?.let(UiText::Raw)
+                                ?: if (heldRejected > 0) UiText.plural(R.plurals.export_error_held_rejected, heldRejected, heldRejected) else null,
                             retrying = out.retry.isNotEmpty(),
                             configProblem = if (out.delivered > 0) null else s.configProblem,
                         )
@@ -282,7 +286,8 @@ class ExportPipeline(
                 if (error != null) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     onFailure()
-                    val msg = error.message ?: error.javaClass.simpleName
+                    // The collector's own error text is shown as it is.
+                    val msg = (error as? ExportConfigException)?.problem ?: UiText.Raw(error.message ?: error.javaClass.simpleName)
                     when (ExportRetry.classify(error, cfg)) {
                         FailureKind.BAD_BATCH -> {
                             val code = (error as HttpStatusException).code
@@ -300,7 +305,7 @@ class ExportPipeline(
                                 parts.removeFirst()
                                 parts.addFirst(batch.subList(batch.size / 2, batch.size))
                                 parts.addFirst(batch.subList(0, batch.size / 2))
-                                _status.update { it.copy(lastError = "$msg (retrying in smaller batches)", retrying = true) }
+                                _status.update { it.copy(lastError = UiText.of(R.string.export_error_retrying_smaller, msg), retrying = true) }
                             } else if (undecided) {
                                 // Bad record, or a collector that refuses everything? Try all the rest at once.
                                 parts.removeFirst()
@@ -316,7 +321,7 @@ class ExportPipeline(
                                     wait = true
                                     pace = false
                                 } else {
-                                    _status.update { it.copy(lastError = "$msg (retrying in smaller batches)", retrying = true) }
+                                    _status.update { it.copy(lastError = UiText.of(R.string.export_error_retrying_smaller, msg), retrying = true) }
                                 }
                             } else {
                                 parts.removeFirst()
@@ -324,7 +329,7 @@ class ExportPipeline(
                                 refusals.held.clear()
                                 settle(parts, refusals)
                                 _status.update { s ->
-                                    s.copy(rejected = s.rejected + n, lastError = "$msg (record rejected)", retrying = parts.isNotEmpty())
+                                    s.copy(rejected = s.rejected + n, lastError = UiText.of(R.string.export_error_record_rejected, msg), retrying = parts.isNotEmpty())
                                 }
                             }
                         }
@@ -337,7 +342,7 @@ class ExportPipeline(
                         FailureKind.PERMANENT -> {
                             backoff = ExportRetry.MAX_BACKOFF_MS
                             wait = true
-                            _status.update { it.copy(lastError = "$msg (check the endpoint and credentials)", retrying = true) }
+                            _status.update { it.copy(lastError = UiText.of(R.string.export_error_check_credentials, msg), retrying = true) }
                         }
                         FailureKind.TRANSIENT -> {
                             wait = true
@@ -368,7 +373,7 @@ class ExportPipeline(
      * status: keep all its records as one batch, retried slowly (see
      * [topUp]), and report a configuration problem.
      */
-    private fun refusedWholeBatch(parts: ArrayDeque<List<JsonObject>>, refusals: Refusals, code: Int, msg: String) {
+    private fun refusedWholeBatch(parts: ArrayDeque<List<JsonObject>>, refusals: Refusals, code: Int, msg: UiText) {
         val all = ArrayList<JsonObject>(batchSize)
         all += refusals.held
         parts.forEach { all += it }
@@ -380,8 +385,7 @@ class ExportPipeline(
             it.copy(
                 lastError = msg,
                 retrying = true,
-                configProblem = "the collector refused every record with HTTP $code, even one at a time, so the fault is likely " +
-                    "the endpoint URL or the collector's settings (for Elasticsearch: https://host:9200/<index>/_bulk).",
+                configProblem = UiText.of(R.string.export_error_refused_everything, code),
             )
         }
     }

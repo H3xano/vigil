@@ -31,11 +31,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.BuildConfig
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.VigilNative
 import dev.vigil.inspector.ui.Glossary
@@ -93,149 +96,191 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     var editUpstreams by rememberSaveable { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Settings")
+        VigilTopBar(stringResource(R.string.settings_title))
         Column(Modifier.verticalScroll(rememberScrollState())) {
             configError?.let { ConfigErrorCard(it) { vm.dismissConfigError() } }
-            SectionTitle("Blocking")
+            SectionTitle(stringResource(R.string.settings_section_blocking))
             Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Answer for blocked domains", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                HelpIcon("Blocked-domain answer", Glossary.SINKHOLE)
+                Text(stringResource(R.string.settings_sinkhole_label), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                HelpIcon(stringResource(R.string.settings_sinkhole_help_title), Glossary.SINKHOLE)
             }
+            // DNS answer syntax: not translated.
             Segmented(listOf("null_ip" to "0.0.0.0 / ::", "nxdomain" to "NXDOMAIN"), s.sinkhole, { v -> vm.updateSettings { it.copy(sinkhole = v) } })
             Text(
-                if (s.sinkhole == "nxdomain") "Blocked names are reported as nonexistent." else "Blocked names resolve to an address that goes nowhere (recommended).",
+                stringResource(if (s.sinkhole == "nxdomain") R.string.settings_sinkhole_nxdomain_summary else R.string.settings_sinkhole_null_ip_summary),
                 Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             SettingRow(
-                "Block encrypted DNS",
-                "Refuse DNS-over-TLS/QUIC and known DNS-over-HTTPS servers so apps fall back to DNS that vigil can inspect. " +
-                    "Breaks DNS if Private DNS is in strict mode.",
+                stringResource(R.string.settings_block_encrypted_dns_title),
+                stringResource(R.string.settings_block_encrypted_dns_summary),
                 s.blockEncryptedDns, onChecked = { v -> vm.updateSettings { it.copy(blockEncryptedDns = v) } },
             )
             val enabledFeeds = feeds.filter { it.enabled }
+            val feedDomains = enabledFeeds.sumOf { it.domains }
+            val feedRanges = enabledFeeds.sumOf { it.ipRanges }
             SettingRow(
-                "Threat intelligence feeds",
-                "${enabledFeeds.size} enabled · ${enabledFeeds.sumOf { it.domains }} domains, ${enabledFeeds.sumOf { it.ipRanges }} IP ranges · " +
-                    "downloaded daily from their publishers",
+                stringResource(R.string.settings_feeds_title),
+                stringResource(
+                    R.string.settings_feeds_summary,
+                    pluralStringResource(R.plurals.settings_feeds_enabled, enabledFeeds.size, enabledFeeds.size),
+                    pluralStringResource(R.plurals.settings_feeds_domains, feedDomains, feedDomains),
+                    pluralStringResource(R.plurals.settings_feeds_ip_ranges, feedRanges, feedRanges),
+                ),
                 onClick = { nav.navigate("feeds") },
             )
             SettingRow(
-                "Spyware health check",
-                "Check installed apps and recorded activity against known spyware and stalkerware indicators, on this phone",
+                stringResource(R.string.settings_health_title),
+                stringResource(R.string.settings_health_summary),
                 onClick = { nav.navigate("health") },
             )
-            SettingRow("Custom rules", "${s.denyDomains.size} blocked · ${s.allowDomains.size} allowed domains", onClick = { nav.navigate("rules") })
-
-            SectionTitle("Network")
             SettingRow(
-                "Route through VPN / proxy",
-                when (s.upstream.mode) {
-                    UpstreamSettings.MODE_WIREGUARD -> "WireGuard" + (s.upstream.wireguard?.endpoint?.let { " to $it" } ?: "")
-                    UpstreamSettings.MODE_SOCKS5 -> "SOCKS5 proxy ${ConfigFactory.hostPort(s.upstream.socks5.host, s.upstream.socks5.port)}"
-                    else -> "Direct. Use your WireGuard server or a SOCKS5 proxy (e.g. Tor) while vigil runs."
-                } + if (s.upstream.mode != UpstreamSettings.MODE_DIRECT && !s.upstream.failClosed) " · falls back to direct" else "",
+                stringResource(R.string.settings_rules_title),
+                stringResource(
+                    R.string.settings_rules_summary,
+                    pluralStringResource(R.plurals.settings_rules_blocked, s.denyDomains.size, s.denyDomains.size),
+                    pluralStringResource(R.plurals.settings_rules_allowed, s.allowDomains.size, s.allowDomains.size),
+                ),
+                onClick = { nav.navigate("rules") },
+            )
+
+            SectionTitle(stringResource(R.string.settings_section_network))
+            val route = when (s.upstream.mode) {
+                UpstreamSettings.MODE_WIREGUARD -> s.upstream.wireguard?.endpoint?.let { stringResource(R.string.settings_route_wireguard_to, it) } ?: "WireGuard"
+                UpstreamSettings.MODE_SOCKS5 -> stringResource(R.string.settings_route_socks5, ConfigFactory.hostPort(s.upstream.socks5.host, s.upstream.socks5.port))
+                else -> stringResource(R.string.settings_route_direct)
+            }
+            SettingRow(
+                stringResource(R.string.upstream_title),
+                if (s.upstream.mode != UpstreamSettings.MODE_DIRECT && !s.upstream.failClosed) stringResource(R.string.settings_route_falls_back, route) else route,
                 onClick = { nav.navigate("upstream") },
             )
             SettingRow(
-                "Keep local network traffic direct",
-                "Private and link-local destinations (printers, casting, NAS) bypass the inspector. Changing this restarts inspection.",
+                stringResource(R.string.settings_exclude_lan_title),
+                stringResource(R.string.settings_exclude_lan_summary),
                 s.excludeLan, onChecked = { v -> vm.updateSettings { it.copy(excludeLan = v) } },
             )
             SettingRow(
-                "Maximum throughput",
-                "Uses a second engine thread for the fastest connections (roughly above 500 Mbit/s). Uses more battery; off is best for everyday use. Changing this restarts inspection.",
+                stringResource(R.string.settings_max_throughput_title),
+                stringResource(R.string.settings_max_throughput_summary),
                 s.maxThroughput, onChecked = { v -> vm.updateSettings { it.copy(maxThroughput = v) } },
             )
-            Text("Upstream DNS resolver", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
-            Segmented(listOf("network" to "Network's resolver", "custom" to "Custom"), s.upstreamMode, { v -> vm.updateSettings { it.copy(upstreamMode = v) } })
+            Text(stringResource(R.string.settings_upstream_dns_label), Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
+            Segmented(
+                listOf("network" to stringResource(R.string.settings_upstream_dns_network), "custom" to stringResource(R.string.settings_upstream_dns_custom)),
+                s.upstreamMode, { v -> vm.updateSettings { it.copy(upstreamMode = v) } },
+            )
             if (s.upstreamMode == "custom") {
-                SettingRow("Custom resolvers", s.customUpstreams.joinToString(", "), onClick = { editUpstreams = true })
+                SettingRow(stringResource(R.string.settings_custom_resolvers_title), s.customUpstreams.joinToString(", "), onClick = { editUpstreams = true })
             }
             SettingRow(
-                "Encrypted DNS",
+                stringResource(R.string.settings_encrypted_dns_title),
                 if (s.encryptedDns.enabled) {
-                    s.encryptedDns.summary() + if (s.encryptedDns.fallbackPlain) " · falls back to plain DNS" else ""
+                    val summary = s.encryptedDns.summary(stringResource(R.string.settings_encrypted_dns_custom_server))
+                    if (s.encryptedDns.fallbackPlain) stringResource(R.string.settings_encrypted_dns_falls_back, summary) else summary
                 } else {
-                    "Off: lookups go to the resolver above unencrypted. Use DNS over TLS or HTTPS instead."
+                    stringResource(R.string.settings_encrypted_dns_off)
                 },
                 onClick = { nav.navigate("dns") },
             )
 
-            SectionTitle("Detection")
+            SectionTitle(stringResource(R.string.settings_section_detection))
             SettingRow(
-                "Beaconing detection",
-                "Alert when an app contacts the same destination at a near-constant interval, or sends small bursts through one open connection at a near-constant interval: malware checking in with its command-and-control (C2) server, but also telemetry heartbeats. Push services are skipped.",
+                stringResource(R.string.settings_beacon_title),
+                stringResource(R.string.settings_beacon_summary),
                 s.beaconEnabled, onChecked = { v -> vm.updateSettings { it.copy(beaconEnabled = v) } },
             )
             if (s.beaconEnabled) {
-                Segmented(listOf("low" to "Strict", "normal" to "Balanced", "high" to "Sensitive"), s.beaconSensitivity,
+                Segmented(
+                    listOf(
+                        "low" to stringResource(R.string.settings_beacon_strict),
+                        "normal" to stringResource(R.string.settings_beacon_balanced),
+                        "high" to stringResource(R.string.settings_beacon_sensitive),
+                    ),
+                    s.beaconSensitivity,
                     { v -> vm.updateSettings { it.copy(beaconSensitivity = v) } })
             }
             SettingRow(
-                "Unusual upload alerts",
-                "Alert when an app uploads far more than usual while in the background (possible data theft): at least " +
-                    "${s.exfil.floorMbPerHour} MB in an hour and several times its own busiest hour of the past week.",
+                stringResource(R.string.settings_exfil_title),
+                stringResource(R.string.settings_exfil_summary, s.exfil.floorMbPerHour),
                 s.exfil.enabled, onChecked = { v -> vm.updateSettings { it.copy(exfil = it.exfil.copy(enabled = v)) } },
             )
             if (s.exfil.enabled) {
+                // Units, as in formatBytes: not translated.
                 Segmented(listOf(20 to "20 MB/h", 50 to "50 MB/h", 100 to "100 MB/h", 250 to "250 MB/h"), s.exfil.floorMbPerHour,
                     { v -> vm.updateSettings { it.copy(exfil = it.exfil.copy(floorMbPerHour = v)) } })
             }
             SettingRow(
-                "New destination alerts",
-                "After a one-day learning period, alert when an app contacts a domain it has never used before.",
+                stringResource(R.string.settings_novelty_title),
+                stringResource(R.string.settings_novelty_summary),
                 s.noveltyAlerts, onChecked = { v -> vm.updateSettings { it.copy(noveltyAlerts = v) } },
             )
             SettingRow(
-                "New network alerts",
-                "Alert when an app contacts a network (autonomous system, e.g. AS13335 Cloudflare) it has never used before, " +
-                    "after a ${s.asnLearningDays}-day learning period per app. Needs the IP-to-ASN database (Threat intelligence feeds).",
+                stringResource(R.string.settings_new_asn_title),
+                pluralStringResource(R.plurals.settings_new_asn_summary, s.asnLearningDays, s.asnLearningDays),
                 s.newAsnAlerts, onChecked = { v -> vm.updateSettings { it.copy(newAsnAlerts = v) } },
             )
             if (s.newAsnAlerts) {
-                Text("Learning period", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
-                Segmented(listOf(1 to "1 day", 7 to "7 days", 14 to "14 days", 30 to "30 days"), s.asnLearningDays,
+                Text(stringResource(R.string.settings_learning_period), Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
+                Segmented(listOf(1, 7, 14, 30).map { it to pluralStringResource(R.plurals.settings_days, it, it) }, s.asnLearningDays,
                     { v -> vm.updateSettings { it.copy(asnLearningDays = v) } })
             }
-            SettingRow("Notify on alerts", "Post a notification for medium and high severity alerts.", s.notifyAlerts,
+            SettingRow(stringResource(R.string.settings_notify_title), stringResource(R.string.settings_notify_summary), s.notifyAlerts,
                 onChecked = { v -> vm.updateSettings { it.copy(notifyAlerts = v) } })
 
-            SectionTitle("Packet capture")
+            SectionTitle(stringResource(R.string.capture_title))
             SettingRow(
-                "Packet capture",
+                stringResource(R.string.capture_title),
                 when {
-                    !s.capture.enabled -> "Off. Keep recent packets in memory to export them as PCAPng for Wireshark, or stream them live."
-                    s.capture.streamRefusal() != null -> "Recording (${s.capture.bufferMb} MB) · not streaming: add an allowed client address"
-                    s.capture.streamEnabled -> "Recording (${s.capture.bufferMb} MB) · streaming on port ${s.capture.streamPort}"
-                    else -> "Recording the most recent ${s.capture.bufferMb} MB of packets in memory"
+                    !s.capture.enabled -> stringResource(R.string.settings_capture_off)
+                    s.capture.streamRefusal() != null -> stringResource(R.string.settings_capture_not_streaming, s.capture.bufferMb)
+                    s.capture.streamEnabled -> stringResource(R.string.settings_capture_streaming, s.capture.bufferMb, s.capture.streamPort.toString())
+                    else -> stringResource(R.string.settings_capture_recording, s.capture.bufferMb)
                 },
                 onClick = { nav.navigate("capture") },
             )
 
-            SectionTitle("Enterprise")
+            SectionTitle(stringResource(R.string.settings_section_enterprise))
             SettingRow(
-                "SIEM export",
-                if (s.export.enabled) "Streaming ${s.export.level.replace("_", " + ")} via ${if (s.export.mode == "http") "HTTP" else "syslog/${s.export.transport}"}" else "Off",
+                stringResource(R.string.export_title),
+                if (s.export.enabled) {
+                    val level = when (s.export.level) {
+                        "alerts" -> stringResource(R.string.settings_siem_level_alerts)
+                        "alerts_dns" -> stringResource(R.string.settings_siem_level_alerts_dns)
+                        "all" -> stringResource(R.string.settings_siem_level_all)
+                        else -> s.export.level.replace("_", " + ")
+                    }
+                    // Protocol names: not translated.
+                    stringResource(R.string.settings_siem_streaming, level, if (s.export.mode == "http") "HTTP" else "syslog/${s.export.transport}")
+                } else {
+                    stringResource(R.string.state_off)
+                },
                 onClick = { nav.navigate("export") },
             )
 
-            SectionTitle("Permissions")
-            SettingRow("Usage access", if (usageAccessGranted(vm)) "Granted: flows are tagged foreground/background" else "Not granted",
+            SectionTitle(stringResource(R.string.settings_section_permissions))
+            SettingRow(
+                stringResource(R.string.settings_usage_access_title),
+                stringResource(if (usageAccessGranted(vm)) R.string.settings_usage_access_granted else R.string.settings_usage_access_not_granted),
                 onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) })
-            SettingRow("Always-on VPN", "Start vigil at boot and keep it running: VPN settings → vigil → Always-on",
+            SettingRow(stringResource(R.string.settings_always_on_title), stringResource(R.string.settings_always_on_summary),
                 onClick = { context.startActivity(Intent(AndroidSettings.ACTION_VPN_SETTINGS)) })
-            SettingRow("Notifications", "Manage alert and status notifications", onClick = {
+            SettingRow(stringResource(R.string.settings_notifications_title), stringResource(R.string.settings_notifications_summary), onClick = {
                 context.startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName))
             })
 
-            SectionTitle("Data")
-            Text("Keep history for", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
-            Segmented(listOf(1 to "1 day", 7 to "7 days", 30 to "30 days", 90 to "90 days"), s.retentionDays, { v -> vm.updateSettings { it.copy(retentionDays = v) } })
-            SettingRow("Clear history", "Delete all recorded connections, lookups and alerts", onClick = { confirmClear = true })
+            SectionTitle(stringResource(R.string.settings_section_data))
+            Text(stringResource(R.string.settings_keep_history), Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
+            Segmented(listOf(1, 7, 30, 90).map { it to pluralStringResource(R.plurals.settings_days, it, it) }, s.retentionDays,
+                { v -> vm.updateSettings { it.copy(retentionDays = v) } })
+            SettingRow(stringResource(R.string.settings_clear_history_title), stringResource(R.string.settings_clear_history_summary), onClick = { confirmClear = true })
 
-            SectionTitle("About")
-            SettingRow("vigil ${BuildConfig.VERSION_NAME}", "Engine ${runCatching { VigilNative.nativeVersion() }.getOrDefault("?")} · Apache-2.0")
-            SettingRow("Source code & documentation", "github.com/H3xano/vigil", onClick = {
+            SectionTitle(stringResource(R.string.settings_section_about))
+            // Product name and version: not translated.
+            SettingRow(
+                "vigil ${BuildConfig.VERSION_NAME}",
+                stringResource(R.string.settings_engine_version, runCatching { VigilNative.nativeVersion() }.getOrDefault("?")),
+            )
+            SettingRow(stringResource(R.string.settings_source_code), "github.com/H3xano/vigil", onClick = {
                 context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/H3xano/vigil".toUri()))
             })
             Row(Modifier.padding(24.dp)) {}
@@ -245,10 +290,10 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            title = { Text("Clear history?") },
-            text = { Text("All recorded connections, DNS lookups, alerts, learned destinations and learned networks will be deleted.") },
-            confirmButton = { TextButton(onClick = { vm.clearHistory(); confirmClear = false }) { Text("Clear") } },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+            title = { Text(stringResource(R.string.settings_clear_history_confirm_title)) },
+            text = { Text(stringResource(R.string.settings_clear_history_confirm_text)) },
+            confirmButton = { TextButton(onClick = { vm.clearHistory(); confirmClear = false }) { Text(stringResource(R.string.settings_clear_history_confirm)) } },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
     if (editUpstreams) {
@@ -257,21 +302,21 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
         val invalid = parsed.filter { ConfigFactory.normalizeResolver(it) == null }
         AlertDialog(
             onDismissRequest = { editUpstreams = false },
-            title = { Text("Custom resolvers") },
+            title = { Text(stringResource(R.string.settings_custom_resolvers_title)) },
             text = {
                 Column {
-                    Text("Plain DNS resolvers, e.g. 1.1.1.1, 9.9.9.9:53, [2606:4700::1111]:53", style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.settings_custom_resolvers_hint), style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().padding(top = 8.dp), isError = invalid.isNotEmpty(),
-                        supportingText = { if (invalid.isNotEmpty()) Text("Invalid: ${invalid.joinToString()}") })
+                        supportingText = { if (invalid.isNotEmpty()) Text(stringResource(R.string.settings_custom_resolvers_invalid, invalid.joinToString())) })
                 }
             },
             confirmButton = {
                 TextButton(enabled = invalid.isEmpty() && parsed.isNotEmpty(), onClick = {
                     vm.updateSettings { it.copy(customUpstreams = parsed) }
                     editUpstreams = false
-                }) { Text("Save") }
+                }) { Text(stringResource(R.string.action_save)) }
             },
-            dismissButton = { TextButton(onClick = { editUpstreams = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { editUpstreams = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 }

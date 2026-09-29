@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import kotlinx.serialization.Serializable
 
 /**
@@ -24,23 +26,23 @@ data class UpstreamSettings(
         get() = socks5.proxyApp?.takeIf { mode == MODE_SOCKS5 && it.isNotBlank() }
 
     /** Why these settings cannot be saved, or null (mirrors the engine's validation). */
-    fun validationError(): String? = when (mode) {
+    fun validationError(): UiText? = when (mode) {
         MODE_DIRECT -> null
-        MODE_WIREGUARD -> if (wireguard == null) "Import a WireGuard configuration first." else null
+        MODE_WIREGUARD -> if (wireguard == null) UiText.of(R.string.upstream_error_import_first) else null
         MODE_SOCKS5 -> {
             val s = socks5
             val host = s.host.trim().removePrefix("[").removeSuffix("]")
             val bracketed = if (host.contains(':')) "[$host]" else host
             when {
-                host.isEmpty() -> "Enter the proxy host."
-                s.port !in 1..65535 -> "The port must be between 1 and 65535."
-                !WgQuick.isEndpoint("$bracketed:${s.port}") -> "\"${s.host}\" is not a host name or IP address."
-                s.username.toByteArray().size > 255 || s.password.toByteArray().size > 255 -> "Username and password are limited to 255 bytes."
-                s.username.isEmpty() && s.password.isNotEmpty() -> "A password needs a username."
+                host.isEmpty() -> UiText.of(R.string.upstream_error_enter_host)
+                s.port !in 1..65535 -> UiText.of(R.string.settings_port_range)
+                !WgQuick.isEndpoint("$bracketed:${s.port}") -> UiText.of(R.string.upstream_error_bad_host, s.host)
+                s.username.toByteArray().size > 255 || s.password.toByteArray().size > 255 -> UiText.of(R.string.upstream_error_credentials_too_long)
+                s.username.isEmpty() && s.password.isNotEmpty() -> UiText.of(R.string.upstream_error_password_needs_username)
                 else -> null
             }
         }
-        else -> "Unknown mode $mode."
+        else -> UiText.of(R.string.upstream_error_unknown_mode, mode)
     }
 
     companion object {

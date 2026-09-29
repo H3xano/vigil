@@ -37,18 +37,22 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.Socks5Settings
 import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.data.WgQuick
 import dev.vigil.inspector.engine.UpstreamStatus
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.UiText
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatBytes
@@ -72,8 +76,8 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
     // proxy password) survives rotation in memory, never in the saved state.
     var draft by rememberRetained("upstream.draft") { saved }
     var portText by rememberRetained("upstream.port") { saved.socks5.port.toString() }
-    var warnings by rememberRetained("upstream.warnings") { emptyList<String>() }
-    var importError by rememberRetained("upstream.importError") { null as String? }
+    var warnings by rememberRetained("upstream.warnings") { emptyList<UiText>() }
+    var importError by rememberRetained("upstream.importError") { null as UiText? }
     var pasting by rememberSaveable { mutableStateOf(false) }
     var pickingApp by rememberSaveable { mutableStateOf(false) }
     val candidate = draft.copy(socks5 = draft.socks5.copy(port = portText.toIntOrNull() ?: -1))
@@ -87,14 +91,14 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
             warnings = parsed.warnings
             importError = null
         } catch (e: WgQuick.ParseException) {
-            importError = e.message
+            importError = e.text
         }
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             val (text, name) = readSmallText(context, uri) ?: run {
-                importError = "Could not read the file (or it is larger than 64 KB)."
+                importError = UiText.of(R.string.upstream_read_failed)
                 return@rememberLauncherForActivityResult
             }
             import(text, name)
@@ -102,15 +106,19 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Route through VPN / proxy", nav)
+        VigilTopBar(stringResource(R.string.upstream_title), nav)
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text(
-                "Android runs one VPN at a time. Instead of your VPN app, vigil can send the traffic it inspects through your " +
-                    "WireGuard server or a SOCKS5 proxy (e.g. Tor via Orbot). Inspection is unchanged; only the way out differs.",
+                stringResource(R.string.upstream_intro),
                 Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium,
             )
             Segmented(
-                listOf(UpstreamSettings.MODE_DIRECT to "Direct", UpstreamSettings.MODE_WIREGUARD to "WireGuard", UpstreamSettings.MODE_SOCKS5 to "SOCKS5"),
+                // Protocol names: not translated.
+                listOf(
+                    UpstreamSettings.MODE_DIRECT to stringResource(R.string.upstream_mode_direct),
+                    UpstreamSettings.MODE_WIREGUARD to "WireGuard",
+                    UpstreamSettings.MODE_SOCKS5 to "SOCKS5",
+                ),
                 draft.mode, { v -> draft = draft.copy(mode = v) },
             )
             if (saved.mode != UpstreamSettings.MODE_DIRECT && status is VpnStatus.Running) {
@@ -130,104 +138,104 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
                     SectionTitle("WireGuard")
                     val wg = draft.wireguard
                     if (wg == null) {
-                        Text("Import the wg-quick configuration (.conf) from your VPN provider or your own server.",
+                        Text(stringResource(R.string.upstream_wg_import_hint),
                             Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
                     } else {
                         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             if (wg.name.isNotEmpty()) Text(wg.name, style = MaterialTheme.typography.titleSmall)
-                            Detail("Endpoint", wg.endpoint)
-                            Detail("Addresses", wg.addresses.joinToString(", "))
-                            Detail("DNS", wg.dns.joinToString(", ").ifEmpty { "none (public resolvers through the tunnel)" })
-                            Detail("Peer key", wg.peerPublicKey)
-                            Detail("Private key", "•".repeat(12) + " (stored on this device only)")
-                            if (wg.presharedKey != null) Detail("Pre-shared key", "•".repeat(12))
-                            Detail("Routed", wg.allowedIps.joinToString(", ").ifEmpty { "everything" })
+                            Detail(stringResource(R.string.upstream_endpoint), wg.endpoint)
+                            Detail(stringResource(R.string.upstream_addresses), wg.addresses.joinToString(", "))
+                            val noDns = stringResource(R.string.upstream_dns_none)
+                            Detail("DNS", wg.dns.joinToString(", ").ifEmpty { noDns })
+                            Detail(stringResource(R.string.upstream_peer_key), wg.peerPublicKey)
+                            Detail(stringResource(R.string.upstream_private_key), stringResource(R.string.upstream_private_key_value, "•".repeat(12)))
+                            if (wg.presharedKey != null) Detail(stringResource(R.string.upstream_preshared_key), "•".repeat(12))
+                            val everything = stringResource(R.string.upstream_routed_everything)
+                            Detail(stringResource(R.string.upstream_routed), wg.allowedIps.joinToString(", ").ifEmpty { everything })
                             Detail("MTU", (wg.mtu ?: dev.vigil.inspector.vpn.ConfigFactory.DEFAULT_WG_MTU).toString())
-                            Detail("Keepalive", if (wg.persistentKeepalive > 0) "${wg.persistentKeepalive} s" else "off")
+                            Detail(
+                                stringResource(R.string.upstream_keepalive),
+                                if (wg.persistentKeepalive > 0) {
+                                    stringResource(R.string.settings_duration_seconds, wg.persistentKeepalive)
+                                } else {
+                                    stringResource(R.string.upstream_keepalive_off)
+                                },
+                            )
                         }
                     }
-                    warnings.forEach { Text("• $it", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
-                    importError?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error) }
+                    warnings.forEach { Text("• ${it.asString()}", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
+                    importError?.let { Text(it.asString(), Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error) }
                     Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Import file") }
-                        OutlinedButton(onClick = { pasting = true }) { Text("Paste text") }
-                        if (wg != null) TextButton(onClick = { draft = draft.copy(wireguard = null); warnings = emptyList() }) { Text("Remove") }
+                        OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text(stringResource(R.string.upstream_import_file)) }
+                        OutlinedButton(onClick = { pasting = true }) { Text(stringResource(R.string.upstream_paste_text)) }
+                        if (wg != null) TextButton(onClick = { draft = draft.copy(wireguard = null); warnings = emptyList() }) { Text(stringResource(R.string.upstream_remove)) }
                     }
                     Text(
-                        "Destinations outside the peer's AllowedIPs go direct, as with wg-quick. An address family AllowedIPs does not " +
-                            "cover at all (IPv6 when it lists only 0.0.0.0/0) is refused while “Block traffic (fail closed)” is on, " +
-                            "and goes direct when it is off; refused apps fall back to the other family. Tunnelling IPv6 needs " +
-                            "::/0 in AllowedIPs and an IPv6 Address in the configuration.",
+                        stringResource(R.string.upstream_wg_allowed_ips_note),
                         Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 UpstreamSettings.MODE_SOCKS5 -> {
-                    SectionTitle("SOCKS5 proxy")
+                    SectionTitle(stringResource(R.string.upstream_socks5_title))
                     val s = draft.socks5
                     fun edit(t: (Socks5Settings) -> Socks5Settings) { draft = draft.copy(socks5 = t(draft.socks5)) }
                     Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(s.host, { v -> edit { it.copy(host = v.trim()) } }, Modifier.fillMaxWidth(), label = { Text("Host") }, singleLine = true)
+                        OutlinedTextField(s.host, { v -> edit { it.copy(host = v.trim()) } }, Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.settings_field_host)) }, singleLine = true)
                         OutlinedTextField(
                             portText, { v -> portText = v.filter(Char::isDigit).take(5) }, Modifier.fillMaxWidth(),
-                            label = { Text("Port") }, singleLine = true, isError = portText.toIntOrNull()?.takeIf { it in 1..65535 } == null,
+                            label = { Text(stringResource(R.string.settings_field_port)) }, singleLine = true, isError = portText.toIntOrNull()?.takeIf { it in 1..65535 } == null,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         )
-                        OutlinedTextField(s.username, { v -> edit { it.copy(username = v) } }, Modifier.fillMaxWidth(), label = { Text("Username (optional)") }, singleLine = true)
-                        SecretField(s.password, { v -> edit { it.copy(password = v) } }, "Password (optional)", Modifier.fillMaxWidth())
+                        OutlinedTextField(s.username, { v -> edit { it.copy(username = v) } }, Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.upstream_username)) }, singleLine = true)
+                        SecretField(s.password, { v -> edit { it.copy(password = v) } }, stringResource(R.string.upstream_password), Modifier.fillMaxWidth())
                     }
                     SettingRow(
-                        "Pass domain names",
-                        "Connect by the name the app asked for (from TLS or HTTP) and let the proxy resolve it. Recommended for Tor. " +
-                            "The connection to the proxy then starts when the app sends its first bytes.",
+                        stringResource(R.string.upstream_pass_domains_title),
+                        stringResource(R.string.upstream_pass_domains_summary),
                         s.sendDomain, onChecked = { v -> edit { it.copy(sendDomain = v) } },
                     )
-                    Text("UDP (QUIC, games, calls)", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
-                    Segmented(listOf("auto" to "Relay if supported", "block" to "Block"), s.udp, { v -> edit { it.copy(udp = v) } })
+                    Text(stringResource(R.string.upstream_udp_label), Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
+                    Segmented(listOf("auto" to stringResource(R.string.upstream_udp_relay), "block" to stringResource(R.string.action_block)), s.udp, { v -> edit { it.copy(udp = v) } })
                     Text(
-                        "DNS always goes to the proxy over TCP. When UDP cannot be relayed (Tor cannot), it is blocked and apps fall back to TCP.",
+                        stringResource(R.string.upstream_udp_note),
                         Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     SettingRow(
-                        "Proxy app",
-                        (s.proxyApp ?: "None") + ": an app on this phone that provides the proxy (e.g. Orbot) must be excluded from vigil's VPN, " +
-                            "or its own traffic would loop back into it. Changing this restarts inspection.",
+                        stringResource(R.string.upstream_proxy_app_title),
+                        stringResource(R.string.upstream_proxy_app_summary, s.proxyApp ?: stringResource(R.string.upstream_proxy_app_none)),
                         onClick = { pickingApp = true },
                     )
                     Text(
-                        "Orbot: host 127.0.0.1, port 9050, proxy app Orbot, pass domain names on.",
+                        stringResource(R.string.upstream_orbot_hint),
                         Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 else -> Text(
-                    "Traffic leaves through the phone's own network, as without vigil.",
+                    stringResource(R.string.upstream_direct_note),
                     Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall,
                 )
             }
 
             if (draft.mode != UpstreamSettings.MODE_DIRECT) {
-                SectionTitle("When the tunnel or proxy is down")
+                SectionTitle(stringResource(R.string.upstream_down_section))
                 SettingRow(
-                    "Block traffic (fail closed)",
-                    if (draft.failClosed) {
-                        "Connections fail and lookups get no answer until the tunnel or proxy works again. Nothing goes out directly."
-                    } else {
-                        "Connections fall back to the phone's own network while the tunnel or proxy is unreachable: your real IP address is exposed."
-                    },
+                    stringResource(R.string.upstream_fail_closed_title),
+                    stringResource(if (draft.failClosed) R.string.upstream_fail_closed_on else R.string.upstream_fail_closed_off),
                     draft.failClosed, onChecked = { v -> draft = draft.copy(failClosed = v) },
                 )
             }
 
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (error != null) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                else if (dirty) Text("Unsaved changes. Saving applies them to new connections at once.", style = MaterialTheme.typography.bodySmall)
+                if (error != null) Text(error.asString(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                else if (dirty) Text(stringResource(R.string.upstream_unsaved), style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = dirty && error == null, onClick = { vm.updateSettings { it.copy(upstream = candidate) } }) { Text("Save") }
+                    Button(enabled = dirty && error == null, onClick = { vm.updateSettings { it.copy(upstream = candidate) } }) { Text(stringResource(R.string.action_save)) }
                     OutlinedButton(enabled = dirty, onClick = {
                         draft = saved
                         portText = saved.socks5.port.toString()
                         warnings = emptyList()
                         importError = null
-                    }) { Text("Discard") }
+                    }) { Text(stringResource(R.string.action_discard)) }
                 }
             }
             Column(Modifier.padding(24.dp)) {}
@@ -237,24 +245,30 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
     if (pasting) {
         // The pasted configuration contains the private key: retained in memory only.
         var text by rememberRetained("upstream.paste") { "" }
+        val pastedName = stringResource(R.string.upstream_pasted_name)
         val closePaste = {
             pasting = false
             text = ""
         }
         AlertDialog(
             onDismissRequest = closePaste,
-            title = { Text("WireGuard configuration") },
+            title = { Text(stringResource(R.string.upstream_paste_title)) },
             text = {
                 OutlinedTextField(
                     text, { text = it }, Modifier.fillMaxWidth().heightIn(min = 160.dp),
+                    // Configuration file syntax: not translated.
                     placeholder = { Text("[Interface]\nPrivateKey = …\nAddress = …\n\n[Peer]\nPublicKey = …\nEndpoint = …") },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     // Holds a private key: keep it out of keyboard suggestions and learning.
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None),
                 )
             },
-            confirmButton = { TextButton(enabled = text.isNotBlank(), onClick = { import(text, "pasted"); closePaste() }) { Text("Import") } },
-            dismissButton = { TextButton(onClick = closePaste) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(enabled = text.isNotBlank(), onClick = { import(text, pastedName); closePaste() }) {
+                    Text(stringResource(R.string.upstream_import))
+                }
+            },
+            dismissButton = { TextButton(onClick = closePaste) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
     if (pickingApp) {
@@ -268,7 +282,7 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
 @Composable
 private fun Detail(label: String, value: String) {
     Row {
-        Text("$label: ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(stringResource(R.string.upstream_detail_label, label), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -278,27 +292,28 @@ private fun UpstreamStatusCard(s: UpstreamStatus) {
     Card(Modifier.fillMaxWidth().padding(16.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             val (label, color) = when (s.state) {
-                "up" -> "Connected" to VigilColors.Allow
-                "connecting" -> "Connecting…" to VigilColors.Medium
-                "idle" -> "Idle (connects on first use)" to MaterialTheme.colorScheme.onSurfaceVariant
-                else -> "Down" to VigilColors.Block
+                "up" -> R.string.upstream_state_connected to VigilColors.Allow
+                "connecting" -> R.string.upstream_state_connecting to VigilColors.Medium
+                "idle" -> R.string.upstream_state_idle to MaterialTheme.colorScheme.onSurfaceVariant
+                else -> R.string.upstream_state_down to VigilColors.Block
             }
-            Text(label, color = color, style = MaterialTheme.typography.titleMedium)
-            s.endpoint?.let { Text("Endpoint $it", style = MaterialTheme.typography.bodySmall) }
-            s.handshakeAgeS?.let { Text("Last handshake ${formatAge(it)} ago", style = MaterialTheme.typography.bodySmall) }
+            Text(stringResource(label), color = color, style = MaterialTheme.typography.titleMedium)
+            s.endpoint?.let { Text(stringResource(R.string.upstream_status_endpoint, it), style = MaterialTheme.typography.bodySmall) }
+            s.handshakeAgeS?.let { Text(stringResource(R.string.upstream_status_handshake, formatAge(it).asString()), style = MaterialTheme.typography.bodySmall) }
             if (s.txBytes != null && s.rxBytes != null) {
-                Text("Sent ${formatBytes(s.txBytes)} · received ${formatBytes(s.rxBytes)}", style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.upstream_status_traffic, formatBytes(s.txBytes), formatBytes(s.rxBytes)), style = MaterialTheme.typography.bodySmall)
             }
+            // The engine's UDP relay state, after the protocol name: not translated.
             s.udp?.let { Text("UDP: $it", style = MaterialTheme.typography.bodySmall) }
-            s.lastError?.let { Text("Last error: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            s.lastError?.let { Text(stringResource(R.string.settings_last_error, it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
     }
 }
 
-internal fun formatAge(seconds: Long): String = when {
-    seconds < 60 -> "$seconds s"
-    seconds < 3600 -> "${seconds / 60} min"
-    else -> "${seconds / 3600} h"
+internal fun formatAge(seconds: Long): UiText = when {
+    seconds < 60 -> UiText.of(R.string.settings_duration_seconds, seconds)
+    seconds < 3600 -> UiText.of(R.string.settings_duration_minutes, seconds / 60)
+    else -> UiText.of(R.string.settings_duration_hours, seconds / 3600)
 }
 
 /** Launchable apps, to pick the one that provides the proxy. */
@@ -319,14 +334,14 @@ private fun ProxyAppPicker(onPick: (String?) -> Unit, onDismiss: () -> Unit) {
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Proxy app") },
+        title = { Text(stringResource(R.string.upstream_proxy_app_title)) },
         text = {
             val list = apps
             if (list == null) {
-                Text("Loading…")
+                Text(stringResource(R.string.upstream_loading))
             } else {
                 LazyColumn(Modifier.heightIn(max = 400.dp)) {
-                    item { ListItem(headlineContent = { Text("None") }, modifier = Modifier.clickable { onPick(null) }) }
+                    item { ListItem(headlineContent = { Text(stringResource(R.string.upstream_proxy_app_none)) }, modifier = Modifier.clickable { onPick(null) }) }
                     items(list, key = { it.first }) { (pkg, label) ->
                         ListItem(
                             headlineContent = { Text(label) },
@@ -337,7 +352,7 @@ private fun ProxyAppPicker(onPick: (String?) -> Unit, onDismiss: () -> Unit) {
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
 

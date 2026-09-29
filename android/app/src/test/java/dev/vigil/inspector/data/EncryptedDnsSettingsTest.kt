@@ -1,7 +1,9 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.EncryptedDnsConfig
 import dev.vigil.inspector.engine.EngineJson
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.vpn.ConfigFactory
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -21,7 +23,7 @@ class EncryptedDnsSettingsTest {
     fun offByDefaultAndOffConfig() {
         val s = EncryptedDnsSettings()
         assertFalse(s.enabled)
-        assertNull(s.problem())
+        assertNull(s.problemText())
         assertEquals(EncryptedDnsConfig(), s.toEngine())
         assertEquals("Off", s.summary())
     }
@@ -31,7 +33,7 @@ class EncryptedDnsSettingsTest {
         for (p in DnsProviders.ALL) {
             for (mode in listOf("dot", "doh")) {
                 val s = EncryptedDnsSettings(mode = mode, provider = p.id)
-                assertNull("${p.id}/$mode", s.problem())
+                assertNull("${p.id}/$mode", s.problemText())
                 val c = s.toEngine()
                 assertEquals(mode, c.mode)
                 val server = c.servers.single()
@@ -49,25 +51,27 @@ class EncryptedDnsSettingsTest {
             }
         }
         assertEquals("DNS over HTTPS · Quad9", EncryptedDnsSettings(mode = "doh").summary())
+        assertEquals(UiText.of(R.string.settings_dns_choose_provider), EncryptedDnsSettings(mode = "dot", provider = "nope").problemText())
+        // The English form DnsScreen still shows.
         assertEquals("Choose a provider.", EncryptedDnsSettings(mode = "dot", provider = "nope").problem())
     }
 
     @Test
     fun customServersValidated() {
-        assertNull(custom("doh", url = "https://dns.example/dns-query", addrs = listOf("192.0.2.1", "2001:db8::1")).problem())
-        assertNull(custom("dot", host = "dns.example", addrs = listOf("192.0.2.1")).problem())
+        assertNull(custom("doh", url = "https://dns.example/dns-query", addrs = listOf("192.0.2.1", "2001:db8::1")).problemText())
+        assertNull(custom("dot", host = "dns.example", addrs = listOf("192.0.2.1")).problemText())
         // An IP literal needs no separate addresses.
-        assertNull(custom("dot", host = "192.0.2.1").problem())
-        assertNull(custom("doh", url = "https://[2001:db8::1]/dns-query").problem())
+        assertNull(custom("dot", host = "192.0.2.1").problemText())
+        assertNull(custom("doh", url = "https://[2001:db8::1]/dns-query").problemText())
         // A name without addresses needs a cleartext lookup, so the fallback.
-        assertNotNull(custom("doh", url = "https://dns.example/dns-query").problem())
-        assertNull(custom("doh", url = "https://dns.example/dns-query", fallback = true).problem())
-        assertNotNull(custom("doh", url = "http://dns.example/dns-query", addrs = listOf("192.0.2.1")).problem())
-        assertNotNull(custom("doh", url = "", addrs = listOf("192.0.2.1")).problem())
-        assertNotNull(custom("dot", host = "localhost", addrs = listOf("192.0.2.1")).problem())
-        assertNotNull(custom("dot", host = "dns.example", port = 0, addrs = listOf("192.0.2.1")).problem())
-        assertNotNull(custom("dot", host = "dns.example", addrs = listOf("dns.example")).problem())
-        assertNotNull(custom("dot", host = "dns.example", addrs = List(9) { "192.0.2.$it" }).problem())
+        assertNotNull(custom("doh", url = "https://dns.example/dns-query").problemText())
+        assertNull(custom("doh", url = "https://dns.example/dns-query", fallback = true).problemText())
+        assertNotNull(custom("doh", url = "http://dns.example/dns-query", addrs = listOf("192.0.2.1")).problemText())
+        assertNotNull(custom("doh", url = "", addrs = listOf("192.0.2.1")).problemText())
+        assertNotNull(custom("dot", host = "localhost", addrs = listOf("192.0.2.1")).problemText())
+        assertNotNull(custom("dot", host = "dns.example", port = 0, addrs = listOf("192.0.2.1")).problemText())
+        assertNotNull(custom("dot", host = "dns.example", addrs = listOf("dns.example")).problemText())
+        assertNotNull(custom("dot", host = "dns.example", addrs = List(9) { "192.0.2.$it" }).problemText())
         // Invalid settings never reach the engine as encrypted.
         assertEquals("off", custom("dot", host = "bad host").toEngine().mode)
         val c = custom("dot", host = "Dns.Example.", port = 8853, addrs = listOf("192.0.2.1")).toEngine()
