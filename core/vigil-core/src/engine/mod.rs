@@ -22,7 +22,7 @@ mod udp;
 pub(crate) mod upstream;
 
 use crate::config::{Config, ConfigError};
-use crate::detect::{AlertLimiter, BeaconDetector, FlowBurstDetector, FlowSample};
+use crate::detect::{AlertClass, AlertLimiter, BeaconDetector, FlowBurstDetector, FlowSample};
 use crate::dnscache::DnsCache;
 use crate::event::{
     now_ms, AlertEvent, EngineEvent, Event, EventQueue, FlowEndEvent, FlowEvent, FlowUpdateEvent,
@@ -49,6 +49,10 @@ const TUN_QUEUE: usize = 4096;
 const STACK_QUEUE: usize = 2048;
 const TCP_WINDOW: u32 = 64 * 1024;
 const EVENT_QUEUE: usize = 20_000;
+/// `hardcoded_dns` alerts per app per minute: they are one per server
+/// address, so an app querying random addresses would otherwise spend the
+/// alert budget.
+pub(crate) const HARDCODED_DNS_PER_APP_MINUTE: u32 = 3;
 /// Consecutive transient TUN read errors tolerated before giving up.
 const TUN_MAX_TRANSIENT_ERRORS: u32 = 100;
 
@@ -623,9 +627,13 @@ impl Shared {
     }
 
     /// Raises an alert unless one with the same kind, app and `dedup` key
-    /// was raised within the last hour (or the global budget is spent).
+    /// was raised within the last hour (or the per-minute budget is spent).
     /// `dedup` identifies the finding, e.g. the matched list entry, so
     /// thousands of generated names under one listed domain are one alert.
+    /// High-severity alerts have a budget of their own, and `hardcoded_dns`
+    /// (which any app can raise at will, one per server address) is capped
+    /// per app ([`HARDCODED_DNS_PER_APP_MINUTE`]; `detail.suppressed` counts
+    /// the ones held back since the app's previous one).
     #[allow(clippy::too_many_arguments)]
     pub fn alert(
         &self,
@@ -635,11 +643,23 @@ impl Shared {
         dedup: &str,
         target: &str,
         message: String,
-        detail: serde_json::Value,
+        mut detail: serde_json::Value,
     ) {
         let key = format!("{kind}|{uid:?}|{dedup}");
-        if !self.limiter.allow(&key, Instant::now()) {
+        let class = if severity >= Severity::High {
+            AlertClass::High
+        } else {
+            AlertClass::Normal
+        };
+        let group = (kind == "hardcoded_dns").then(|| format!("{kind}|{uid:?}"));
+        let group = group.as_deref().map(|g| (g, HARDCODED_DNS_PER_APP_MINUTE));
+        let Some(held) = self.limiter.admit(&key, class, group, Instant::now()) else {
             return;
+        };
+        if held > 0 {
+            if let Some(d) = detail.as_object_mut() {
+                d.insert("suppressed".into(), held.into());
+            }
         }
         self.emit(Event::Alert(AlertEvent {
             ts: now_ms(),
@@ -1309,6 +1329,98 @@ mod tests {
     pub(crate) fn test_shared_uid(config: Config, uid: u32) -> Arc<Shared> {
         let (tx, _rx) = mpsc::channel(64);
         Arc::new(Shared::new(config, Arc::new(FixedUid(uid)), tx))
+    }
+
+    #[test]
+    fn hardcoded_dns_flood_does_not_suppress_other_alerts() {
+        let shared = test_shared(Config::default());
+        let hardcoded = |shared: &Shared, uid: u32, i: u32| {
+            let ip = std::net::Ipv4Addr::from(0x0a00_0000 + i).to_string();
+            shared.alert(
+                "hardcoded_dns",
+                Severity::Info,
+                Some(uid),
+                &ip,
+                &ip,
+                format!("App bypasses the system resolver and queries {ip}:53 directly"),
+                serde_json::json!({ "qname": "x.example" }),
+            );
+        };
+        // One app queries 1000 random addresses on port 53.
+        for i in 0..1000 {
+            hardcoded(&shared, 10123, i);
+        }
+        // Another app's findings, and threat and beacon alerts, still come
+        // through.
+        hardcoded(&shared, 10200, 1);
+        shared.alert(
+            "threat_domain",
+            Severity::High,
+            Some(10123),
+            "feed:urlhaus|evil.example",
+            "evil.example",
+            "listed".into(),
+            serde_json::json!({}),
+        );
+        shared.alert(
+            "beacon",
+            Severity::Medium,
+            Some(10300),
+            "203.0.113.9:443",
+            "203.0.113.9:443",
+            "beacon".into(),
+            serde_json::json!({}),
+        );
+        let alerts: Vec<_> = shared
+            .events
+            .poll(10_000, Duration::ZERO)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Alert(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        let of = |kind: &str, uid: u32| {
+            alerts
+                .iter()
+                .filter(|a| a.kind == kind && a.uid == Some(uid))
+                .count()
+        };
+        assert_eq!(
+            of("hardcoded_dns", 10123),
+            HARDCODED_DNS_PER_APP_MINUTE as usize
+        );
+        assert_eq!(of("hardcoded_dns", 10200), 1);
+        assert_eq!(of("threat_domain", 10123), 1);
+        assert_eq!(of("beacon", 10300), 1);
+        assert!(alerts.iter().all(|a| a.detail.get("suppressed").is_none()));
+
+        // A full normal budget still leaves the threat budget untouched.
+        let shared = test_shared(Config::default());
+        for uid in 0..300 {
+            hardcoded(&shared, 20_000 + uid, 1);
+        }
+        shared.alert(
+            "threat_ip",
+            Severity::High,
+            Some(10123),
+            "feed:x|192.0.2.1",
+            "192.0.2.1",
+            "listed".into(),
+            serde_json::json!({}),
+        );
+        let events = shared.events.poll(10_000, Duration::ZERO);
+        let n = |kind: &str| {
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::Alert(a) if a.kind == kind))
+                .count()
+        };
+        assert_eq!(
+            n("hardcoded_dns"),
+            crate::detect::ALERTS_PER_MINUTE as usize
+        );
+        assert_eq!(n("threat_ip"), 1);
     }
 
     fn flow_ids(events: &[Event]) -> (Vec<u64>, Vec<u64>) {

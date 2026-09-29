@@ -368,8 +368,29 @@ impl FlowBurstDetector {
 
 /// Default bound on remembered alert keys.
 pub const ALERT_KEYS: usize = 10_000;
-/// Default budget of alerts per minute across all keys.
+/// Default budget of alerts per minute across all keys, for each class
+/// ([`AlertClass`]): high-severity alerts have their own, so a flood of
+/// low-severity ones cannot suppress them.
 pub const ALERTS_PER_MINUTE: u32 = 120;
+/// Bound on remembered groups (see [`AlertLimiter::admit`]); groups whose
+/// minute is over are forgotten first.
+const ALERT_GROUPS: usize = 4096;
+
+/// Which per-minute budget an alert draws from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertClass {
+    /// Info to medium severity.
+    Normal,
+    /// High severity (threat feed matches).
+    High,
+}
+
+struct Group {
+    minute_start: Instant,
+    count: u32,
+    /// Alerts of the group held back by its cap since its last admitted one.
+    held: u64,
+}
 
 struct LimiterState {
     /// Key → time it last raised an alert.
@@ -378,13 +399,16 @@ struct LimiterState {
     /// map holds a newer time for its key.
     order: VecDeque<(String, Instant)>,
     minute_start: Option<Instant>,
-    minute_count: u32,
+    /// Alerts admitted this minute, per class (normal, high).
+    minute_count: [u32; 2],
+    groups: HashMap<String, Group>,
     suppressed: u64,
 }
 
 /// Suppresses repeats of the same alert key within a window, remembers at
-/// most `max_keys` keys (the oldest are forgotten first) and caps the total
-/// number of alerts per minute. Every operation is amortised O(1).
+/// most `max_keys` keys (the oldest are forgotten first) and caps the number
+/// of alerts per minute, separately for each [`AlertClass`] and optionally
+/// per group. Every operation is amortised O(1).
 pub struct AlertLimiter {
     state: Mutex<LimiterState>,
     window: Duration,
@@ -403,7 +427,8 @@ impl AlertLimiter {
                 seen: HashMap::new(),
                 order: VecDeque::new(),
                 minute_start: None,
-                minute_count: 0,
+                minute_count: [0; 2],
+                groups: HashMap::new(),
                 suppressed: 0,
             }),
             window,
@@ -412,7 +437,23 @@ impl AlertLimiter {
         }
     }
 
+    /// [`Self::admit`] for a normal alert without a group.
     pub fn allow(&self, key: &str, now: Instant) -> bool {
+        self.admit(key, AlertClass::Normal, None, now).is_some()
+    }
+
+    /// Whether an alert with `key` may be raised now: not raised within the
+    /// window, its class's budget for this minute not spent, and, with
+    /// `group` = `(name, cap)`, fewer than `cap` alerts of that group this
+    /// minute. Returns how many alerts of the group were held back by its cap
+    /// since its last admitted one (0 without a group).
+    pub fn admit(
+        &self,
+        key: &str,
+        class: AlertClass,
+        group: Option<(&str, u32)>,
+        now: Instant,
+    ) -> Option<u64> {
         let mut guard = self.state.lock();
         let st = &mut *guard;
         // Forget keys whose window has passed, oldest first.
@@ -427,20 +468,57 @@ impl AlertLimiter {
         }
         if st.seen.contains_key(key) {
             // Still inside its window (expired keys were removed above).
-            return false;
+            return None;
         }
-        let minute_over = st.minute_start.map_or(true, |t| {
-            now.saturating_duration_since(t) >= Duration::from_secs(60)
-        });
+        let minute = Duration::from_secs(60);
+        let minute_over = st
+            .minute_start
+            .map_or(true, |t| now.saturating_duration_since(t) >= minute);
         if minute_over {
             st.minute_start = Some(now);
-            st.minute_count = 0;
+            st.minute_count = [0; 2];
         }
-        if st.minute_count >= self.per_minute {
+        let group = match group {
+            Some((name, cap)) => {
+                if !st.groups.contains_key(name) && st.groups.len() >= ALERT_GROUPS {
+                    st.groups.retain(|_, g| {
+                        now.saturating_duration_since(g.minute_start) < minute || g.held > 0
+                    });
+                    if st.groups.len() >= ALERT_GROUPS {
+                        st.groups.clear();
+                    }
+                }
+                let g = st.groups.entry(name.to_string()).or_insert(Group {
+                    minute_start: now,
+                    count: 0,
+                    held: 0,
+                });
+                if now.saturating_duration_since(g.minute_start) >= minute {
+                    g.minute_start = now;
+                    g.count = 0;
+                }
+                if g.count >= cap {
+                    g.held += 1;
+                    st.suppressed += 1;
+                    return None;
+                }
+                Some(g)
+            }
+            None => None,
+        };
+        let c = &mut st.minute_count[class as usize];
+        if *c >= self.per_minute {
+            if let Some(g) = group {
+                g.held += 1;
+            }
             st.suppressed += 1;
-            return false;
+            return None;
         }
-        st.minute_count += 1;
+        *c += 1;
+        let held = group.map_or(0, |g| {
+            g.count += 1;
+            std::mem::take(&mut g.held)
+        });
         // Hard bound: forget the oldest keys (they may alert again early).
         while st.seen.len() >= self.max_keys {
             let Some((k, t)) = st.order.pop_front() else {
@@ -452,7 +530,7 @@ impl AlertLimiter {
         }
         st.seen.insert(key.to_string(), now);
         st.order.push_back((key.to_string(), now));
-        true
+        Some(held)
     }
 
     /// Number of remembered keys.
@@ -577,6 +655,38 @@ mod tests {
         assert_eq!(l.suppressed(), 45);
         // Suppressed keys were not remembered, so they can alert next minute.
         assert!(l.allow("k10", t + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn limiter_classes_and_groups() {
+        let l = AlertLimiter::with_limits(Duration::from_secs(3600), 1000, 5);
+        let t = Instant::now();
+        let normal = |k: &str, t| l.admit(k, AlertClass::Normal, None, t);
+        let high = |k: &str, t| l.admit(k, AlertClass::High, None, t);
+        let grouped = |k: &str, t| l.admit(k, AlertClass::Normal, Some(("g", 2)), t);
+        // The group's cap: 2 a minute; the rest are held back and counted.
+        assert_eq!(grouped("g1", t), Some(0));
+        assert_eq!(grouped("g2", t), Some(0));
+        for i in 3..10 {
+            assert_eq!(grouped(&format!("g{i}"), t), None);
+        }
+        // Repeats of an admitted key are not "held back".
+        assert_eq!(grouped("g1", t), None);
+        // The normal budget (5) is not spent by what the group held back.
+        for i in 0..3 {
+            assert_eq!(normal(&format!("n{i}"), t), Some(0));
+        }
+        assert_eq!(normal("n3", t), None);
+        // High severity has its own budget.
+        for i in 0..5 {
+            assert_eq!(high(&format!("h{i}"), t), Some(0));
+        }
+        assert_eq!(high("h5", t), None);
+        // Next minute: the group's next alert reports the 7 held back.
+        let t2 = t + Duration::from_secs(61);
+        assert_eq!(grouped("g3", t2), Some(7));
+        assert_eq!(grouped("g4", t2), Some(0));
+        assert!(l.allow("n3", t2));
     }
 
     #[test]

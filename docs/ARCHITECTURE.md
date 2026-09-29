@@ -137,8 +137,10 @@
    because Android's resolver cache is per network and shared by every app.
 8. **Alerts** (`detect.rs`) are deduplicated per kind, app and finding for an
    hour (threat alerts by matched feed entry, so DGA names do not cause
-   storms), in a table of at most 10 000 findings, with a global budget of
-   120 alerts per minute. The beacon detector's table (20 000 series) is
+   storms), in a table of at most 10 000 findings, with budgets of 120
+   alerts per minute for high severity (threat matches) and 120 for the
+   rest, and `hardcoded_dns` (one per server address, which an app can
+   generate at will) capped at 3 per app per minute. The beacon detector's table (20 000 series) is
    pruned at most once a minute when full; until then new targets are not
    tracked.
 

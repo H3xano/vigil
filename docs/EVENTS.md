@@ -270,7 +270,7 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `threat_ja4` | high | a TLS or QUIC ClientHello's JA4 fingerprint is listed by a feed. `target` is the fingerprint; `detail`: `ja4`, `rule`, `label`, `feed`, `dst` (`ip:port`), `domain`, `proto`, `blocked` |
 | `beacon` | medium | ≥ 6 connections to one destination at a near-constant interval (10 s–1 h, jitter ≤ 15 % by default), or ≥ 6 bursts of data at such an interval inside one long-lived connection. `detail.kind` says which (see "Beaconing" below) |
 | `encrypted_dns` | low | an app uses DoH, DoT or DoQ, so its lookups are invisible |
-| `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver |
+| `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver. One per app and server address (`target`), at most 3 per app per minute; `detail`: `qname` (`refused` for a message that is not a standard query), and `suppressed` (only when non-zero: alerts for further servers of this app held back by the per-app limit since its previous one; every query is still a `dns` event with its `server`) |
 | `new_destination` | info | (opt-in, app-side) after a 24 h learning period, an app contacts a domain it never used before |
 | `exfil_volume` | medium (low when the foreground state is unknown) | (app-side) an app uploads an unusual volume while not in the foreground (see "Upload volume" below) |
 | `new_asn` | low, medium | (opt-in, app-side, needs an ASN table) after a learning period (7 days by default, from the first network recorded for the app), an app contacts an autonomous system it never used before. `target` is `AS<number>`; `detail`: `asn`, `as_name`, `as_country`, `destination`, `dst_ip`, `known_networks`. Medium when the app had used at most 3 networks. At most 5 per app and 30 in total per hour; networks over the limit are learned without an alert |
@@ -369,8 +369,11 @@ malware generating thousands of names under one listed domain (DGA, DNS
 tunnelling) raises one alert per app; `target` is the first name seen. For
 the other kinds the finding is the `target`. The engine remembers at most
 10 000 findings (the oldest are forgotten first, and may alert again) and
-emits at most 120 alerts per minute in total; alerts beyond that budget
-are dropped.
+emits at most 120 alerts per minute of high severity (`threat_*`) and,
+separately, 120 of the other severities, so a flood of low-severity
+alerts cannot suppress threat alerts; alerts beyond a budget are dropped.
+`hardcoded_dns` is further limited to 3 alerts per app per minute (see
+the table above).
 
 ## Engine configuration (app → engine)
 
