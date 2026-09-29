@@ -118,8 +118,9 @@ never used for blocking.
 
 `via` is the upstream path of the flow's own connection (see `upstream`
 below): `direct`, `wireguard` or `socks5`. It is `direct` in the tunnel and
-proxy modes too for destinations outside the WireGuard peer's AllowedIPs,
-and when the path is down with `fail_closed: false`. It is null when no
+proxy modes too for destinations outside the WireGuard peer's AllowedIPs
+(with `fail_closed`, only within an address family AllowedIPs route at
+all: an IPv6 destination when they route no IPv6 is refused), and when the path is down with `fail_closed: false`. It is null when no
 upstream connection was attempted (TCP flows blocked at the SYN gate, UDP
 and QUIC flows blocked by policy or JA4). TCP flows blocked after the sniff
 (by SNI, Host or JA4) name the path of the connection made at the SYN gate,
@@ -258,7 +259,7 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `dropped` | Packets overwritten in the ring (the oldest) to make room. |
 | `buffered_packets`, `buffered_bytes` | What the ring holds now (`buffered_bytes` includes 16 bytes per packet). |
 | `buffer_bytes` | The ring's size. |
-| `stream` | PCAP-over-IP, null unless `capture.stream.enabled`: `listening` (`address:port`, null while not listening), `clients` (connected, at most 2), `sent` (packets queued to clients, summed over clients), `dropped` (packets a slow client did not get), `rejected` (connections refused: allowlist or client limit), `error` (why it is not listening, e.g. `no address to listen on`, `listen on 192.168.1.23:57012: Address in use (os error 98)`; retried every 5 s). |
+| `stream` | PCAP-over-IP, null unless `capture.stream.enabled`: `listening` (`address:port`, null while not listening), `clients` (connected, at most 2), `sent` (packets queued to clients, summed over clients), `dropped` (packets a slow client did not get), `rejected` (connections refused: allowlist, client limit, or an app on the device other than the shell (`adb forward`) or root), `error` (why it is not listening, e.g. `no address to listen on`, `listen on 192.168.1.23:57012: Address in use (os error 98)`; retried every 5 s). |
 
 ### Alert kinds
 
@@ -269,7 +270,7 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `threat_ja4` | high | a TLS or QUIC ClientHello's JA4 fingerprint is listed by a feed. `target` is the fingerprint; `detail`: `ja4`, `rule`, `label`, `feed`, `dst` (`ip:port`), `domain`, `proto`, `blocked` |
 | `beacon` | medium | ≥ 6 connections to one destination at a near-constant interval (10 s–1 h, jitter ≤ 15 % by default), or ≥ 6 bursts of data at such an interval inside one long-lived connection. `detail.kind` says which (see "Beaconing" below) |
 | `encrypted_dns` | low | an app uses DoH, DoT or DoQ, so its lookups are invisible |
-| `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver |
+| `hardcoded_dns` | info | an app sends DNS to a server other than the system resolver. One per app and server address (`target`), at most 3 per app per minute; `detail`: `qname` (`refused` for a message that is not a standard query), and `suppressed` (only when non-zero: alerts for further servers of this app held back by the per-app limit since its previous one; every query is still a `dns` event with its `server`) |
 | `new_destination` | info | (opt-in, app-side) after a 24 h learning period, an app contacts a domain it never used before |
 | `exfil_volume` | medium (low when the foreground state is unknown) | (app-side) an app uploads an unusual volume while not in the foreground (see "Upload volume" below) |
 | `new_asn` | low, medium | (opt-in, app-side, needs an ASN table) after a learning period (7 days by default, from the first network recorded for the app), an app contacts an autonomous system it never used before. `target` is `AS<number>`; `detail`: `asn`, `as_name`, `as_country`, `destination`, `dst_ip`, `known_networks`. Medium when the app had used at most 3 networks. At most 5 per app and 30 in total per hour; networks over the limit are learned without an alert |
@@ -368,8 +369,11 @@ malware generating thousands of names under one listed domain (DGA, DNS
 tunnelling) raises one alert per app; `target` is the first name seen. For
 the other kinds the finding is the `target`. The engine remembers at most
 10 000 findings (the oldest are forgotten first, and may alert again) and
-emits at most 120 alerts per minute in total; alerts beyond that budget
-are dropped.
+emits at most 120 alerts per minute of high severity (`threat_*`) and,
+separately, 120 of the other severities, so a flood of low-severity
+alerts cannot suppress threat alerts; alerts beyond a budget are dropped.
+`hardcoded_dns` is further limited to 3 alerts per app per minute (see
+the table above).
 
 ## Engine configuration (app → engine)
 
@@ -480,7 +484,7 @@ capture"), for `nativeExportPcap`; optionally streams them live.
 | `stream.enabled` | bool | `false` | PCAP-over-IP server (needs `enabled`). Each client receives a classic PCAP header (µs timestamps, link type 101, raw IP) and then every packet recorded from then on; nothing it sends is read. At most 2 clients; each has a bounded queue (8192 packets, 8 MiB), and a client that reads too slowly loses packets. |
 | `stream.port` | integer | 57012 | TCP port (must be positive while `stream.enabled`). |
 | `stream.bind` | IP address string | `""` | Address to listen on; empty: not listening. The app sends the Wi-Fi (or Ethernet) IPv4 address by default, `0.0.0.0` for "all networks", `127.0.0.1` for "this device", and `""` while there is no Wi-Fi. A bind that fails is retried every 5 s. |
-| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any. IPv4-mapped IPv6 peers are matched as IPv4. |
+| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any. IPv4-mapped IPv6 peers are matched as IPv4. Clients on the device itself (loopback or one of its addresses) must in addition be owned by UID 2000 (shell, `adb forward`) or 0 (root). |
 
 Changes apply at once through `nativeUpdateConfig`: enabling allocates the
 ring (flows already open are attributed from then on), a changed `stream`
@@ -593,7 +597,7 @@ connections of `encrypted_dns`. Inspection is the same in every mode.
 | `wireguard.private_key`, `peer_public_key`, `preshared_key` | | base64 X25519 keys (32 bytes); the pre-shared key is optional (null, absent or empty). |
 | `wireguard.endpoint` | | `host:port` or `[v6]:port`. Host names are resolved when the tunnel starts, on roaming and every 30 s while handshakes fail. IPv4 answers are preferred. A lookup has 5 s; when it fails the last address is kept. |
 | `wireguard.addresses` | | Tunnel addresses (CIDR; a bare address is a host route). At most one IPv4 and one IPv6. Destinations of a family without an address fail (apps fall back to the other family). |
-| `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct. Inner packets from other sources are dropped. |
+| `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct, except that with `fail_closed` destinations of an address family with no entry at all (e.g. IPv6 with only `0.0.0.0/0`) are refused. Inner packets from other sources are dropped. |
 | `wireguard.mtu` | 1420 | Tunnel MTU, 576..=65535 (the app sends 1280 unless the `.conf` sets one). |
 | `wireguard.persistent_keepalive` | 0 | Seconds between keepalives (0 = off). |
 | `socks5.server` | | `host:port` of the proxy (loopback works, e.g. Orbot's `127.0.0.1:9050`). A host name is looked up with a 3 s timeout and the address reused for 5 min, or until connecting to it fails; when a lookup fails the last address is used. |
@@ -618,8 +622,8 @@ proxy app changes (that needs a new VPN interface).
   any connection: with the path down they fail (SERVFAIL unless
   `fallback_plain`), never going direct. When the path changes, open
   encrypted DNS connections are dropped and new ones use the new path.
-  With WireGuard and `fail_closed: false` this also happens whenever the
-  tunnel goes down or comes back, so connections (and pooled plain DNS
+  With WireGuard or SOCKS5 and `fail_closed: false` this also happens
+  whenever the tunnel or proxy goes down or comes back, so connections (and pooled plain DNS
   sockets) opened direct during an outage are not kept once it is back.
 - **Plain DNS** (encrypted DNS off, `fallback_plain`, bootstrap lookups of
   server names, hard-coded resolvers) goes to `upstream_dns` or the

@@ -9,7 +9,7 @@ use crate::proto::{http, tls};
 use parking_lot::Mutex;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -348,6 +348,8 @@ struct Resolved {
 pub(crate) struct Socks5Dialer {
     cfg: Socks5Config,
     health: Mutex<Health>,
+    /// Counts changes between down and not down (see [`Self::health_epoch`]).
+    epoch: AtomicU64,
     udp: AtomicU8,
     resolved: Mutex<Option<Resolved>>,
     timeouts: Timeouts,
@@ -358,6 +360,7 @@ impl Socks5Dialer {
         Self {
             cfg,
             health: Mutex::new(Health::default()),
+            epoch: AtomicU64::new(0),
             udp: AtomicU8::new(UDP_UNKNOWN),
             resolved: Mutex::new(None),
             timeouts: TIMEOUTS,
@@ -383,8 +386,9 @@ impl Socks5Dialer {
         &self.cfg.server
     }
 
-    fn note(&self, result: Result<(), &io::Error>) {
+    pub(super) fn note(&self, result: Result<(), &io::Error>) {
         let mut h = self.health.lock();
+        let was_down = h.reachable == Some(false);
         match result {
             Ok(()) => h.reachable = Some(true),
             Err(e) => {
@@ -394,6 +398,19 @@ impl Socks5Dialer {
                 h.last_error = Some(e.to_string());
             }
         }
+        if was_down != (h.reachable == Some(false)) {
+            self.epoch.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Changes whenever the proxy goes down or comes back. Connections
+    /// pooled by the engine (DNS sockets, encrypted DNS sessions) are keyed
+    /// on it, so with fail-open, ones dialled direct while the proxy was
+    /// down are not reused once it is back (nor proxied ones while it is
+    /// down). The proxy is noticed back by the next connection tried
+    /// through it (every new relayed connection tries it first).
+    pub fn health_epoch(&self) -> u64 {
+        self.epoch.load(Relaxed)
     }
 
     /// "up", "down" or "idle" (nothing tried yet), and the last error.

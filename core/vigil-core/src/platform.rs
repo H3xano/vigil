@@ -13,6 +13,14 @@ pub trait Platform: Send + Sync + 'static {
     /// doesn't loop back into it. On Android this is `VpnService.protect`.
     /// Returns false if the socket could not be protected.
     fn protect(&self, fd: RawFd) -> bool;
+
+    /// Whether a PCAP-over-IP client connecting from the device itself,
+    /// whose socket `owner_uid` attributed to `uid`, may read the stream
+    /// (it carries every app's packets). By default only the shell (2000,
+    /// `adb forward`) and root (0, adbd on emulators); unknown is refused.
+    fn local_stream_client_allowed(&self, uid: Option<u32>) -> bool {
+        matches!(uid, Some(0 | 2000))
+    }
 }
 
 /// Platform for hosts where the tunnel cannot loop (e.g. the TUN device lives
@@ -25,6 +33,13 @@ impl Platform for NullPlatform {
     }
 
     fn protect(&self, _fd: RawFd) -> bool {
+        true
+    }
+
+    /// Without UID attribution local clients cannot be told apart; on such
+    /// hosts (the Linux CLI) the operator owns the machine, and the stream's
+    /// allowlist still applies.
+    fn local_stream_client_allowed(&self, _uid: Option<u32>) -> bool {
         true
     }
 }

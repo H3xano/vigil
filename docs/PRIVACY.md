@@ -44,8 +44,10 @@ other encrypted contents stay encrypted.
   that port receives them. vigil listens on the Wi-Fi address only by default
   (never on the cellular network; "all networks" and "this device" are
   options) and accepts an allowlist of client addresses, which you should
-  set to your computer's. Use it on a trusted network and turn it off when
-  done.
+  set to your computer's. Connections from the phone itself (loopback, or
+  one of the phone's own addresses) are accepted only from the shell
+  (`adb forward`) or root, never from other apps. Use it on a trusted
+  network and turn it off when done.
 
 ## What vigil downloads
 
@@ -161,6 +163,9 @@ vigil accepts incoming connections only for PCAP-over-IP streaming, and only
 while it is on. The server reads nothing from clients (it only discards
 what they send) and sends a fixed header plus packets, so a client can do no
 more than receive the capture; clients not on the allowlist, and a third
-client, are disconnected at once. Other apps on the phone can connect to it
-as well when it listens on "this device" (loopback) or on an address they
-can reach.
+client, are disconnected at once. A connection from the phone itself (on
+"this device", or to the phone's own Wi-Fi address) is attributed to the
+app that opened it (`getConnectionOwnerUid`) and accepted only from the
+shell (UID 2000, `adb forward`) or root (UID 0, adbd on emulators); other
+apps, and connections that cannot be attributed, are refused. A client that
+accepts no data for 10 s is disconnected.

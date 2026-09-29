@@ -137,8 +137,10 @@
    because Android's resolver cache is per network and shared by every app.
 8. **Alerts** (`detect.rs`) are deduplicated per kind, app and finding for an
    hour (threat alerts by matched feed entry, so DGA names do not cause
-   storms), in a table of at most 10 000 findings, with a global budget of
-   120 alerts per minute. The beacon detector's table (20 000 series) is
+   storms), in a table of at most 10 000 findings, with budgets of 120
+   alerts per minute for high severity (threat matches) and 120 for the
+   rest, and `hardcoded_dns` (one per server address, which an app can
+   generate at will) capped at 3 per app per minute. The beacon detector's table (20 000 series) is
    pruned at most once a minute when full; until then new targets are not
    tracked.
 
@@ -188,7 +190,13 @@ off, the only cost is one relaxed atomic load per packet.
   queue per client (8192 packets / 8 MiB); a slow client loses packets
   (`stats.capture.stream.dropped`) and never slows traffic. At most two
   clients; others, and addresses outside the allowlist, are disconnected at
-  once. The sockets belong to the app process, which is excluded from its
+  once. A client on the device itself (loopback, or a peer address that is
+  one of the device's own) is looked up with `Platform::owner_uid` (off the
+  async workers) and accepted only for UID 2000 (shell, `adb forward`) or 0
+  (root); any other app, or an unknown owner, is refused and counted in
+  `rejected` (the Linux CLI, which has no attribution, trusts local
+  clients). A client that accepts nothing for 10 s is dropped, and turning
+  the stream off aborts the client tasks. The sockets belong to the app process, which is excluded from its
   own VPN, so they use the Wi-Fi network directly.
 
 A capture lives as long as the engine session: turning capture off, and
@@ -243,11 +251,18 @@ receive-with-callback), and says which path it took (`via`).
   CONNECT refused by the destination (a reply code) is reported to the app
   like a direct refusal. A proxy host name is looked up with a 3 s timeout
   and cached for 5 minutes (re-resolved after a failed connect; the last
-  address is kept if the lookup fails).
+  address is kept if the lookup fails). As with WireGuard, with
+  `fail_closed: false` the dialer generation changes whenever the proxy
+  goes down or comes back (noticed by the next connection tried through
+  it), so DNS connections opened direct during an outage are not reused.
 - **fail closed** (default): errors are returned, never replaced by a direct
   connection. With `fail_closed: false` the dialer goes direct while the path
-  is down. WireGuard destinations outside AllowedIPs always go direct, as
-  wg-quick routes them.
+  is down. WireGuard destinations outside AllowedIPs go direct, as
+  wg-quick routes them (a split tunnel), except that with `fail_closed` a
+  destination whose whole address family AllowedIPs leave out (IPv6 with a
+  typical `AllowedIPs = 0.0.0.0/0`) is refused (`AddrNotAvailable`) rather
+  than sent under the real address. This covers relayed TCP, UDP flows and
+  upstream DNS (plain, DoT, DoH) alike.
 
 Loopback proxies work: sockets to 127.0.0.1 are protected like any other,
 and the loopback route precedes the VPN's routing rules. A proxy *app* on

@@ -383,6 +383,15 @@ impl WgTunnel {
         self.allowed.is_empty() || self.allowed.iter().any(|c| c.contains(ip))
     }
 
+    /// Whether AllowedIPs route any address of `ip`'s family. A typical
+    /// provider config (`0.0.0.0/0` only) routes no IPv6 at all: that is
+    /// not a split tunnel, and with fail_closed such traffic is refused
+    /// rather than sent direct.
+    pub fn routes_family(&self, ip: IpAddr) -> bool {
+        let v4 = ip.to_canonical().is_ipv4();
+        self.allowed.is_empty() || self.allowed.iter().any(|c| c.addr.is_ipv4() == v4)
+    }
+
     /// The handshake has been failing (or the endpoint is unusable) for a
     /// while. An idle tunnel without a session is *not* down, nor is one
     /// whose socket is being re-created after a network change.
