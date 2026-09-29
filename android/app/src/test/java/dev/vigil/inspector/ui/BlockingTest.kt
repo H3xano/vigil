@@ -144,5 +144,7 @@ class BlockingTest {
         assertNull(validationError(ExportSettings(host = "siem.example", port = 6514)))
         assertNotNull(validationError(ExportSettings(mode = "http", url = "")))
         assertNull(validationError(ExportSettings(mode = "http", url = "https://siem.example/in")))
+        assertNotNull(validationError(ExportSettings(mode = "http", httpFormat = "elastic_bulk", url = "https://es:9200/_bulk")))
+        assertNull(validationError(ExportSettings(mode = "http", httpFormat = "elastic_bulk", url = "https://es:9200/vigil/_bulk")))
     }
 }

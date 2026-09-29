@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.data.ExportSettings
+import dev.vigil.inspector.export.HttpSender
 import dev.vigil.inspector.export.WireFormats
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
@@ -45,8 +46,7 @@ private fun defaultPort(transport: String) = if (transport == "tls") 6514 else 5
 internal fun validationError(d: ExportSettings, portText: String = d.port.toString()): String? = when {
     d.mode == "syslog" && d.host.isBlank() -> "Enter the collector's host name or address."
     d.mode == "syslog" && portText.toIntOrNull()?.takeIf { it in 1..65535 } == null -> "The port must be between 1 and 65535."
-    d.mode == "http" && !(d.url.startsWith("https://") || d.url.startsWith("http://")) -> "The URL must start with https:// or http://."
-    else -> null
+    else -> HttpSender.urlProblem(d)
 }
 
 @Composable
@@ -165,7 +165,7 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
                 )
                 status.configProblem?.let {
                     Text(
-                        "The collector refuses events because of its configuration: $it Events stay queued and are retried once a minute.",
+                        "Configuration problem: $it Events stay queued and are retried once a minute.",
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
                     )
                 }
