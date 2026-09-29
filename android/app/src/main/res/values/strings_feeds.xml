@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Threat intelligence feeds, tracker labels, custom rules and blocking
+     (prefixes feeds_, trackers_, rules_, block_). -->
+<resources>
+    <!-- ===== Threat intelligence screen (Settings → Threat intelligence) ===== -->
+    <string name="feeds_title">Threat intelligence</string>
+    <string name="feeds_update_finished">Feed update finished</string>
+    <string name="feeds_updating">Updating threat feeds…</string>
+    <!-- Content description of the refresh icon in the top bar. -->
+    <string name="feeds_update_all">Update all</string>
+    <!-- Content description of the + icon in the top bar. -->
+    <string name="feeds_add_feed">Add feed</string>
+    <string name="feeds_progress_downloading">Downloading feeds…</string>
+    <string name="feeds_progress_waiting">Feed update queued; waiting for a network connection…</string>
+    <!-- Introduction at the top of the screen. Keep "AdGuard ||domain^" as is: it is the rule syntax. -->
+    <string name="feeds_intro">Hits on malware, phishing and C2 feeds raise high-severity alerts; tracking and ads lists only block. Enabled feeds are downloaded daily from their publishers (GitHub, abuse.ch, Spamhaus and others); turn a feed off to stop downloading it. Custom feeds accept hosts files, domain lists, AdGuard ||domain^ rules and IP/CIDR lists (for example a MISP text export with an API key in the Authorization header), JA4 fingerprint lists, and TAXII 2.1 collections (MISP, OpenCTI).</string>
+
+    <!-- Section titles of the feed groups (shown in capitals). -->
+    <string name="feeds_section_ja4">JA4 fingerprints</string>
+    <string name="feeds_section_asn">Network (ASN) data</string>
+    <string name="feeds_section_spyware">Spyware &amp; stalkerware</string>
+    <string name="feeds_section_taxii">TAXII collections</string>
+    <!-- Section titles named after the feed category (shown in capitals). -->
+    <string name="feeds_category_malware">malware</string>
+    <string name="feeds_category_phishing">phishing</string>
+    <string name="feeds_category_tracking">tracking</string>
+    <string name="feeds_category_ads">ads</string>
+    <string name="feeds_category_custom">custom</string>
+    <!-- Title of the help dialog about spyware packs. -->
+    <string name="feeds_help_spyware_packs">Spyware packs</string>
+    <string name="feeds_open_health_check">Open the health check</string>
+
+    <!-- Delete dialog. %1$s is the feed name. -->
+    <string name="feeds_delete_title">Delete %1$s?</string>
+    <string name="feeds_delete_text">The feed and its downloaded copy are removed. Its entries stop matching the next time inspection loads feeds.</string>
+    <!-- Button in the delete dialog. -->
+    <string name="feeds_delete">Delete</string>
+    <!-- Snackbar after deleting. %1$s is the feed name. -->
+    <string name="feeds_deleted">Deleted %1$s</string>
+    <!-- Content description of the delete icon of a feed. %1$s is the feed name. -->
+    <string name="feeds_delete_named">Delete %1$s</string>
+
+    <!-- JA4 settings -->
+    <string name="feeds_ja4_title">JA4 fingerprint matching</string>
+    <!-- Title of the help dialog about JA4 matches. -->
+    <string name="feeds_help_ja4_match">JA4 match</string>
+    <string name="feeds_ja4_text">Every TLS and QUIC connection\'s JA4 fingerprint is compared with the enabled JA4 feeds and the JA4 indicators of TAXII collections. A match raises a high-severity alert naming the app and destination. Fingerprints identify TLS libraries, so benign apps can match; blocking is therefore off by default.</string>
+    <string name="feeds_ja4_block">Block matching connections</string>
+    <string name="feeds_ja4_block_text">Resets the connection before the handshake reaches the server. Allowlisted domains are exempt.</string>
+
+    <!-- Add feed dialog -->
+    <string name="feeds_add_title">Add feed</string>
+    <!-- Segmented button, feed type: plain domain and IP lists (short). -->
+    <string name="feeds_kind_list">Domains / IPs</string>
+    <string name="feeds_field_name">Name</string>
+    <string name="feeds_field_url">URL</string>
+    <string name="feeds_field_taxii_url">Discovery or API root URL</string>
+    <string name="feeds_field_auth_optional">Authorization header (optional)</string>
+    <!-- Segmented buttons, feed category (short). -->
+    <string name="feeds_seg_malware">Malware</string>
+    <string name="feeds_seg_phishing">Phish</string>
+    <string name="feeds_seg_tracking">Tracking</string>
+    <string name="feeds_seg_ads">Ads</string>
+    <string name="feeds_seg_other">Other</string>
+    <!-- Hint under the JA4 feed fields. Keep the example fingerprint line and "a_b_*" as they are. -->
+    <string name="feeds_ja4_hint">One JA4 fingerprint per line, optionally followed by a label, e.g.\nt13d190900_9dc949149365_97f8aa674fd9  Sliver\nLines starting with # are comments. a_b_* matches any extension set.</string>
+    <!-- Segmented buttons, TAXII authentication (short). "Basic" is HTTP Basic authentication. -->
+    <string name="feeds_auth_none">No auth</string>
+    <string name="feeds_auth_basic">Basic</string>
+    <string name="feeds_auth_api_key">API key</string>
+    <string name="feeds_field_username">Username</string>
+    <string name="feeds_field_password">Password</string>
+    <string name="feeds_field_header_name">Header name</string>
+    <string name="feeds_field_header_value">Header value</string>
+    <!-- Placeholder of the header value field. Keep "<token>". -->
+    <string name="feeds_field_header_value_placeholder">e.g. Bearer &lt;token&gt; or the MISP key</string>
+    <string name="feeds_taxii_no_collections">The server lists no collections.</string>
+    <string name="feeds_taxii_looking_up">Looking up…</string>
+    <string name="feeds_taxii_find_collections">Find collections</string>
+    <!-- Under a TAXII collection that cannot be read. %1$s is the collection id. -->
+    <string name="feeds_taxii_unreadable">not readable with these credentials · %1$s</string>
+    <!-- Label above the category buttons for a TAXII collection. -->
+    <string name="feeds_taxii_treat_as">Treat its domains and IPs as</string>
+    <string name="feeds_taxii_hint">Uses indicators for domains, IP addresses and ranges, URLs (their host) and JA4 fingerprints. Polled with the daily feed update, incrementally.</string>
+    <!-- Snackbar after adding a feed. %1$s is the feed name. -->
+    <string name="feeds_added">Added %1$s; downloading…</string>
+    <!-- Confirm button of the Add feed dialog. -->
+    <string name="feeds_add">Add</string>
+
+    <!-- Feed rows. %1$s is the URL of the TAXII API root, %2$s the category id (malware, c2, phishing). -->
+    <string name="feeds_taxii_treated_as">%1$s · treated as %2$s</string>
+    <!-- Small tags under a feed. %1$s is a formatted number such as "12k". -->
+    <plurals name="feeds_tag_domains">
+        <item quantity="one">%1$s domain</item>
+        <item quantity="other">%1$s domains</item>
+    </plurals>
+    <plurals name="feeds_tag_ranges">
+        <item quantity="one">%1$s range</item>
+        <item quantity="other">%1$s ranges</item>
+    </plurals>
+    <plurals name="feeds_tag_ja4">
+        <item quantity="one">%1$s JA4</item>
+        <item quantity="other">%1$s JA4</item>
+    </plurals>
+    <!-- Tags under a downloaded feed without entries (short, lower case). -->
+    <string name="feeds_tag_pack_list">pack list</string>
+    <string name="feeds_tag_for_health_check">for the health check</string>
+    <string name="feeds_tag_empty">empty</string>
+    <!-- %1$s is a relative time such as "5m ago". -->
+    <string name="feeds_tag_updated">updated %1$s</string>
+    <string name="feeds_tag_not_downloaded">not downloaded</string>
+    <!-- The feed is loaded by the running inspection (short tag). -->
+    <string name="feeds_tag_active">active</string>
+    <!-- %1$s is the error of the last download (often in English, from the server or the system). -->
+    <string name="feeds_error">Error: %1$s</string>
+    <string name="feeds_http_warning">Downloaded without encryption: the list can be altered in transit.</string>
+    <string name="feeds_http_warning_credentials">Downloaded without encryption: the list can be altered in transit, and the credentials are sent in clear text.</string>
+
+    <!-- Names of the built-in feeds that describe what they are (the others are product names and stay as they are).
+         Keep brand and project names (Samsung, Disconnect, FoxIO, iptoasn.com, AdGuard companiesdb, Echap, MVT). -->
+    <string name="feeds_name_native_samsung">Samsung telemetry</string>
+    <string name="feeds_name_native_xiaomi">Xiaomi telemetry</string>
+    <string name="feeds_name_native_huawei">Huawei telemetry</string>
+    <string name="feeds_name_native_oppo">OPPO / Realme telemetry</string>
+    <string name="feeds_name_native_vivo">Vivo telemetry</string>
+    <string name="feeds_name_native_tiktok">TikTok telemetry</string>
+    <string name="feeds_name_native_amazon">Amazon telemetry</string>
+    <string name="feeds_name_disconnect">Disconnect tracking</string>
+    <string name="feeds_name_foxio_ja4_mapping">FoxIO JA4+ mapping (malware rows)</string>
+    <string name="feeds_name_iptoasn">IP to ASN (iptoasn.com)</string>
+    <string name="feeds_name_trackers">Tracker labels (AdGuard companiesdb)</string>
+    <string name="feeds_name_echap_network">Stalkerware network indicators (Echap)</string>
+    <string name="feeds_name_echap_apps">Stalkerware apps (Echap)</string>
+    <string name="feeds_name_echap_watchware">Monitoring apps (Echap watchware)</string>
+    <string name="feeds_name_mvt_index">MVT spyware indicator packs</string>
+
+    <!-- Descriptions of the built-in feeds, by feed id. -->
+    <string name="feeds_desc_hagezi_tif_medium">Malware, phishing, scam and C2 domains aggregated from many threat feeds (~850k domains).</string>
+    <string name="feeds_desc_urlhaus">Domains currently distributing malware.</string>
+    <string name="feeds_desc_threatfox">Indicators of compromise: botnet C2 and malware infrastructure.</string>
+    <string name="feeds_desc_feodo">IP addresses of active botnet command-and-control servers.</string>
+    <string name="feeds_desc_phishing_army">Phishing domains (extended list).</string>
+    <string name="feeds_desc_hagezi_tif_ips">Malicious IP addresses (~29k).</string>
+    <string name="feeds_desc_spamhaus_drop">Netblocks hijacked or leased by professional spam and cyber-crime operations.</string>
+    <string name="feeds_desc_hagezi_tif_full">Complete threat feed (~2.3M domains, ~60 MB RAM). Use instead of the medium list on high-memory devices.</string>
+    <string name="feeds_desc_hagezi_pro">Ads, trackers, telemetry and badware (~230k domains).</string>
+    <string name="feeds_desc_adguard_dns">AdGuard\'s DNS-level ad and tracker filter.</string>
+    <string name="feeds_desc_stevenblack">Consolidated hosts file of ad and malware domains.</string>
+    <string name="feeds_desc_disconnect">Disconnect\'s basic tracking list.</string>
+    <string name="feeds_desc_native_samsung">Native tracking and telemetry of Samsung devices.</string>
+    <string name="feeds_desc_native_xiaomi">Native tracking and telemetry of Xiaomi devices.</string>
+    <string name="feeds_desc_native_huawei">Native tracking and telemetry of Huawei devices.</string>
+    <string name="feeds_desc_native_oppo">Native tracking and telemetry of OPPO and Realme devices.</string>
+    <string name="feeds_desc_native_vivo">Native tracking and telemetry of Vivo devices.</string>
+    <string name="feeds_desc_native_tiktok">TikTok\'s tracking and telemetry endpoints.</string>
+    <string name="feeds_desc_native_amazon">Amazon device and app telemetry.</string>
+    <string name="feeds_desc_foxio_ja4_mapping">JA4 fingerprints of Sliver, Cobalt Strike and IcedID from FoxIO\'s reference mapping. Small and prone to false positives: Sliver\'s fingerprint is Go\'s default TLS client, which some legitimate apps also use.</string>
+    <!-- Keep the example "AS13335 CLOUDFLARENET" as is. -->
+    <string name="feeds_desc_iptoasn">Names the network (autonomous system) behind each connection, e.g. \"AS13335 CLOUDFLARENET\", and enables new-network alerts. Downloaded weekly (≈ 9 MB, ≈ 10 MB of memory while inspecting). Data: iptoasn.com, public domain (PDDL 1.0).</string>
+    <!-- %1$s is the data source and licence, "AdGuard companiesdb — CC BY-SA 4.0". -->
+    <string name="feeds_desc_trackers">Names the company and kind of tracker behind a domain, e.g. \"Google · Advertising\", and lists the tracker companies each app contacts. Labels only: nothing is blocked. Downloaded weekly (≈ 1.5 MB). Data: %1$s.</string>
+    <string name="feeds_desc_echap_network">Servers and websites of about 150 stalkerware apps (≈ 1,000 domains and IPs), labelled per app. Data: Echap, CC BY 4.0.</string>
+    <string name="feeds_desc_echap_apps">Package names and signing certificates of stalkerware apps, for the health check (≈ 100 KB). Data: Echap, CC BY 4.0.</string>
+    <string name="feeds_desc_echap_watchware">Legitimate parental-control and monitoring apps that can also be misused. The health check reports them as warnings; they never raise alerts. Data: Echap, CC BY 4.0.</string>
+    <string name="feeds_desc_mvt_index">The list of mercenary-spyware packs published for the Mobile Verification Toolkit (Pegasus, Predator and others, by Amnesty International, Citizen Lab and others). Adds one feed per pack below. Index: MIT.</string>
+    <!-- Descriptions of feeds the user added. -->
+    <string name="feeds_desc_custom">Custom feed</string>
+    <string name="feeds_desc_custom_ja4">Custom JA4 feed</string>
+    <!-- %1$s is the title the TAXII server gives the collection. -->
+    <string name="feeds_desc_taxii">TAXII 2.1 collection “%1$s”</string>
+
+    <!-- Secret fields (passwords, tokens): buttons that reveal or hide the value. -->
+    <string name="feeds_secret_show">Show</string>
+    <string name="feeds_secret_hide">Hide</string>
+    <!-- Warnings under a URL field that starts with http:// (feeds and SIEM export). -->
+    <string name="feeds_cleartext_secret">This URL uses http://: the Authorization header will be sent unencrypted, readable by anyone on the network path. Use https://.</string>
+    <string name="feeds_cleartext_feed">This URL uses http://: the list can be altered in transit (to block or hide domains). Prefer https://.</string>
+    <string name="feeds_cleartext_export">This URL uses http://: events are sent unencrypted. Prefer https:// outside a trusted network.</string>
+
+    <!-- ===== Tracker labels ===== -->
+    <!-- Help text about tracker labels. %1$s is the data source and licence, "AdGuard companiesdb — CC BY-SA 4.0". -->
+    <string name="trackers_help">vigil names the company behind a destination from the AdGuard companiesdb tracker database, downloaded to the device weekly and looked up locally. Advertising, analytics, telemetry and social media trackers are highlighted; CDNs, hosting and other services are labelled but not counted as trackers. Labels never block anything: use the tracking and ads feeds or block rules for that. Data: %1$s.</string>
+    <!-- Section title and help dialog title. -->
+    <string name="trackers_labels">Tracker labels</string>
+    <!-- A tracker and its category, e.g. "Google · Advertising". %1$s is the company or tracker name, %2$s the category. -->
+    <string name="trackers_label">%1$s · %2$s</string>
+    <!-- Connection detail, "Tracker" row. %1$s tracker name, %2$s category, %3$s the listed parent domain. -->
+    <string name="trackers_field_tracker">Tracker</string>
+    <string name="trackers_field_tracker_listed_as">%1$s · %2$s (listed as %3$s)</string>
+    <string name="trackers_field_company">Company</string>
+    <string name="trackers_labels_text">Company and category of known tracker domains, shown next to connections, lookups and apps. Downloaded by this device from AdGuard\'s repository; the database started from WhoTracks.me data and is maintained by AdGuard.</string>
+    <!-- Appended to trackers_labels_text. %1$s, %2$s and %3$s are trackers_count_domains, trackers_count_trackers and trackers_count_companies. -->
+    <string name="trackers_labels_loaded">Loaded: %1$s, %2$s, %3$s.</string>
+    <!-- %1$s is a formatted number such as "12k". -->
+    <plurals name="trackers_count_domains">
+        <item quantity="one">%1$s domain</item>
+        <item quantity="other">%1$s domains</item>
+    </plurals>
+    <plurals name="trackers_count_trackers">
+        <item quantity="one">%1$s tracker</item>
+        <item quantity="other">%1$s trackers</item>
+    </plurals>
+    <plurals name="trackers_count_companies">
+        <item quantity="one">%1$s company</item>
+        <item quantity="other">%1$s companies</item>
+    </plurals>
+    <!-- App detail section title (shown in capitals). -->
+    <string name="trackers_section">Trackers</string>
+    <!-- App detail section title with the number of tracking companies (shown in capitals). -->
+    <plurals name="trackers_section_count">
+        <item quantity="one">Trackers · %1$d company</item>
+        <item quantity="other">Trackers · %1$d companies</item>
+    </plurals>
+    <string name="trackers_off">Tracker labels are off or not downloaded yet (Settings → Threat intelligence feeds → Tracker labels).</string>
+    <!-- %1$d is the number of days of the time window. -->
+    <plurals name="trackers_none_in_window">
+        <item quantity="one">No known tracker or service domains in the last day.</item>
+        <item quantity="other">No known tracker or service domains in the last %1$d days.</item>
+    </plurals>
+    <string name="trackers_show_fewer">Show fewer</string>
+    <!-- %1$d is the number of companies. -->
+    <string name="trackers_show_all">Show all %1$d</string>
+    <!-- Accessibility labels of the click action on a company row. -->
+    <string name="trackers_show_domains">Show domains</string>
+    <string name="trackers_hide_domains">Hide domains</string>
+    <!-- Company tags (short, lower case). -->
+    <string name="trackers_tag_blocked">blocked</string>
+    <string name="trackers_tag_partly_blocked">partly blocked</string>
+    <string name="trackers_tag_allowed">allowed</string>
+    <!-- Counts under a company or domain, joined with " · ". -->
+    <plurals name="trackers_hits_connections">
+        <item quantity="one">%1$d connection</item>
+        <item quantity="other">%1$d connections</item>
+    </plurals>
+    <plurals name="trackers_hits_lookups">
+        <item quantity="one">%1$d lookup</item>
+        <item quantity="other">%1$d lookups</item>
+    </plurals>
+    <!-- %1$s is a formatted number such as "1.2k". -->
+    <plurals name="trackers_hits_blocked">
+        <item quantity="one">%1$s blocked</item>
+        <item quantity="other">%1$s blocked</item>
+    </plurals>
+    <plurals name="trackers_company_domains">
+        <item quantity="one">%1$d domain</item>
+        <item quantity="other">%1$d domains</item>
+    </plurals>
+    <!-- Details line: %1$s is trackers_company_domains (or a tracker name and category), %2$s the counts. -->
+    <string name="trackers_details">%1$s · %2$s</string>
+    <string name="trackers_top_companies">Top tracker companies</string>
+    <!-- Accessibility label of the click action on a top company row. -->
+    <string name="trackers_open_apps">Open apps</string>
+    <plurals name="trackers_apps_count">
+        <item quantity="one">%1$d app</item>
+        <item quantity="other">%1$d apps</item>
+    </plurals>
+
+    <!-- Tracker categories (AdGuard companiesdb). -->
+    <string name="trackers_category_advertising">Advertising</string>
+    <string name="trackers_category_pornvertising">Adult advertising</string>
+    <string name="trackers_category_site_analytics">Analytics</string>
+    <string name="trackers_category_mobile_analytics">Mobile analytics</string>
+    <string name="trackers_category_telemetry">Telemetry</string>
+    <string name="trackers_category_social_media">Social media</string>
+    <string name="trackers_category_customer_interaction">Customer interaction</string>
+    <string name="trackers_category_audio_video_player">Audio/video player</string>
+    <string name="trackers_category_cdn">CDN</string>
+    <string name="trackers_category_hosting">Hosting</string>
+    <string name="trackers_category_essential">Essential</string>
+    <string name="trackers_category_consent">Consent management</string>
+    <string name="trackers_category_email">Email</string>
+    <string name="trackers_category_comments">Comments</string>
+    <string name="trackers_category_extensions">Extensions</string>
+    <string name="trackers_category_misc">Miscellaneous</string>
+    <string name="trackers_category_unknown">Unknown</string>
+
+    <!-- ===== Custom rules screen ===== -->
+    <string name="rules_title">Custom rules</string>
+    <string name="rules_intro">Rules match the domain and all its subdomains. Allow rules override feeds and block rules. Rules for one app take precedence over these for that app; a blocked app stays blocked.</string>
+    <!-- Button: add an allow rule. -->
+    <string name="rules_allow">Allow</string>
+    <!-- Section titles (shown in capitals). %1$d is the number of rules. -->
+    <string name="rules_section_blocked">Blocked (%1$d)</string>
+    <string name="rules_section_allowed">Allowed (%1$d)</string>
+    <string name="rules_section_per_app">Per-app rules (%1$d)</string>
+    <string name="rules_empty_block_title">No block rules</string>
+    <string name="rules_empty_block_text">Block a domain here or from any connection.</string>
+    <string name="rules_empty_allow_title">No allow rules</string>
+    <string name="rules_empty_allow_text">Allow a domain to exempt it from all feeds.</string>
+    <string name="rules_empty_per_app_title">No per-app rules</string>
+    <string name="rules_empty_per_app_text">Open an app in the Apps tab to block it always, on Wi-Fi, on mobile data, in the background or with the screen off, or to allow or block a domain for that app only.</string>
+    <string name="rules_app_no_network">No network access</string>
+    <!-- %1$s describes the conditions, e.g. "on Wi-Fi, in the background". -->
+    <string name="rules_app_blocked_when">Blocked %1$s</string>
+    <!-- %1$s is the app name. -->
+    <string name="rules_app_domain_blocked">Blocked for %1$s only</string>
+    <string name="rules_app_domain_allowed">Allowed for %1$s only</string>
+    <!-- Content description of the delete icon. %1$s is the domain. -->
+    <string name="rules_remove_for">Remove rule for %1$s</string>
+
+    <!-- ===== Block and allow buttons, domain sheet ===== -->
+    <!-- %1$s is a domain. -->
+    <string name="block_remove_rule">Remove block rule for %1$s</string>
+    <string name="block_remove_rule_covering">Remove block rule for %1$s (covers this name)</string>
+    <string name="block_domain">Block %1$s</string>
+    <string name="block_whole_site">Block the whole site %1$s</string>
+    <!-- %1$s is the app name, %2$s a domain. -->
+    <string name="block_remove_app_block_rule">Remove %1$s\'s block rule for %2$s</string>
+    <string name="block_remove_app_allow_rule">Remove %1$s\'s allow rule for %2$s</string>
+    <!-- %1$s is a domain, %2$s the app name. -->
+    <string name="block_allow_for_app">Allow %1$s for %2$s only</string>
+    <string name="block_block_for_app">Block %1$s for %2$s only</string>
+    <!-- Domain sheet. %1$s is the app name, %2$s the domain of its rule. -->
+    <string name="block_sheet_app_rule_blocks">Your rule for %1$s blocks %2$s (and its subdomains) for this app only.</string>
+    <string name="block_sheet_app_rule_allows">Your rule for %1$s allows %2$s (and its subdomains) for this app only: feeds and global block rules do not apply to it there.</string>
+    <!-- %1$s is the domain of the allow rule. -->
+    <string name="block_sheet_allowed_by_rule">Allowed by your rule for %1$s: feeds and block rules do not apply to it.</string>
+    <string name="block_sheet_why">Why it was blocked</string>
+    <string name="block_sheet_no_blocked_lookup">No blocked lookup of this name is recorded.</string>
+    <!-- %1$s is a domain. -->
+    <string name="block_always_allow">Always allow %1$s</string>
+    <string name="block_allow_hint">An allow rule overrides threat feeds and block rules for this name and its subdomains.</string>
+    <!-- %1$s is the app name. -->
+    <string name="block_allow_hint_app">An allow rule overrides threat feeds and block rules for this name and its subdomains; “for %1$s only” leaves other apps blocked.</string>
+    <string name="block_remove_allow_rule">Remove allow rule for %1$s</string>
+    <string name="block_show_lookups">Show lookups</string>
+    <!-- %1$s is the app name. -->
+    <string name="block_open_app">Open %1$s</string>
+
+    <!-- ===== Why a name or connection was blocked ===== -->
+    <string name="block_reason_none">Blocked (no reason recorded).</string>
+    <!-- Used as %1$s in the reasons below when the app is not known. -->
+    <string name="block_reason_this_app">this app</string>
+    <!-- %1$s is the app name (or block_reason_this_app). "Apps → … → Network access" is the path to the setting. -->
+    <string name="block_reason_app_wifi">Network access of %1$s is blocked while the device is on Wi-Fi (Apps → %1$s → Network access).</string>
+    <string name="block_reason_app_cellular">Network access of %1$s is blocked while the device is on mobile data (Apps → %1$s → Network access).</string>
+    <string name="block_reason_app_background">Network access of %1$s is blocked while it is in the background (Apps → %1$s → Network access).</string>
+    <string name="block_reason_app_screen_off">Network access of %1$s is blocked while the screen is off (Apps → %1$s → Network access).</string>
+    <!-- %2$s is a condition code from the engine, in English. -->
+    <string name="block_reason_app_other">Network access of %1$s is blocked (%2$s) (Apps → %1$s → Network access).</string>
+    <!-- %1$s is the app name, %2$s the domain of the rule. -->
+    <string name="block_reason_app_domain">Your rule for %1$s blocks %2$s (for this app only).</string>
+    <string name="block_reason_app_domain_this_name">Your rule for %1$s blocks this name (for this app only).</string>
+    <string name="block_reason_app_all">All network access is blocked for %1$s (Apps → block all network access).</string>
+    <!-- %1$s is the domain of the rule. -->
+    <string name="block_reason_custom">Your block rule for %1$s (Settings → Custom rules).</string>
+    <string name="block_reason_custom_unnamed">Your block rule (Settings → Custom rules).</string>
+    <!-- %1$s is the feed name, %2$s its category id (malware, c2, phishing, …), %3$s the listed domain or address. -->
+    <string name="block_reason_feed">Listed by the feed “%1$s”.</string>
+    <string name="block_reason_feed_category">Listed by the feed “%1$s” (%2$s).</string>
+    <!-- %1$s is the feed name, %2$s the listed domain or address. -->
+    <string name="block_reason_feed_rule">Listed by the feed “%1$s” as %2$s.</string>
+    <string name="block_reason_feed_category_rule">Listed by the feed “%1$s” (%2$s) as %3$s.</string>
+    <!-- %1$s is the feed id, %2$s the listed fingerprint or label. -->
+    <string name="block_reason_ja4">Its TLS fingerprint is listed by the JA4 feed %1$s, and blocking JA4 matches is on.</string>
+    <string name="block_reason_ja4_rule">Its TLS fingerprint is listed by the JA4 feed %1$s (%2$s), and blocking JA4 matches is on.</string>
+    <!-- Adds a sentence to one of the reasons above (%1$s). %2$s is the listed name the blocked name is an alias of. -->
+    <string name="block_reason_with_cname">%1$s The name is an alias (CNAME) of %2$s, which is listed.</string>
+</resources>

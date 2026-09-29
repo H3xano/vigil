@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The spyware health check screen and its shared report (prefix health_).
+     Calm wording on purpose: the people using it may be under stress. -->
+<resources>
+    <string name="health_title">Health check</string>
+    <string name="health_intro">Checks the apps installed on this phone and the network activity vigil recorded against published indicators of spyware and stalkerware (Amnesty International, Citizen Lab, Echap and others). Everything runs on this phone, offline; nothing is uploaded and the report is not stored.</string>
+
+    <!-- Section headings (shown in capitals). -->
+    <string name="health_heading_before">Before you start</string>
+    <string name="health_heading_findings">Findings</string>
+    <string name="health_heading_next">What to do next</string>
+    <string name="health_heading_checked">What was checked</string>
+    <string name="health_heading_export">Export</string>
+
+    <!-- Readiness -->
+    <string name="health_packs_updating">Updating spyware packs…</string>
+    <string name="health_packs_none">The spyware pack list has not been downloaded yet.</string>
+    <!-- %1$d is the number of packs. -->
+    <plurals name="health_packs_all_off">
+        <item quantity="one">All %1$d spyware packs are off.</item>
+        <item quantity="other">All %1$d spyware packs are off.</item>
+    </plurals>
+    <!-- %1$d is the number downloaded, %2$d the number enabled (selects the plural form). -->
+    <plurals name="health_packs_downloaded">
+        <item quantity="one">%1$d of %2$d enabled spyware pack downloaded.</item>
+        <item quantity="other">%1$d of %2$d enabled spyware packs downloaded.</item>
+    </plurals>
+    <!-- As health_packs_downloaded; %3$s is a relative time such as "2h ago". -->
+    <plurals name="health_packs_downloaded_oldest">
+        <item quantity="one">%1$d of %2$d enabled spyware pack downloaded, oldest updated %3$s.</item>
+        <item quantity="other">%1$d of %2$d enabled spyware packs downloaded, oldest updated %3$s.</item>
+    </plurals>
+    <string name="health_inspection_on">Inspection is on: new connections to known spyware servers raise an alert and are blocked.</string>
+    <string name="health_inspection_off">Inspection is off. The check still covers installed apps and the history recorded so far.</string>
+    <string name="health_packs_downloading">Downloading packs…</string>
+    <string name="health_packs_waiting">Waiting for a network connection…</string>
+    <string name="health_packs_enable_all">Turn on all packs</string>
+    <string name="health_packs_update">Update packs</string>
+
+    <!-- Running the check -->
+    <string name="health_run">Run health check</string>
+    <string name="health_run_again">Run again</string>
+    <string name="health_running">Checking apps and history…</string>
+    <!-- %1$s is the error (often in English, from the system). -->
+    <string name="health_failed">The check could not finish: %1$s</string>
+
+    <!-- What was checked (screen and report). -->
+    <plurals name="health_checked_apps">
+        <item quantity="one">%1$d installed app (package names and signing certificates)</item>
+        <item quantity="other">%1$d installed apps (package names and signing certificates)</item>
+    </plurals>
+    <plurals name="health_checked_destinations">
+        <item quantity="one">%1$d domain or address from the network history</item>
+        <item quantity="other">%1$d domains and addresses from the network history</item>
+    </plurals>
+    <!-- %1$s is a date and time. -->
+    <string name="health_checked_at">Checked %1$s</string>
+
+    <!-- Export -->
+    <string name="health_export_warning">The report names apps and sites from this phone. Share it only with someone you trust, such as a helpline.</string>
+    <!-- Title of the report, also the subject when it is shared. -->
+    <string name="health_report_title">vigil health check report</string>
+    <!-- Title of the system share sheet. -->
+    <string name="health_share_report">Share report</string>
+    <string name="health_share_none">No app can share text</string>
+    <string name="health_share_text">Share as text</string>
+    <string name="health_save_json">Save as JSON file</string>
+    <string name="health_save_no_picker">No file picker available</string>
+    <string name="health_saved">Report saved</string>
+    <string name="health_save_failed">Could not save the report</string>
+
+    <!-- Verdict. The card is read as "Result: <title>. <summary>" by screen readers. -->
+    <string name="health_verdict_found">Indicators found</string>
+    <string name="health_verdict_warnings">Warnings</string>
+    <string name="health_verdict_not_checked">Not checked</string>
+    <string name="health_verdict_none">No known indicators</string>
+    <!-- %1$s is the verdict title, %2$s the summary. -->
+    <string name="health_verdict_description">Result: %1$s. %2$s</string>
+    <!-- %1$d is the number of matches with spyware indicators. -->
+    <plurals name="health_summary_found">
+        <item quantity="one">%1$d match with known spyware or stalkerware indicators. Read the guidance below before acting.</item>
+        <item quantity="other">%1$d matches with known spyware or stalkerware indicators. Read the guidance below before acting.</item>
+    </plurals>
+    <!-- As health_summary_found; %2$s is health_summary_warnings (e.g. "2 warnings"). -->
+    <plurals name="health_summary_found_warnings">
+        <item quantity="one">%1$d match with known spyware or stalkerware indicators, and %2$s. Read the guidance below before acting.</item>
+        <item quantity="other">%1$d matches with known spyware or stalkerware indicators, and %2$s. Read the guidance below before acting.</item>
+    </plurals>
+    <plurals name="health_summary_warnings">
+        <item quantity="one">%1$d warning</item>
+        <item quantity="other">%1$d warnings</item>
+    </plurals>
+    <!-- %1$d is the number of monitoring apps found. -->
+    <plurals name="health_summary_monitoring">
+        <item quantity="one">No known spyware found, but %1$d sign of monitoring apps that deserve a look.</item>
+        <item quantity="other">No known spyware found, but %1$d signs of monitoring apps that deserve a look.</item>
+    </plurals>
+    <string name="health_summary_not_checked">No spyware packs are downloaded, so nothing could be compared.</string>
+    <!-- %1$s is health_summary_apps, %2$s health_summary_destinations. -->
+    <string name="health_summary_none">None of the %1$s and %2$s match the downloaded packs.</string>
+    <plurals name="health_summary_apps">
+        <item quantity="one">%1$d installed app</item>
+        <item quantity="other">%1$d installed apps</item>
+    </plurals>
+    <plurals name="health_summary_destinations">
+        <item quantity="one">%1$d recorded destination</item>
+        <item quantity="other">%1$d recorded destinations</item>
+    </plurals>
+
+    <!-- Finding cards. Tags in capitals (short). -->
+    <string name="health_tag_indicator">INDICATOR</string>
+    <string name="health_tag_warning">WARNING</string>
+    <string name="health_kind_app_package">Installed app</string>
+    <string name="health_kind_app_certificate">App signing certificate</string>
+    <string name="health_kind_network">Network activity</string>
+    <!-- %1$s is the app name, %2$s its package name. -->
+    <string name="health_finding_app">App: %1$s (%2$s)</string>
+    <!-- %1$s is the listed indicator (package, certificate, domain or address), %2$s the name vigil recorded. -->
+    <string name="health_finding_indicator">Indicator: %1$s</string>
+    <string name="health_finding_indicator_seen_as">Indicator: %1$s (seen as %2$s)</string>
+    <!-- %1$d is the number of connections and lookups ("×" means times). -->
+    <plurals name="health_finding_seen">
+        <item quantity="one">Seen %1$d×</item>
+        <item quantity="other">Seen %1$d×</item>
+    </plurals>
+    <!-- As health_finding_seen; %2$d of them were blocked. -->
+    <plurals name="health_finding_seen_blocked">
+        <item quantity="one">Seen %1$d×, %2$d blocked</item>
+        <item quantity="other">Seen %1$d×, %2$d blocked</item>
+    </plurals>
+    <!-- %1$s is a date and time; joined with the lines above by " · " (screen) or ", " (report). -->
+    <string name="health_finding_first">first %1$s</string>
+    <string name="health_finding_last">last %1$s</string>
+    <!-- %1$s is a date and time. -->
+    <string name="health_finding_installed">Installed %1$s</string>
+    <!-- %1$s is the pack name, %2$s its licence. -->
+    <string name="health_finding_source">Source: %1$s</string>
+    <string name="health_finding_source_license">Source: %1$s · %2$s</string>
+    <string name="health_finding_research">Read the research</string>
+
+    <!-- Help organisations; translate only if the organisation uses a name in your language. -->
+    <string name="health_link_access_now">Access Now Digital Security Helpline</string>
+    <string name="health_link_stop_stalkerware">Coalition Against Stalkerware</string>
+    <!-- Accessibility label of a link. %1$s is the URL. -->
+    <string name="health_link_open">Open %1$s</string>
+
+    <!-- What to do next. %1$s and %2$s are web addresses. -->
+    <string name="health_guidance_safety">If you think someone may be monitoring you, think about your safety before acting. Removing an app, resetting the phone or confronting someone can alert the person who installed it. Do not uninstall anything right away.</string>
+    <string name="health_guidance_help">Get help from people who do this every day. Access Now\'s Digital Security Helpline (%1$s) supports journalists, activists and other people at risk, free of charge. The Coalition Against Stalkerware (%2$s) lists support services for people facing stalking or domestic abuse.</string>
+    <string name="health_guidance_keep">Keep this report (Export) and share it only with someone you trust; it records what was found and when.</string>
+    <string name="health_guidance_warnings">A warning about a monitoring app is not necessarily a problem: if you installed it yourself or know why it is there (for example a parental-control app you manage), it is expected.</string>
+    <string name="health_guidance_limits">No known indicators is not proof that the device is safe. The packs only cover spyware that researchers have documented, and vigil only checks the network activity it recorded while inspecting.</string>
+
+    <!-- Limitations of a check (What was checked). %1$s is a list of pack names. -->
+    <string name="health_note_nothing_loaded">No spyware packs are downloaded yet, so nothing could be compared. Turn them on under Threat intelligence (Spyware &amp; stalkerware) and update the feeds, then run the check again.</string>
+    <string name="health_note_stale">Out of date (not updated for over a week): %1$s.</string>
+    <string name="health_note_failed">Last update failed: %1$s.</string>
+    <string name="health_note_missing">Not downloaded yet: %1$s.</string>
+    <string name="health_note_inspection_off">Inspection is off, so vigil is not recording network activity right now; only the recorded history was checked.</string>
+    <string name="health_note_no_history">There is no recorded network history, so only the installed apps were checked.</string>
+    <!-- %1$s is a date and time, %2$d the number of days history is kept (selects the plural form). -->
+    <plurals name="health_note_history">
+        <item quantity="one">Network history checked from %1$s (history is kept %2$d day; learned destinations up to 90 days).</item>
+        <item quantity="other">Network history checked from %1$s (history is kept %2$d days; learned destinations up to 90 days).</item>
+    </plurals>
+
+    <!-- Plain-text report (shared). Keep the line layout. %1$s is a date and time, %2$s the app version. -->
+    <string name="health_report_generated">Generated: %1$s (vigil %2$s)</string>
+    <!-- %1$s is the verdict title. -->
+    <string name="health_report_result">Result: %1$s</string>
+    <!-- Severity in a finding line (lower case). -->
+    <string name="health_report_severity_indicator">indicator</string>
+    <string name="health_report_severity_warning">warning</string>
+    <!-- A finding line: %1$s severity, %2$s spyware or app family, %3$s kind (health_kind_*). -->
+    <string name="health_report_finding">[%1$s] %2$s: %3$s</string>
+    <!-- %1$d is the number of connections and lookups. -->
+    <plurals name="health_report_seen">
+        <item quantity="one">Seen: %1$d time</item>
+        <item quantity="other">Seen: %1$d times</item>
+    </plurals>
+    <plurals name="health_report_blocked">
+        <item quantity="one">%1$d blocked</item>
+        <item quantity="other">%1$d blocked</item>
+    </plurals>
+    <string name="health_report_installed">Installed: %1$s</string>
+    <string name="health_report_source">Source: %1$s</string>
+    <string name="health_report_source_license">Source: %1$s (%2$s)</string>
+    <!-- %1$s is a web address. -->
+    <string name="health_report_reference">Reference: %1$s</string>
+    <string name="health_report_packs">Indicator packs</string>
+    <!-- Pack states (lower case). -->
+    <string name="health_report_pack_off">off</string>
+    <string name="health_report_pack_not_downloaded">not downloaded</string>
+    <string name="health_report_pack_updated">updated %1$s</string>
+    <string name="health_report_pack_updated_stale">updated %1$s (out of date)</string>
+    <plurals name="health_report_count_domains">
+        <item quantity="one">%1$d domain</item>
+        <item quantity="other">%1$d domains</item>
+    </plurals>
+    <plurals name="health_report_count_ips">
+        <item quantity="one">%1$d IP</item>
+        <item quantity="other">%1$d IPs</item>
+    </plurals>
+    <plurals name="health_report_count_apps">
+        <item quantity="one">%1$d app</item>
+        <item quantity="other">%1$d apps</item>
+    </plurals>
+    <plurals name="health_report_count_certs">
+        <item quantity="one">%1$d certificate</item>
+        <item quantity="other">%1$d certificates</item>
+    </plurals>
+    <!-- %1$s is a licence, e.g. "CC BY 4.0 (Echap)". -->
+    <string name="health_report_license">licence %1$s</string>
+    <!-- A pack line: %1$s pack name, %2$s its state and counts, joined with "; ". -->
+    <string name="health_report_pack">%1$s: %2$s</string>
+    <string name="health_report_guidance">Guidance</string>
+</resources>

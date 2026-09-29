@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -47,7 +49,11 @@ class HealthCheckTest {
         now = now, appVersion = "0.5.0", packs = packs, apps = apps, observed = observed,
         historySince = observed.minOfOrNull { it.firstSeen }, retentionDays = 7, inspectionRunning = running,
         appLabel = { if (it == "com.android.chrome") "Chrome" else it },
+        text = ::text,
     )
+
+    /** Stands in for the resources (no Robolectric): each text renders as its resource id and arguments. */
+    private fun text(t: UiText): String = t.toString()
 
     private fun app(pkg: String, vararg certs: String) = InstalledApp(pkg, pkg.substringAfterLast('.'), certs.toList(), firstInstall = now - 3 * day)
 
@@ -58,10 +64,13 @@ class HealthCheckTest {
         assertTrue(r.findings.isEmpty())
         assertEquals(1, r.appsChecked)
         assertEquals(1, r.destinationsChecked)
-        assertTrue(HealthCheck.verdictSummary(r).startsWith("None of the 1 installed apps"))
+        assertEquals(
+            UiText.of(R.string.health_summary_none, UiText.plural(R.plurals.health_summary_apps, 1, 1), UiText.plural(R.plurals.health_summary_destinations, 1, 1)),
+            HealthCheck.verdictSummary(r),
+        )
         // The 20-day-old pack is reported as out of date.
         assertTrue(r.packs.single { it.feedId == pegasus.feedId }.stale)
-        assertTrue(r.notes.any { it.startsWith("Out of date") && "NSO Group Pegasus" in it })
+        assertTrue(text(UiText.of(R.string.health_note_stale, "NSO Group Pegasus")) in r.notes)
     }
 
     @Test
@@ -91,6 +100,7 @@ class HealthCheckTest {
     fun watchwareIsOnlyAWarning() {
         val r = HealthCheck.run(input(apps = listOf(app("com.wondershare.famisafe"))))
         assertEquals(HealthCheck.VERDICT_WARNINGS, r.verdict)
+        assertEquals(UiText.plural(R.plurals.health_summary_monitoring, 1, 1), HealthCheck.verdictSummary(r))
         assertEquals(SpywareSeverity.WARNING, r.findings.single().severity)
         assertEquals("FamiSafe", r.findings.single().label)
     }
@@ -136,28 +146,42 @@ class HealthCheckTest {
         )
         assertEquals(HealthCheck.VERDICT_NOT_CHECKED, off.verdict)
         assertTrue(off.findings.isEmpty())
-        assertTrue(off.notes.first().startsWith("No spyware packs are downloaded"))
-        assertTrue(off.notes.any { it.startsWith("Inspection is off") })
-        assertTrue(off.notes.any { it.startsWith("There is no recorded network history") })
+        assertEquals(text(UiText.of(R.string.health_note_nothing_loaded)), off.notes.first())
+        assertTrue(text(UiText.of(R.string.health_note_inspection_off)) in off.notes)
+        assertTrue(text(UiText.of(R.string.health_note_no_history)) in off.notes)
+        assertEquals(UiText.of(R.string.health_summary_not_checked), HealthCheck.verdictSummary(off))
     }
 
     @Test
     fun exportsTextAndJson() {
         val r = HealthCheck.run(input(apps = listOf(app("com.thetruth")), observed = listOf(obs("bad.example"))))
-        val text = HealthCheck.toText(r)
-        assertTrue(text, text.contains("Result: Indicators found"))
-        assertTrue(text.contains("Generated: 2027-01-15 08:00 UTC (vigil 0.5.0)"))
-        assertTrue(text.contains("App: thetruth (com.thetruth)"))
-        assertTrue(text.contains("Reference: https://www.amnesty.org/x"))
-        // Pack versions (update times) and licences.
-        assertTrue(text.contains("- NSO Group Pegasus: updated 2026-12-26 08:00 UTC (out of date); 1 domains, 1 IPs, 1 certificates; licence CC BY 2.0"))
-        assertTrue(text.contains(HealthCheck.ACCESS_NOW) && text.contains(HealthCheck.STOP_STALKERWARE))
-        assertTrue(text.contains("Do not uninstall anything right away"))
+        // Two indicators (the app and the Pegasus domain), no warnings.
+        assertEquals(UiText.plural(R.plurals.health_summary_found, 2, 2), HealthCheck.verdictSummary(r))
+        val out = HealthCheck.toText(r, ::text)
+        val lines = out.lines()
+        fun has(t: UiText) = assertTrue("${text(t)} in\n$out", text(t) in out)
+        has(UiText.of(R.string.health_report_result, text(UiText.of(R.string.health_verdict_found))))
+        has(UiText.of(R.string.health_report_generated, "2027-01-15 08:00 UTC", "0.5.0"))
+        assertTrue(out, "  " + text(UiText.of(R.string.health_finding_app, "thetruth", "com.thetruth")) in lines)
+        assertTrue(out, "  " + text(UiText.of(R.string.health_report_reference, "https://www.amnesty.org/x")) in lines)
+        // Pack versions (update times), counts and licences.
+        val pack = listOf(
+            text(UiText.of(R.string.health_report_pack_updated_stale, "2026-12-26 08:00 UTC")),
+            listOf(R.plurals.health_report_count_domains, R.plurals.health_report_count_ips, R.plurals.health_report_count_certs)
+                .joinToString(", ") { text(UiText.plural(it, 1, 1L)) },
+            text(UiText.of(R.string.health_report_license, "CC BY 2.0 (Amnesty International)")),
+        ).joinToString("; ")
+        assertTrue(out, "- " + text(UiText.of(R.string.health_report_pack, "NSO Group Pegasus", pack)) in lines)
+        // The guidance, with the helplines' addresses.
+        assertEquals(HealthCheck.GUIDANCE.map(::text), r.guidance)
+        has(UiText.of(R.string.health_guidance_help, HealthCheck.ACCESS_NOW, HealthCheck.STOP_STALKERWARE))
+        has(UiText.of(R.string.health_guidance_safety))
         val json = Json.parseToJsonElement(HealthCheck.toJson(r)).jsonObject
         assertEquals(HealthCheck.VERDICT_FOUND, json["verdict"]!!.jsonPrimitive.content)
         assertEquals(now.toString(), json["generatedAt"]!!.jsonPrimitive.content)
         assertTrue(json["packs"].toString().contains("\"downloadedAt\""))
         assertTrue(json["guidance"].toString().contains("stopstalkerware.org"))
+        assertTrue(json["notes"].toString().contains("NSO Group Pegasus"))
     }
 
     @Test

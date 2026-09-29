@@ -24,10 +24,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.AppDomainRule
 import dev.vigil.inspector.data.AppRules
 import dev.vigil.inspector.data.Settings
@@ -57,14 +59,14 @@ fun BlockDomainButtons(
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (rule != null) {
             OutlinedButton(onClick = { vm.removeRuleWithUndo(rule) }, Modifier.fillMaxWidth()) {
-                Text(if (rule == host.lowercase()) "Remove block rule for $rule" else "Remove block rule for $rule (covers this name)")
+                Text(stringResource(if (rule == host.lowercase()) R.string.block_remove_rule else R.string.block_remove_rule_covering, rule))
             }
         } else {
             DomainNames.blockChoices(host).forEachIndexed { i, name ->
                 if (i == 0) {
-                    Button(onClick = { vm.blockDomain(name) }, Modifier.fillMaxWidth()) { Text("Block $name") }
+                    Button(onClick = { vm.blockDomain(name) }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.block_domain, name)) }
                 } else {
-                    OutlinedButton(onClick = { vm.blockDomain(name) }, Modifier.fillMaxWidth()) { Text("Block the whole site $name") }
+                    OutlinedButton(onClick = { vm.blockDomain(name) }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.block_whole_site, name)) }
                 }
             }
         }
@@ -82,20 +84,20 @@ fun AppDomainRuleButtons(host: String, settings: Settings, vm: MainViewModel, pk
     val appRule = AppRules.matchingDomainRule(settings, pkg, host)
     val name = host.lowercase().trimEnd('.')
     if (appRule != null) {
-        val what = if (appRule.isBlock) "block" else "allow"
+        val text = if (appRule.isBlock) R.string.block_remove_app_block_rule else R.string.block_remove_app_allow_rule
         OutlinedButton(onClick = { vm.removeAppDomainRule(pkg, appRule.domain) }, Modifier.fillMaxWidth()) {
-            Text("Remove $label's $what rule for ${appRule.domain}")
+            Text(stringResource(text, label, appRule.domain))
         }
         return
     }
     if (!DomainNames.isDomainName(name)) return
     if (offerAllow) {
         OutlinedButton(onClick = { vm.setAppDomainRule(pkg, label, name, AppDomainRule.ALLOW) }, Modifier.fillMaxWidth()) {
-            Text("Allow $name for $label only")
+            Text(stringResource(R.string.block_allow_for_app, name, label))
         }
     } else {
         OutlinedButton(onClick = { vm.setAppDomainRule(pkg, label, name, AppDomainRule.BLOCK) }, Modifier.fillMaxWidth()) {
-            Text("Block $name for $label only")
+            Text(stringResource(R.string.block_block_for_app, name, label))
         }
     }
 }
@@ -143,38 +145,38 @@ fun DomainSheet(
             Text(name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             when {
                 appRule != null -> Text(
-                    "Your rule for ${appLabel ?: app} ${if (appRule.isBlock) "blocks" else "allows"} ${appRule.domain} " +
-                        "(and its subdomains) for this app only" +
-                        (if (appRule.isBlock) "." else ": feeds and global block rules do not apply to it there."),
+                    stringResource(
+                        if (appRule.isBlock) R.string.block_sheet_app_rule_blocks else R.string.block_sheet_app_rule_allows,
+                        appLabel ?: app.orEmpty(), appRule.domain,
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (appRule.isBlock) VigilColors.Block else VigilColors.Allow,
                 )
                 allowRule != null -> Text(
-                    "Allowed by your rule for $allowRule: feeds and block rules do not apply to it.",
+                    stringResource(R.string.block_sheet_allowed_by_rule, allowRule),
                     style = MaterialTheme.typography.bodyMedium, color = VigilColors.Allow,
                 )
                 reason != null -> {
-                    Text("Why it was blocked", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.block_sheet_why), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(BlockReasons.explain(reason, feeds, appLabel), style = MaterialTheme.typography.bodyMedium, color = VigilColors.Block)
                 }
-                loaded && loadReason -> Text("No blocked lookup of this name is recorded.", style = MaterialTheme.typography.bodyMedium)
+                loaded && loadReason -> Text(stringResource(R.string.block_sheet_no_blocked_lookup), style = MaterialTheme.typography.bodyMedium)
             }
             Spacer(Modifier.height(4.dp))
             val blocked = reason != null && allowRule == null
             val showBlock = !blocked && allowRule == null
             if (blocked && !BlockReasons.isPerApp(reason)) {
-                Button(onClick = { vm.allowDomainWithUndo(name); onDismiss() }, Modifier.fillMaxWidth()) { Text("Always allow $name") }
+                Button(onClick = { vm.allowDomainWithUndo(name); onDismiss() }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.block_always_allow, name)) }
                 if (app != null && appRule == null) {
                     AppDomainRuleButtons(name, settings, vm, app, appLabel ?: app, offerAllow = true)
                 }
                 Text(
-                    "An allow rule overrides threat feeds and block rules for this name and its subdomains" +
-                        (if (app != null) "; “for ${appLabel ?: app} only” leaves other apps blocked." else "."),
+                    if (app != null) stringResource(R.string.block_allow_hint_app, appLabel ?: app) else stringResource(R.string.block_allow_hint),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (allowRule != null) {
-                OutlinedButton(onClick = { vm.removeRuleWithUndo(allowRule); onDismiss() }, Modifier.fillMaxWidth()) { Text("Remove allow rule for $allowRule") }
+                OutlinedButton(onClick = { vm.removeRuleWithUndo(allowRule); onDismiss() }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.block_remove_allow_rule, allowRule)) }
             }
             if (showBlock) BlockDomainButtons(name, settings, vm, pkg = app, appLabel = appLabel)
             if (!showBlock && appRule != null && app != null) AppDomainRuleButtons(name, settings, vm, app, appLabel ?: app, offerAllow = false)
@@ -183,10 +185,10 @@ fun DomainSheet(
                     vm.showLookups(name)
                     onDismiss()
                     nav.navigateTab("activity")
-                }, Modifier.fillMaxWidth()) { Text("Show lookups") }
+                }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.block_show_lookups)) }
             }
             if (pkg != null && pkg != "unknown") {
-                TextButton(onClick = { onDismiss(); nav.openApp(pkg) }) { Text("Open ${appLabel ?: pkg}") }
+                TextButton(onClick = { onDismiss(); nav.openApp(pkg) }) { Text(stringResource(R.string.block_open_app, appLabel ?: pkg)) }
             }
             Spacer(Modifier.height(16.dp))
         }

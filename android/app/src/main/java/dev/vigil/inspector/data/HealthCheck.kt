@@ -1,5 +1,8 @@
 package dev.vigil.inspector.data
 
+import androidx.annotation.StringRes
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.vpn.IpLiteral
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -81,9 +84,10 @@ data class HealthReport(
     val historySince: Long? = null,
     val retentionDays: Int,
     val inspectionRunning: Boolean,
-    /** Limitations of this check (stale packs, inspection off, short history). */
+    /** Limitations of this check (stale packs, inspection off, short history), in the app's language. */
     val notes: List<String> = emptyList(),
-    val guidance: List<String> = HealthCheck.GUIDANCE,
+    /** [HealthCheck.GUIDANCE] in the app's language. */
+    val guidance: List<String> = emptyList(),
 )
 
 /**
@@ -108,17 +112,12 @@ object HealthCheck {
     const val ACCESS_NOW = "https://www.accessnow.org/help/"
     const val STOP_STALKERWARE = "https://stopstalkerware.org/"
 
-    val GUIDANCE = listOf(
-        "If you think someone may be monitoring you, think about your safety before acting. Removing an app, resetting " +
-            "the phone or confronting someone can alert the person who installed it. Do not uninstall anything right away.",
-        "Get help from people who do this every day. Access Now's Digital Security Helpline ($ACCESS_NOW) supports " +
-            "journalists, activists and other people at risk, free of charge. The Coalition Against Stalkerware " +
-            "($STOP_STALKERWARE) lists support services for people facing stalking or domestic abuse.",
-        "Keep this report (Export) and share it only with someone you trust; it records what was found and when.",
-        "A warning about a monitoring app is not necessarily a problem: if you installed it yourself or know why it is " +
-            "there (for example a parental-control app you manage), it is expected.",
-        "No known indicators is not proof that the device is safe. The packs only cover spyware that researchers have " +
-            "documented, and vigil only checks the network activity it recorded while inspecting.",
+    val GUIDANCE: List<UiText> = listOf(
+        UiText.of(R.string.health_guidance_safety),
+        UiText.of(R.string.health_guidance_help, ACCESS_NOW, STOP_STALKERWARE),
+        UiText.of(R.string.health_guidance_keep),
+        UiText.of(R.string.health_guidance_warnings),
+        UiText.of(R.string.health_guidance_limits),
     )
 
     class Input(
@@ -134,6 +133,8 @@ object HealthCheck {
         val inspectionRunning: Boolean,
         /** App labels for packages of the network history (default: the package). */
         val appLabel: (String) -> String = { it },
+        /** Resolves the report's notes and guidance in the app's language (the report is exported as is). */
+        val text: (UiText) -> String,
     )
 
     private class Ref(val group: SpywareGroup, val pack: SpywarePack)
@@ -231,30 +232,26 @@ object HealthCheck {
             generatedAt = input.now, appVersion = input.appVersion, verdict = verdict, findings = sorted, packs = packs,
             appsChecked = input.apps.size, destinationsChecked = names.size, historySince = input.historySince,
             retentionDays = input.retentionDays, inspectionRunning = input.inspectionRunning,
-            notes = notes(input, packs, loaded.isEmpty()),
+            notes = notes(input, packs, loaded.isEmpty()).map(input.text),
+            guidance = GUIDANCE.map(input.text),
         )
     }
 
-    private fun notes(input: Input, packs: List<HealthPackStatus>, nothingLoaded: Boolean): List<String> {
-        val out = ArrayList<String>()
-        if (nothingLoaded) {
-            out += "No spyware packs are downloaded yet, so nothing could be compared. Turn them on under Threat intelligence " +
-                "(Spyware & stalkerware) and update the feeds, then run the check again."
-        }
+    /** Limitations of a check. */
+    fun notes(input: Input, packs: List<HealthPackStatus>, nothingLoaded: Boolean): List<UiText> {
+        val out = ArrayList<UiText>()
+        if (nothingLoaded) out += UiText.of(R.string.health_note_nothing_loaded)
         val stale = packs.filter { it.stale }
-        if (stale.isNotEmpty()) out += "Out of date (not updated for over a week): ${stale.joinToString(", ") { it.name }}."
+        if (stale.isNotEmpty()) out += UiText.of(R.string.health_note_stale, stale.joinToString(", ") { it.name })
         val failing = packs.filter { it.enabled && it.lastError != null }
-        if (failing.isNotEmpty()) out += "Last update failed: ${failing.joinToString(", ") { it.name }}."
+        if (failing.isNotEmpty()) out += UiText.of(R.string.health_note_failed, failing.joinToString(", ") { it.name })
         val missing = packs.filter { it.enabled && it.downloadedAt == null }
-        if (missing.isNotEmpty() && !nothingLoaded) out += "Not downloaded yet: ${missing.joinToString(", ") { it.name }}."
-        if (!input.inspectionRunning) {
-            out += "Inspection is off, so vigil is not recording network activity right now; only the recorded history was checked."
-        }
+        if (missing.isNotEmpty() && !nothingLoaded) out += UiText.of(R.string.health_note_missing, missing.joinToString(", ") { it.name })
+        if (!input.inspectionRunning) out += UiText.of(R.string.health_note_inspection_off)
         out += if (input.historySince == null) {
-            "There is no recorded network history, so only the installed apps were checked."
+            UiText.of(R.string.health_note_no_history)
         } else {
-            "Network history checked from ${formatTime(input.historySince)} (history is kept ${input.retentionDays} days; " +
-                "learned destinations up to 90 days)."
+            UiText.plural(R.plurals.health_note_history, input.retentionDays, formatTime(input.historySince), input.retentionDays)
         }
         return out
     }
@@ -304,78 +301,100 @@ object HealthCheck {
 
     fun toJson(report: HealthReport): String = json.encodeToString(HealthReport.serializer(), report)
 
-    fun verdictTitle(verdict: String) = when (verdict) {
-        VERDICT_FOUND -> "Indicators found"
-        VERDICT_WARNINGS -> "Warnings"
-        VERDICT_NOT_CHECKED -> "Not checked"
-        else -> "No known indicators"
+    @StringRes
+    fun verdictTitle(verdict: String): Int = when (verdict) {
+        VERDICT_FOUND -> R.string.health_verdict_found
+        VERDICT_WARNINGS -> R.string.health_verdict_warnings
+        VERDICT_NOT_CHECKED -> R.string.health_verdict_not_checked
+        else -> R.string.health_verdict_none
     }
 
-    fun verdictSummary(r: HealthReport): String {
+    fun verdictSummary(r: HealthReport): UiText {
         val indicators = r.findings.count { it.severity == SpywareSeverity.INDICATOR }
         val warnings = r.findings.size - indicators
         return when (r.verdict) {
-            VERDICT_FOUND -> "$indicators ${plural(indicators, "match", "matches")} with known spyware or stalkerware indicators" +
-                (if (warnings > 0) ", and $warnings ${plural(warnings, "warning", "warnings")}" else "") + ". Read the guidance below before acting."
-            VERDICT_WARNINGS -> "No known spyware found, but $warnings ${plural(warnings, "sign", "signs")} of monitoring apps that deserve a look."
-            VERDICT_NOT_CHECKED -> "No spyware packs are downloaded, so nothing could be compared."
-            else -> "None of the ${r.appsChecked} installed apps and ${r.destinationsChecked} recorded destinations match the downloaded packs."
+            VERDICT_FOUND -> if (warnings > 0) {
+                UiText.plural(R.plurals.health_summary_found_warnings, indicators, indicators, UiText.plural(R.plurals.health_summary_warnings, warnings, warnings))
+            } else {
+                UiText.plural(R.plurals.health_summary_found, indicators, indicators)
+            }
+            VERDICT_WARNINGS -> UiText.plural(R.plurals.health_summary_monitoring, warnings, warnings)
+            VERDICT_NOT_CHECKED -> UiText.of(R.string.health_summary_not_checked)
+            else -> UiText.of(
+                R.string.health_summary_none,
+                UiText.plural(R.plurals.health_summary_apps, r.appsChecked, r.appsChecked),
+                UiText.plural(R.plurals.health_summary_destinations, r.destinationsChecked, r.destinationsChecked),
+            )
         }
     }
 
-    private fun plural(n: Int, one: String, many: String) = if (n == 1) one else many
-
-    fun kindTitle(kind: String) = when (kind) {
-        KIND_APP_PACKAGE -> "Installed app"
-        KIND_APP_CERTIFICATE -> "App signing certificate"
-        else -> "Network activity"
+    @StringRes
+    fun kindTitle(kind: String): Int = when (kind) {
+        KIND_APP_PACKAGE -> R.string.health_kind_app_package
+        KIND_APP_CERTIFICATE -> R.string.health_kind_app_certificate
+        else -> R.string.health_kind_network
     }
 
-    /** A plain-text report for sharing. */
-    fun toText(r: HealthReport): String = buildString {
-        appendLine("vigil health check report")
-        appendLine("Generated: ${formatTime(r.generatedAt)} (vigil ${r.appVersion})")
+    /** A plain-text report for sharing, in the language of [text]. */
+    fun toText(r: HealthReport, text: (UiText) -> String): String = buildString {
+        fun t(@StringRes id: Int, vararg args: Any) = text(UiText.of(id, *args))
+        fun count(id: Int, n: Long) = text(UiText.plural(id, n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), n))
+        appendLine(t(R.string.health_report_title))
+        appendLine(t(R.string.health_report_generated, formatTime(r.generatedAt), r.appVersion))
         appendLine()
-        appendLine("Result: ${verdictTitle(r.verdict)}")
-        appendLine(verdictSummary(r))
+        appendLine(t(R.string.health_report_result, text(UiText.of(verdictTitle(r.verdict)))))
+        appendLine(text(verdictSummary(r)))
         appendLine()
         if (r.findings.isNotEmpty()) {
-            appendLine("Findings")
+            appendLine(t(R.string.health_heading_findings))
             for (f in r.findings) {
-                appendLine("- [${if (f.severity == SpywareSeverity.INDICATOR) "indicator" else "warning"}] ${f.label}: ${kindTitle(f.kind)}")
-                f.pkg?.let { appendLine("  App: ${f.appLabel ?: it} ($it)") }
-                appendLine("  Indicator: ${f.indicator}" + (f.observed?.let { " (seen as $it)" } ?: ""))
+                val severity = t(if (f.severity == SpywareSeverity.INDICATOR) R.string.health_report_severity_indicator else R.string.health_report_severity_warning)
+                appendLine("- " + t(R.string.health_report_finding, severity, f.label, t(kindTitle(f.kind))))
+                f.pkg?.let { appendLine("  " + t(R.string.health_finding_app, f.appLabel ?: it, it)) }
+                appendLine(
+                    "  " + if (f.observed != null) t(R.string.health_finding_indicator_seen_as, f.indicator, f.observed)
+                    else t(R.string.health_finding_indicator, f.indicator),
+                )
                 if (f.kind == KIND_NETWORK) {
-                    appendLine(
-                        "  Seen: ${f.count ?: 0} times" + (f.blocked?.takeIf { it > 0 }?.let { ", $it blocked" } ?: "") +
-                            (f.firstSeen?.let { ", first ${formatTime(it)}" } ?: "") + (f.lastSeen?.let { ", last ${formatTime(it)}" } ?: ""),
+                    val seen = listOfNotNull(
+                        count(R.plurals.health_report_seen, f.count ?: 0),
+                        f.blocked?.takeIf { it > 0 }?.let { count(R.plurals.health_report_blocked, it) },
+                        f.firstSeen?.let { t(R.string.health_finding_first, formatTime(it)) },
+                        f.lastSeen?.let { t(R.string.health_finding_last, formatTime(it)) },
                     )
+                    appendLine("  " + seen.joinToString(", "))
                 } else {
-                    f.firstSeen?.let { appendLine("  Installed: ${formatTime(it)}") }
+                    f.firstSeen?.let { appendLine("  " + t(R.string.health_report_installed, formatTime(it))) }
                 }
-                appendLine("  Source: ${f.packName}" + (f.license?.let { " ($it)" } ?: ""))
-                f.reference?.let { appendLine("  Reference: $it") }
+                appendLine(
+                    "  " + if (f.license != null) t(R.string.health_report_source_license, f.packName, f.license)
+                    else t(R.string.health_report_source, f.packName),
+                )
+                f.reference?.let { appendLine("  " + t(R.string.health_report_reference, it)) }
             }
             appendLine()
         }
-        appendLine("What was checked")
-        appendLine("- ${r.appsChecked} installed apps (package names and signing certificates)")
-        appendLine("- ${r.destinationsChecked} domains and addresses from the network history")
+        appendLine(t(R.string.health_heading_checked))
+        appendLine("- " + text(UiText.plural(R.plurals.health_checked_apps, r.appsChecked, r.appsChecked)))
+        appendLine("- " + text(UiText.plural(R.plurals.health_checked_destinations, r.destinationsChecked, r.destinationsChecked)))
         for (n in r.notes) appendLine("- $n")
         appendLine()
-        appendLine("Indicator packs")
+        appendLine(t(R.string.health_report_packs))
         for (p in r.packs) {
             val state = when {
-                !p.enabled -> "off"
-                p.downloadedAt == null -> "not downloaded"
-                else -> "updated ${formatTime(p.downloadedAt)}" + if (p.stale) " (out of date)" else ""
+                !p.enabled -> t(R.string.health_report_pack_off)
+                p.downloadedAt == null -> t(R.string.health_report_pack_not_downloaded)
+                else -> t(if (p.stale) R.string.health_report_pack_updated_stale else R.string.health_report_pack_updated, formatTime(p.downloadedAt))
             }
-            val counts = listOf(p.domains to "domains", p.ips to "IPs", p.apps to "apps", p.certs to "certificates")
-                .filter { it.first > 0 }.joinToString(", ") { "${it.first} ${it.second}" }
-            appendLine("- ${p.name}: $state" + (if (counts.isNotEmpty()) "; $counts" else "") + (p.license?.let { "; licence $it" } ?: ""))
+            val counts = listOf(
+                p.domains to R.plurals.health_report_count_domains, p.ips to R.plurals.health_report_count_ips,
+                p.apps to R.plurals.health_report_count_apps, p.certs to R.plurals.health_report_count_certs,
+            ).filter { it.first > 0 }.joinToString(", ") { count(it.second, it.first.toLong()) }
+            val details = listOfNotNull(state, counts.ifEmpty { null }, p.license?.let { t(R.string.health_report_license, it) })
+            appendLine("- " + t(R.string.health_report_pack, p.name, details.joinToString("; ")))
         }
         appendLine()
-        appendLine("Guidance")
+        appendLine(t(R.string.health_report_guidance))
         for (g in r.guidance) appendLine("- $g")
     }
 

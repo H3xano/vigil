@@ -1,5 +1,6 @@
 package dev.vigil.inspector.ui
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.AlertEntity
 import dev.vigil.inspector.data.AlertMute
 import dev.vigil.inspector.data.AlertMutes
@@ -69,27 +70,42 @@ class BlockingTest {
     @Test
     fun blockReasonsInPlainWords() {
         val feeds = listOf(FeedEntity("urlhaus", "URLhaus", "https://x", "malware", enabled = true, builtin = true))
-        assertEquals("Listed by the feed “URLhaus” (malware) as bad.example.", BlockReasons.explain("feed:urlhaus (bad.example)", feeds))
-        assertEquals("Listed by the feed “other” as x.example.", BlockReasons.explain("feed:other (x.example)", feeds))
-        assertEquals("Your block rule for example.com (Settings → Custom rules).", BlockReasons.explain("custom (example.com)", feeds))
-        assertTrue(BlockReasons.explain("app", feeds, "Chrome").contains("Chrome"))
-        assertTrue(BlockReasons.explain("feed:urlhaus (tracker.example via CNAME t.tracker.example)", feeds).contains("alias (CNAME) of t.tracker.example"))
-        assertTrue(BlockReasons.explain(null, feeds).startsWith("Blocked"))
+        assertEquals(
+            UiText.of(R.string.block_reason_feed_category_rule, UiText.Raw("URLhaus"), "malware", "bad.example"),
+            BlockReasons.explainText("feed:urlhaus (bad.example)", feeds),
+        )
+        assertEquals(UiText.of(R.string.block_reason_feed_rule, UiText.Raw("other"), "x.example"), BlockReasons.explainText("feed:other (x.example)", feeds))
+        assertEquals(UiText.of(R.string.block_reason_feed, UiText.Raw("other")), BlockReasons.explainText("feed:other", feeds))
+        assertEquals(UiText.of(R.string.block_reason_custom, "example.com"), BlockReasons.explainText("custom (example.com)", feeds))
+        assertEquals(UiText.of(R.string.block_reason_app_all, "Chrome"), BlockReasons.explainText("app", feeds, "Chrome"))
+        assertEquals(
+            UiText.of(
+                R.string.block_reason_with_cname,
+                UiText.of(R.string.block_reason_feed_category_rule, UiText.Raw("URLhaus"), "malware", "tracker.example"),
+                "t.tracker.example",
+            ),
+            BlockReasons.explainText("feed:urlhaus (tracker.example via CNAME t.tracker.example)", feeds),
+        )
+        assertEquals(
+            UiText.of(R.string.block_reason_ja4_rule, "foxio", "Sliver"),
+            BlockReasons.explainText("ja4:foxio (Sliver)", feeds),
+        )
+        assertEquals(UiText.of(R.string.block_reason_none), BlockReasons.explainText(null, feeds))
+        assertEquals(UiText.Raw("encrypted_dns"), BlockReasons.explainText("encrypted_dns", feeds))
     }
 
     @Test
     fun perAppReasons() {
         val feeds = emptyList<FeedEntity>()
+        val thisApp = UiText.of(R.string.block_reason_this_app)
+        assertEquals(UiText.of(R.string.block_reason_app_background, "Chrome"), BlockReasons.explainText("app rule: background", feeds, "Chrome"))
+        assertEquals(UiText.of(R.string.block_reason_app_wifi, "Chrome"), BlockReasons.explainText("app rule: wifi", feeds, "Chrome"))
+        assertEquals(UiText.of(R.string.block_reason_app_cellular, thisApp), BlockReasons.explainText("app rule: cellular", feeds))
+        assertEquals(UiText.of(R.string.block_reason_app_screen_off, thisApp), BlockReasons.explainText("app rule: screen off", feeds))
+        assertEquals(UiText.of(R.string.block_reason_app_other, thisApp, "new"), BlockReasons.explainText("app rule: new", feeds))
         assertEquals(
-            "Network access of Chrome is blocked while it is in the background (Apps → Chrome → Network access).",
-            BlockReasons.explain("app rule: background", feeds, "Chrome"),
-        )
-        assertTrue(BlockReasons.explain("app rule: wifi", feeds, "Chrome").contains("on Wi-Fi"))
-        assertTrue(BlockReasons.explain("app rule: cellular", feeds).contains("mobile data"))
-        assertTrue(BlockReasons.explain("app rule: screen off", feeds).contains("screen is off"))
-        assertEquals(
-            "Your rule for Chrome blocks ads.example.com (for this app only).",
-            BlockReasons.explain("app domain rule (ads.example.com)", feeds, "Chrome"),
+            UiText.of(R.string.block_reason_app_domain, "Chrome", "ads.example.com"),
+            BlockReasons.explainText("app domain rule (ads.example.com)", feeds, "Chrome"),
         )
         for (r in listOf("app", "app rule: wifi", "app domain rule (x.example)")) assertTrue(r, BlockReasons.isPerApp(r))
         for (r in listOf(null, "custom (x.example)", "feed:urlhaus (x.example)", "encrypted_dns")) assertFalse("$r", BlockReasons.isPerApp(r))

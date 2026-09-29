@@ -76,6 +76,7 @@ class HealthCheckViewModel(application: Application) : AndroidViewModel(applicat
                 retentionDays = app.settings.value.retentionDays,
                 inspectionRunning = ServiceState.status.value is VpnStatus.Running,
                 appLabel = { key -> labels.getOrPut(key) { app.apps.byKey(key).label } },
+                text = { it.resolve(app) },
             ),
         )
     }
