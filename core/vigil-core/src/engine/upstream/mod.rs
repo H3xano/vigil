@@ -300,9 +300,28 @@ impl Dialer {
     }
 
     /// Whether traffic to `dst` bypasses the tunnel: outside AllowedIPs, or
-    /// the tunnel is down and fail-open.
-    fn wg_bypass(&self, t: &WgTunnel, dst: SocketAddr) -> bool {
-        !t.routes(dst.ip()) || (!self.fail_closed && t.is_down())
+    /// the tunnel is down and fail-open. With fail_closed, a destination
+    /// whose whole address family AllowedIPs leave out (e.g. IPv6 with only
+    /// `0.0.0.0/0`) is refused instead of leaking under the real address;
+    /// only a split tunnel within a routed family bypasses.
+    fn wg_bypass(&self, t: &WgTunnel, dst: SocketAddr) -> io::Result<bool> {
+        if t.routes(dst.ip()) {
+            return Ok(!self.fail_closed && t.is_down());
+        }
+        if self.fail_closed && !t.routes_family(dst.ip()) {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!(
+                    "wireguard: AllowedIPs route no IPv{} (fail_closed)",
+                    if dst.ip().to_canonical().is_ipv4() {
+                        4
+                    } else {
+                        6
+                    }
+                ),
+            ));
+        }
+        Ok(true)
     }
 
     async fn connect_tcp(
@@ -342,7 +361,7 @@ impl Dialer {
                 }
             }
             Path::Wireguard(t) => {
-                if self.wg_bypass(t, dst) {
+                if self.wg_bypass(t, dst)? {
                     return direct_tcp(platform, dst).await;
                 }
                 t.connect_tcp(dst).await.map(UpstreamTcp::Wireguard)
@@ -369,7 +388,7 @@ impl Dialer {
                 Err(e) => Err(e),
             },
             Path::Wireguard(t) => {
-                if self.wg_bypass(t, dst) {
+                if self.wg_bypass(t, dst)? {
                     return direct_udp(platform, dst).await;
                 }
                 t.connect_udp(dst).map(UpstreamUdp::Wireguard)
@@ -860,6 +879,81 @@ mod tests {
         cfg.network_id = "net-2".into();
         shared.upstream.apply(&cfg, &shared.platform);
         assert_eq!(shared.upstream.generation(), gen);
+    }
+
+    fn wg_cfg(allowed: &[&str], fail_closed: bool) -> UpstreamConfig {
+        use crate::config::upstream::{keypair_from, WireGuardConfig};
+        let (private, _) = keypair_from([3; 32]);
+        let (_, peer) = keypair_from([9; 32]);
+        UpstreamConfig {
+            mode: UpstreamMode::Wireguard,
+            fail_closed,
+            wireguard: Some(WireGuardConfig {
+                private_key: private,
+                peer_public_key: peer,
+                // Nobody answers: only the routing decision matters here.
+                endpoint: "127.0.0.1:9".into(),
+                addresses: vec!["10.9.0.2/32".into()],
+                allowed_ips: allowed.iter().map(|s| s.to_string()).collect(),
+                mtu: 1420,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn wireguard_fail_closed_refuses_unrouted_address_families() {
+        let v6 = TcpListener::bind("[::1]:0").await.unwrap();
+        let v6_dst = v6.local_addr().unwrap();
+        let v4 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let v4_dst = v4.local_addr().unwrap();
+        tokio::spawn(async move { while v6.accept().await.is_ok() {} });
+        tokio::spawn(async move { while v4.accept().await.is_ok() {} });
+        let shared = test_shared(Config::default());
+
+        // A provider config: all IPv4, no IPv6 at all. IPv6 would leak under
+        // the real address; fail_closed refuses it (TCP, UDP, and so DNS).
+        shared
+            .upstream
+            .apply(&wg_cfg(&["0.0.0.0/0"], true), &shared.platform);
+        assert_eq!(shared.upstream.via(), "wireguard");
+        let e = connect_tcp(&shared, v6_dst).await.err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::AddrNotAvailable, "{e}");
+        assert!(e.to_string().contains("IPv6"), "{e}");
+        let e = connect_relay(&shared, v6_dst).await.err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::AddrNotAvailable, "{e}");
+        let e = connect_udp(&shared, "[::1]:53".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::AddrNotAvailable, "{e}");
+
+        // Fail-open: the unrouted family goes direct, as before.
+        shared
+            .upstream
+            .apply(&wg_cfg(&["0.0.0.0/0"], false), &shared.platform);
+        assert_eq!(connect_tcp(&shared, v6_dst).await.unwrap().via(), "direct");
+
+        // A split tunnel within a routed family keeps bypassing, also with
+        // fail_closed: 127.0.0.1 is outside 10.0.0.0/8.
+        shared
+            .upstream
+            .apply(&wg_cfg(&["10.0.0.0/8"], true), &shared.platform);
+        assert_eq!(connect_tcp(&shared, v4_dst).await.unwrap().via(), "direct");
+        let u = connect_udp(&shared, "127.0.0.1:9".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(u.via(), "direct");
+        // ... but IPv6, which it does not route at all, is refused.
+        let e = connect_tcp(&shared, v6_dst).await.err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::AddrNotAvailable, "{e}");
+
+        // Both families routed (split within each): bypass both.
+        shared
+            .upstream
+            .apply(&wg_cfg(&["10.0.0.0/8", "fd00::/8"], true), &shared.platform);
+        assert_eq!(connect_tcp(&shared, v6_dst).await.unwrap().via(), "direct");
     }
 
     #[tokio::test]

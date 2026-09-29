@@ -252,8 +252,12 @@ receive-with-callback), and says which path it took (`via`).
   address is kept if the lookup fails).
 - **fail closed** (default): errors are returned, never replaced by a direct
   connection. With `fail_closed: false` the dialer goes direct while the path
-  is down. WireGuard destinations outside AllowedIPs always go direct, as
-  wg-quick routes them.
+  is down. WireGuard destinations outside AllowedIPs go direct, as
+  wg-quick routes them (a split tunnel), except that with `fail_closed` a
+  destination whose whole address family AllowedIPs leave out (IPv6 with a
+  typical `AllowedIPs = 0.0.0.0/0`) is refused (`AddrNotAvailable`) rather
+  than sent under the real address. This covers relayed TCP, UDP flows and
+  upstream DNS (plain, DoT, DoH) alike.
 
 Loopback proxies work: sockets to 127.0.0.1 are protected like any other,
 and the loopback route precedes the VPN's routing rules. A proxy *app* on

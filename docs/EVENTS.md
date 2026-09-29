@@ -118,8 +118,9 @@ never used for blocking.
 
 `via` is the upstream path of the flow's own connection (see `upstream`
 below): `direct`, `wireguard` or `socks5`. It is `direct` in the tunnel and
-proxy modes too for destinations outside the WireGuard peer's AllowedIPs,
-and when the path is down with `fail_closed: false`. It is null when no
+proxy modes too for destinations outside the WireGuard peer's AllowedIPs
+(with `fail_closed`, only within an address family AllowedIPs route at
+all: an IPv6 destination when they route no IPv6 is refused), and when the path is down with `fail_closed: false`. It is null when no
 upstream connection was attempted (TCP flows blocked at the SYN gate, UDP
 and QUIC flows blocked by policy or JA4). TCP flows blocked after the sniff
 (by SNI, Host or JA4) name the path of the connection made at the SYN gate,
@@ -593,7 +594,7 @@ connections of `encrypted_dns`. Inspection is the same in every mode.
 | `wireguard.private_key`, `peer_public_key`, `preshared_key` | | base64 X25519 keys (32 bytes); the pre-shared key is optional (null, absent or empty). |
 | `wireguard.endpoint` | | `host:port` or `[v6]:port`. Host names are resolved when the tunnel starts, on roaming and every 30 s while handshakes fail. IPv4 answers are preferred. A lookup has 5 s; when it fails the last address is kept. |
 | `wireguard.addresses` | | Tunnel addresses (CIDR; a bare address is a host route). At most one IPv4 and one IPv6. Destinations of a family without an address fail (apps fall back to the other family). |
-| `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct. Inner packets from other sources are dropped. |
+| `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct, except that with `fail_closed` destinations of an address family with no entry at all (e.g. IPv6 with only `0.0.0.0/0`) are refused. Inner packets from other sources are dropped. |
 | `wireguard.mtu` | 1420 | Tunnel MTU, 576..=65535 (the app sends 1280 unless the `.conf` sets one). |
 | `wireguard.persistent_keepalive` | 0 | Seconds between keepalives (0 = off). |
 | `socks5.server` | | `host:port` of the proxy (loopback works, e.g. Orbot's `127.0.0.1:9050`). A host name is looked up with a 3 s timeout and the address reused for 5 min, or until connecting to it fails; when a lookup fails the last address is used. |
