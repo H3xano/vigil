@@ -31,7 +31,7 @@ Binaries: https://github.com/H3xano/vigil/releases/download/v%v/vigil-%v.apk
 Builds:
   - versionName: 0.5.1
     versionCode: 501
-    commit: v0.5.1
+    commit: c76d714dc353a52b62e2d5289d280341383d9b20  # v0.5.1 (fdroiddata requires the full hash)
     subdir: android/app
     sudo:
       - apt-get update

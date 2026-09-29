@@ -182,7 +182,7 @@ Gotchas).
    workspace version, then `cargo metadata --offline` to refresh the three
    vigil entries in `Cargo.lock` (check the lock diff touches only those),
    and `packaging/fdroid/dev.vigil.inspector.yml` (versionName/Code, commit
-   tag, CurrentVersion/Code, APK name).
+   hash of the tag, full 40 characters, CurrentVersion/Code, APK name).
 2. Store changelog `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`
    (≤ 500 characters); rename `## Unreleased` in CHANGELOG.md to
    `## X.Y.Z (date): GitHub pre-release`; update STATUS.md (header, release
