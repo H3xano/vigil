@@ -22,6 +22,7 @@ pub use ring::Dir;
 pub use stream::StreamStats;
 
 use crate::config::CaptureConfig;
+use crate::platform::Platform;
 use parking_lot::Mutex;
 use ring::{RecordHeader, Ring};
 use serde::{Deserialize, Serialize};
@@ -286,7 +287,7 @@ impl Capture {
     /// open); disabling frees it and discards what it held; a new size
     /// keeps the newest packets that fit. Starts or stops the stream server
     /// (call inside the runtime).
-    pub fn apply(&self, cfg: &CaptureConfig) -> bool {
+    pub fn apply(&self, cfg: &CaptureConfig, platform: &Arc<dyn Platform>) -> bool {
         let mut newly_on = false;
         {
             let mut ring = self.ring.lock();
@@ -321,7 +322,7 @@ impl Capture {
         let stream = cfg.enabled && cfg.stream.enabled;
         self.stream_on.store(stream, Relaxed);
         self.stream
-            .apply(stream.then_some((&cfg.stream, cfg.snaplen)));
+            .apply(stream.then_some((&cfg.stream, cfg.snaplen)), platform);
         newly_on
     }
 
@@ -473,17 +474,24 @@ mod tests {
     use super::*;
     use crate::packet::{self, PROTO_TCP, PROTO_UDP};
 
+    fn null() -> Arc<dyn Platform> {
+        Arc::new(crate::platform::NullPlatform)
+    }
+
     fn sa(s: &str) -> SocketAddr {
         s.parse().unwrap()
     }
 
     fn on(buffer: u64) -> Capture {
         let c = Capture::default();
-        assert!(c.apply(&CaptureConfig {
-            enabled: true,
-            buffer_bytes: buffer,
-            ..Default::default()
-        }));
+        assert!(c.apply(
+            &CaptureConfig {
+                enabled: true,
+                buffer_bytes: buffer,
+                ..Default::default()
+            },
+            &null()
+        ));
         c
     }
 
@@ -703,26 +711,32 @@ mod tests {
         );
         assert!(!sum.truncated_by_ring && sum.packets == 0);
         // Bigger ring: everything held is kept.
-        c.apply(&CaptureConfig {
-            enabled: true,
-            buffer_bytes: 1 << 20,
-            ..Default::default()
-        });
+        c.apply(
+            &CaptureConfig {
+                enabled: true,
+                buffer_bytes: 1 << 20,
+                ..Default::default()
+            },
+            &null(),
+        );
         let s2 = c.stats();
         assert_eq!(s2.buffered_packets, s.buffered_packets);
         assert_eq!(s2.dropped, s.dropped);
         // Smaller snap length: packets are cut, the original length kept.
-        c.apply(&CaptureConfig {
-            enabled: true,
-            buffer_bytes: 1 << 20,
-            snaplen: 100,
-            ..Default::default()
-        });
+        c.apply(
+            &CaptureConfig {
+                enabled: true,
+                buffer_bytes: 1 << 20,
+                snaplen: 100,
+                ..Default::default()
+            },
+            &null(),
+        );
         c.record(&p, Dir::ToApp);
         let (_, pkts) = export(&c, &CaptureFilter::default());
         assert_eq!(pkts.last().unwrap().1, p[..100].to_vec());
         // Off: the ring and bindings are discarded.
-        assert!(!c.apply(&CaptureConfig::default()));
+        assert!(!c.apply(&CaptureConfig::default(), &null()));
         assert_eq!(c.stats(), CaptureStats::default());
         c.record(&p, Dir::FromApp);
         assert_eq!(export(&c, &CaptureFilter::default()).0.packets, 0);

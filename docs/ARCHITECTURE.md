@@ -188,7 +188,13 @@ off, the only cost is one relaxed atomic load per packet.
   queue per client (8192 packets / 8 MiB); a slow client loses packets
   (`stats.capture.stream.dropped`) and never slows traffic. At most two
   clients; others, and addresses outside the allowlist, are disconnected at
-  once. The sockets belong to the app process, which is excluded from its
+  once. A client on the device itself (loopback, or a peer address that is
+  one of the device's own) is looked up with `Platform::owner_uid` (off the
+  async workers) and accepted only for UID 2000 (shell, `adb forward`) or 0
+  (root); any other app, or an unknown owner, is refused and counted in
+  `rejected` (the Linux CLI, which has no attribution, trusts local
+  clients). A client that accepts nothing for 10 s is dropped, and turning
+  the stream off aborts the client tasks. The sockets belong to the app process, which is excluded from its
   own VPN, so they use the Wi-Fi network directly.
 
 A capture lives as long as the engine session: turning capture off, and

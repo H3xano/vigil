@@ -372,7 +372,7 @@ impl Shared {
     /// Applies the `capture` section; when capture has just been enabled,
     /// binds the flows already open so their packets are attributed too.
     fn apply_capture(&self, cfg: &Config) {
-        if self.capture.apply(&cfg.capture) {
+        if self.capture.apply(&cfg.capture, &self.platform) {
             let open: Vec<_> = self
                 .open_flows
                 .lock()

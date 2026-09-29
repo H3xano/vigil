@@ -69,6 +69,13 @@ impl Platform for FixedUid {
     fn protect(&self, _fd: RawFd) -> bool {
         true
     }
+
+    /// The fixed UID says nothing about who opened a local socket; like
+    /// [`NullPlatform`], trust the host's own clients (the allowlist still
+    /// applies).
+    fn local_stream_client_allowed(&self, _uid: Option<u32>) -> bool {
+        true
+    }
 }
 
 fn read_state(path: &str) -> io::Result<DeviceState> {

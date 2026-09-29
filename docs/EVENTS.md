@@ -258,7 +258,7 @@ In direct mode it is `{"mode":"direct","state":"up","fail_closed":true}`
 | `dropped` | Packets overwritten in the ring (the oldest) to make room. |
 | `buffered_packets`, `buffered_bytes` | What the ring holds now (`buffered_bytes` includes 16 bytes per packet). |
 | `buffer_bytes` | The ring's size. |
-| `stream` | PCAP-over-IP, null unless `capture.stream.enabled`: `listening` (`address:port`, null while not listening), `clients` (connected, at most 2), `sent` (packets queued to clients, summed over clients), `dropped` (packets a slow client did not get), `rejected` (connections refused: allowlist or client limit), `error` (why it is not listening, e.g. `no address to listen on`, `listen on 192.168.1.23:57012: Address in use (os error 98)`; retried every 5 s). |
+| `stream` | PCAP-over-IP, null unless `capture.stream.enabled`: `listening` (`address:port`, null while not listening), `clients` (connected, at most 2), `sent` (packets queued to clients, summed over clients), `dropped` (packets a slow client did not get), `rejected` (connections refused: allowlist, client limit, or an app on the device other than the shell (`adb forward`) or root), `error` (why it is not listening, e.g. `no address to listen on`, `listen on 192.168.1.23:57012: Address in use (os error 98)`; retried every 5 s). |
 
 ### Alert kinds
 
@@ -480,7 +480,7 @@ capture"), for `nativeExportPcap`; optionally streams them live.
 | `stream.enabled` | bool | `false` | PCAP-over-IP server (needs `enabled`). Each client receives a classic PCAP header (µs timestamps, link type 101, raw IP) and then every packet recorded from then on; nothing it sends is read. At most 2 clients; each has a bounded queue (8192 packets, 8 MiB), and a client that reads too slowly loses packets. |
 | `stream.port` | integer | 57012 | TCP port (must be positive while `stream.enabled`). |
 | `stream.bind` | IP address string | `""` | Address to listen on; empty: not listening. The app sends the Wi-Fi (or Ethernet) IPv4 address by default, `0.0.0.0` for "all networks", `127.0.0.1` for "this device", and `""` while there is no Wi-Fi. A bind that fails is retried every 5 s. |
-| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any. IPv4-mapped IPv6 peers are matched as IPv4. |
+| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any. IPv4-mapped IPv6 peers are matched as IPv4. Clients on the device itself (loopback or one of its addresses) must in addition be owned by UID 2000 (shell, `adb forward`) or 0 (root). |
 
 Changes apply at once through `nativeUpdateConfig`: enabling allocates the
 ring (flows already open are attributed from then on), a changed `stream`
