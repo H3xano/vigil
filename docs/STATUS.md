@@ -31,11 +31,12 @@ table). No worktrees or feature branches are left.
    else base64 in the note), verifies by downloading it back and comparing
    bytes and opening it with the password, then runs `bw lock` and deletes the
    session file.
-2. **F-Droid:** open a merge request adding
-   `packaging/fdroid/dev.vigil.inspector.yml` to gitlab.com/fdroid/fdroiddata
-   as `metadata/dev.vigil.inspector.yml` (needs the owner's GitLab account).
-   The recipe points at v0.5.1 (versionCode 501). Offer to draft the MR text
-   and run `fdroid lint` on the recipe first.
+2. **F-Droid:** merge request opened 2026-09-29:
+   https://gitlab.com/fdroid/fdroiddata/-/merge_requests/50590 (branch `vigil`
+   on the fork gitlab.com/h3xano/fdroiddata, recipe pinned to the full hash of
+   v0.5.1). The fork's CI can't run (new GitLab account not verified for
+   shared runners); a note asks the maintainers to trigger it. Follow up on
+   reviewer comments; update the MR branch rather than opening a new one.
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
