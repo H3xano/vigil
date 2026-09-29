@@ -1,9 +1,7 @@
 # Project status and handoff
 
-Last updated: 2026-09-28, version 0.5.0 (a second full review with every
-finding fixed; packet capture, per-app firewall conditions,
-spyware/stalkerware packs with a health check, tracker labels), GitHub
-pre-release.
+Last updated: 2026-09-29, version 0.5.1 (fixes from a third review and
+translation support, no new features), GitHub pre-release.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -224,17 +222,17 @@ the merged tree. CHANGELOG.md (0.5.0) lists everything; the highlights:
   about 30 built-in downloads now, a run stopped early must have fetched the
   protective ones first; found by the Android 16 e2e run).
 
-## Third review fixes (2026-09-29, after 0.5.0, unreleased)
+## New in 0.5.1: third review fixes (2026-09-29)
 
 A third review (engine, upstream/DNS/capture, service/data, UI/export,
 competitors) by five parallel reviewers; the nine most important findings
 were fixed by three agents in worktrees and merged. CHANGELOG.md
-("Unreleased") lists them. Verified: every host suite, and every emulator
+(0.5.1) lists them. Verified: every host suite, and every emulator
 suite on Android 15 and 16. On Android 16, by hand: a PCAP-over-IP client
 running as the shell (UID 2000) receives the stream, one running as an app
 UID (10123) is refused ("an app on this device").
 
-## Translation support (2026-09-29, unreleased)
+## New in 0.5.1: translation support (2026-09-29)
 
 Every user-visible string moved to resources by four agents (one area each,
 one `strings_<area>.xml` each), then merged; see docs/TRANSLATING.md and the

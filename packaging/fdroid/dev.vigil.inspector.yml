@@ -29,9 +29,9 @@ Repo: https://github.com/H3xano/vigil.git
 Binaries: https://github.com/H3xano/vigil/releases/download/v%v/vigil-%v.apk
 
 Builds:
-  - versionName: 0.5.0
-    versionCode: 500
-    commit: v0.5.0
+  - versionName: 0.5.1
+    versionCode: 501
+    commit: v0.5.1
     subdir: android/app
     sudo:
       - apt-get update
@@ -52,10 +52,10 @@ Builds:
     ndk: 27.2.12479018
 
 # SHA-256 of the upstream signing certificate, lower-case hex without colons
-# (`apksigner verify --print-certs vigil-0.5.0.apk`).
+# (`apksigner verify --print-certs vigil-0.5.1.apk`).
 AllowedAPKSigningKeys: dc7a34daa313cc62305c3bfe00bb85e7998bed5f082ea6a8e157f72ca38db3bc
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v\d+\.\d+\.\d+$
-CurrentVersion: 0.5.0
-CurrentVersionCode: 500
+CurrentVersion: 0.5.1
+CurrentVersionCode: 501

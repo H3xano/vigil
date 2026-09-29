@@ -1,0 +1,6 @@
+Fixes in 0.5.1:
+• PCAP-over-IP: other apps on the phone can no longer read the stream; a client allowlist is required on Wi-Fi.
+• WireGuard fail-closed no longer lets IPv6 bypass an IPv4-only tunnel; no DNS leak after a SOCKS5 outage.
+• TAXII URL indicators no longer block whole platforms such as GitHub.
+• SIEM export no longer loses records silently.
+• The app is now translatable.
