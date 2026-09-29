@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Strings shared by several screens. Each area has its own file
+     (strings_<area>.xml); see docs/TRANSLATING.md. -->
 <resources>
-    <string name="app_name">vigil</string>
+    <string name="app_name" translatable="false">vigil</string>
     <string name="tile_label">vigil inspector</string>
+
+    <string name="action_cancel">Cancel</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_save">Save</string>
+    <string name="action_discard">Discard</string>
+    <string name="action_block">Block</string>
+    <string name="state_blocked">Blocked</string>
+    <string name="state_allowed">Allowed</string>
+    <string name="state_off">Off</string>
+    <string name="empty_nothing_yet">Nothing yet</string>
 </resources>

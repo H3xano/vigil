@@ -65,11 +65,19 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            // en-XA (accented, longer) and ar-XB (right-to-left) in the
+            // developer options, to check layouts before real translations.
+            isPseudoLocalesEnabled = true
         }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+    // Lists the translated locales for the per-app language setting
+    // (Android 13+), from the values-* folders; see docs/TRANSLATING.md.
+    androidResources {
+        generateLocaleConfig = true
     }
     buildFeatures {
         compose = true
