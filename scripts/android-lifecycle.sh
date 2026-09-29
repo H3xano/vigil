@@ -107,13 +107,20 @@ if wait_tun 90 && alive && [ "$(adb shell pidof $pkg | tr -d '\r')" != "$pid" ];
 check_net "HTTP after process death" 6
 
 # --- Private DNS --------------------------------------------------------------
+# Strict mode left behind sends every lookup to dns.google over TLS, past
+# vigil's resolver, and breaks the sinkhole checks of the other suites.
+restore_private_dns() {
+  adb shell settings put global private_dns_mode opportunistic
+  adb shell settings delete global private_dns_specifier >/dev/null
+}
+trap restore_private_dns EXIT
 adb shell settings put global private_dns_mode opportunistic; sleep 5
 check_net "Private DNS automatic"
 adb shell settings put global private_dns_specifier dns.google
 adb shell settings put global private_dns_mode hostname; sleep 8
 check_net "Private DNS strict (dns.google)" 5
-adb shell settings put global private_dns_mode opportunistic
-adb shell settings delete global private_dns_specifier >/dev/null
+restore_private_dns
+[ "$(adb shell settings get global private_dns_mode | tr -d '\r')" = opportunistic ] || { sleep 2; restore_private_dns; }
 
 # --- Always-on VPN at boot ----------------------------------------------------
 if [ "${SKIP_BOOT:-0}" != 1 ]; then

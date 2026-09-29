@@ -22,6 +22,13 @@ check_sql() { # name, query returning a count
 }
 
 adb root >/dev/null; sleep 2
+# Strict Private DNS (e.g. left by an interrupted lifecycle run) would send
+# lookups past vigil's resolver; start from the default.
+if [ "$(adb shell settings get global private_dns_mode | tr -d '\r')" = hostname ]; then
+  echo "note: Private DNS was strict; resetting it to automatic"
+  adb shell settings put global private_dns_mode opportunistic
+  adb shell settings delete global private_dns_specifier >/dev/null
+fi
 adb uninstall $pkg >/dev/null 2>&1
 adb install -r -g "$apk" >/dev/null || { echo "install failed"; exit 1; }
 adb shell appops set $pkg ACTIVATE_VPN allow
