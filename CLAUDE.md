@@ -29,7 +29,7 @@ Working rules for this repo:
   `CHANGELOG.md` at the end of each work session.
 - Never commit `android/keystore.properties`, keystores, `local.properties`,
   or generated `jniLibs/`.
-- Commits are authored as **H3xano <h3xano@gmail.com>** (set in
+- Commits are authored as **H3xano <43128233+H3xano@users.noreply.github.com>** (set in
   `.git/config`; check it in new worktrees) and must **not** contain `Co-Authored-By` or
   "Generated with Claude" lines (owner's explicit preference). The same goes for
   PR bodies and merge commits.
