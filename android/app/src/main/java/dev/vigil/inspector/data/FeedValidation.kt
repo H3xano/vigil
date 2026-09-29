@@ -15,6 +15,14 @@ object FeedValidation {
     const val MIN_SHRINK_RATIO = 0.1
 
     /**
+     * Spyware packs are stricter: they are small, curated and only grow, and
+     * a copy stripped of one stalkerware app's indicators is exactly what an
+     * attacker would serve. Reject a pack that keeps fewer than this share
+     * of the previous copy's indicators.
+     */
+    const val SPYWARE_MIN_SHRINK_RATIO = 0.5
+
+    /**
      * Returns null if [summary] is acceptable, otherwise the reason.
      * [previousEntries] is the entry count of the copy currently in use
      * (null when there is none).
@@ -46,6 +54,18 @@ object FeedValidation {
         if (previousEntries == null || previousEntries <= 100) return null
         if (entries < previousEntries * MIN_SHRINK_RATIO) {
             return "full sync returned only $entries indicators (previously $previousEntries); keeping the previous copy"
+        }
+        return null
+    }
+
+    /**
+     * Returns null if a spyware pack with [total] indicators may replace the
+     * copy in use ([previousTotal], null when there is none), otherwise the reason.
+     */
+    fun checkSpywarePack(total: Int, previousTotal: Int?): String? {
+        if (total == 0) return "the pack contained no indicators vigil can use"
+        if (previousTotal != null && previousTotal > 0 && total < previousTotal * SPYWARE_MIN_SHRINK_RATIO) {
+            return "only $total indicators (previously $previousTotal); keeping the previous copy"
         }
         return null
     }

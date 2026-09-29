@@ -4,7 +4,13 @@
        export at plain-HTTP collectors on their own network (the built-in
        feeds all use HTTPS);
      * user-installed CAs are trusted so collectors behind a private/corporate
-       CA work without shipping custom trust stores. -->
+       CA work without shipping custom trust stores.
+     The hosts the built-in feeds, spyware packs, ASN table and tracker labels
+     come from trust system CAs only and HTTPS only: otherwise someone with
+     brief access to the phone could install a CA, intercept the Wi-Fi and
+     serve a spyware pack without their app. Keep this list in step with
+     FeedCatalog, MvtIndex, AsnDatabase and TrackerDatabase
+     (NetworkSecurityConfigTest checks it). -->
 <network-security-config xmlns:tools="http://schemas.android.com/tools">
     <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
         <trust-anchors>
@@ -12,4 +18,20 @@
             <certificates src="user" tools:ignore="AcceptsUserCertificates" />
         </trust-anchors>
     </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <!-- GitHub: HaGeZi, StevenBlack, FoxIO, Echap, MVT index and packs, AdGuard companiesdb and filters -->
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="false">adguardteam.github.io</domain>
+        <!-- abuse.ch: URLhaus, ThreatFox, Feodo Tracker -->
+        <domain includeSubdomains="true">abuse.ch</domain>
+        <domain includeSubdomains="true">phishing.army</domain>
+        <domain includeSubdomains="true">spamhaus.org</domain>
+        <!-- Disconnect's list on S3 (path-style URL; only this exact host) -->
+        <domain includeSubdomains="false">s3.amazonaws.com</domain>
+        <domain includeSubdomains="true">iptoasn.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
 </network-security-config>

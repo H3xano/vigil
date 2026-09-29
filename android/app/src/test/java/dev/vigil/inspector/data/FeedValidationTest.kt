@@ -54,4 +54,14 @@ class FeedValidationTest {
         assertNull(FeedValidation.check(FeedSummary(domains = 5), previousEntries = null))
         assertNull(FeedValidation.check(FeedSummary(domains = 5), previousEntries = 0))
     }
+
+    @Test
+    fun spywarePacksRefuseToLoseHalfTheirIndicators() {
+        assertNull(FeedValidation.checkSpywarePack(1000, null))
+        assertNull(FeedValidation.checkSpywarePack(500, 1000))
+        assertNull(FeedValidation.checkSpywarePack(1200, 1000))
+        // A pack stripped of one stalkerware family's indicators (a MITM'd download) is refused.
+        assertNotNull(FeedValidation.checkSpywarePack(499, 1000))
+        assertNotNull(FeedValidation.checkSpywarePack(0, null))
+    }
 }

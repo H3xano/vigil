@@ -395,11 +395,8 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             downloadedAt = System.currentTimeMillis(),
             groups = SpywareConverters.convert(feed.format, tmp, feed.name),
         )
-        if (pack.total == 0) throw IOException("the pack contained no indicators vigil can use")
         val previous = SpywareStore.read(packFileFor(feed.id))?.total
-        if (previous != null && previous > 0 && pack.total < previous * FeedValidation.MIN_SHRINK_RATIO) {
-            throw IOException("only ${pack.total} indicators (previously $previous); keeping the previous copy")
-        }
+        FeedValidation.checkSpywarePack(pack.total, previous)?.let { throw IOException(it) }
         val lines = if (feed.kind == FeedKinds.SPYWARE) pack.engineLines() else emptyList()
         converted.bufferedWriter().use { w ->
             w.write("# ${feed.name}: converted by vigil from ${feed.url}\n")
