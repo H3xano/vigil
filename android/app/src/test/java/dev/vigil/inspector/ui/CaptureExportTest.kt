@@ -1,5 +1,6 @@
 package dev.vigil.inspector.ui
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.SettingsCodec
 import dev.vigil.inspector.engine.EngineHandle
 import dev.vigil.inspector.engine.PcapExportSummary
@@ -17,13 +18,14 @@ class CaptureExportTest {
     @Test
     fun explainsWhyPacketsAreUnavailable() {
         val flow = PcapRequest(PcapFilter(flowIds = listOf(3)), "f.pcapng", session = 1_000_000L)
-        assertTrue(CaptureExport.unavailable(false, active, flow)!!.contains("Settings → Packet capture"))
-        assertTrue(CaptureExport.unavailable(true, null, flow)!!.contains("not running"))
+        assertEquals(UiText.of(R.string.capture_unavailable_off), CaptureExport.unavailable(false, active, flow))
+        assertEquals(UiText.of(R.string.capture_unavailable_not_running), CaptureExport.unavailable(true, null, flow))
         assertNull(CaptureExport.unavailable(true, active, flow))
-        assertTrue(CaptureExport.unavailable(true, active, flow.copy(session = 5L))!!.contains("earlier inspection session"))
+        val earlier = UiText.of(R.string.capture_unavailable_earlier_session)
+        assertEquals(earlier, CaptureExport.unavailable(true, active, flow.copy(session = 5L)))
         // Alerts carry a time instead of a session.
         val alert = CaptureExport.forAlert(999_999L, "beacon", 10123, "c2.example", 17)!!
-        assertTrue(CaptureExport.unavailable(true, active, alert)!!.contains("earlier"))
+        assertEquals(earlier, CaptureExport.unavailable(true, active, alert))
         assertNull(CaptureExport.unavailable(true, active, alert.copy(itemTs = 1_000_001L)))
     }
 
@@ -50,10 +52,20 @@ class CaptureExportTest {
     fun namesAndMessages() {
         val name = CaptureExport.fileName("Flow 17 / Example.COM", now = 0L)
         assertTrue(name, Regex("vigil-flow-17-example\\.com-\\d{8}-\\d{6}\\.pcapng").matches(name))
-        assertTrue(CaptureExport.resultMessage(PcapExportSummary(packets = 12, bytes = 2048)).startsWith("Exported 12 packets"))
-        assertTrue(CaptureExport.resultMessage(PcapExportSummary(packets = 1, bytes = 60, truncatedByRing = true)).contains("overwritten"))
-        assertTrue(CaptureExport.resultMessage(PcapExportSummary()).startsWith("No captured packets"))
-        assertTrue(CaptureExport.resultMessage(null).startsWith("Export failed"))
+        assertEquals(
+            UiText.plural(R.plurals.capture_exported, 12, 12L, formatBytes(2048)),
+            CaptureExport.resultMessage(PcapExportSummary(packets = 12, bytes = 2048)),
+        )
+        assertEquals(
+            UiText.plural(R.plurals.capture_exported_truncated, 1, 1L, formatBytes(60)),
+            CaptureExport.resultMessage(PcapExportSummary(packets = 1, bytes = 60, truncatedByRing = true)),
+        )
+        assertEquals(UiText.of(R.string.capture_export_none_match), CaptureExport.resultMessage(PcapExportSummary()))
+        assertEquals(
+            UiText.of(R.string.capture_export_none_overwritten),
+            CaptureExport.resultMessage(PcapExportSummary(truncatedByRing = true)),
+        )
+        assertEquals(UiText.of(R.string.capture_export_failed_write), CaptureExport.resultMessage(null))
     }
 
     @Test

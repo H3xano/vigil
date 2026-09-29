@@ -1,7 +1,9 @@
 package dev.vigil.inspector.export
 
 import com.sun.net.httpserver.HttpServer
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.ExportSettings
+import dev.vigil.inspector.ui.UiText
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -58,9 +60,9 @@ class TransportTest {
                 HttpSender.send(cfg, listOf(record), listOf(record)) { null }
                 fail("a redirect must not count as delivered")
             } catch (e: ExportConfigException) {
-                assertTrue(e.message!!, e.message!!.contains("redirected to /ingest/"))
+                assertEquals(UiText.of(R.string.export_error_redirected, "/ingest/", 302), e.problem)
                 assertEquals(FailureKind.CONFIG, ExportRetry.classify(e, cfg))
-                assertEquals(e.message, ExportRetry.configProblem(e, cfg))
+                assertEquals(e.problem, ExportRetry.configProblem(e, cfg))
             }
             assertEquals("not followed", listOf("POST /ingest"), seen.toList())
             // The URL it pointed to works.
@@ -77,7 +79,7 @@ class TransportTest {
             // The transport blocks the test thread, so this runs the first attempt to completion.
             runCurrent()
             val s = pipeline.status.value
-            assertTrue(s.configProblem ?: "none", s.configProblem?.contains("elsewhere.example") == true)
+            assertEquals(UiText.of(R.string.export_error_redirected, "https://elsewhere.example/ingest", 301), s.configProblem)
             assertEquals(0L, s.sent)
             assertEquals(0L, s.rejected)
             assertEquals(3, s.queued)
@@ -95,7 +97,7 @@ class TransportTest {
         assertNotNull(HttpSender.elasticBulkUrlProblem("https://es:9200/_data_stream/_bulk"))
         assertNull(HttpSender.urlProblem(http("https://es:9200/_bulk", "ndjson")))
         val bare = http("https://es:9200/_bulk", "elastic_bulk")
-        assertNotNull(HttpSender.urlProblem(bare))
+        assertEquals(UiText.of(R.string.export_error_bulk_index), HttpSender.urlProblem(bare))
         // Refused before any request, as a configuration problem.
         try {
             HttpSender.send(bare, listOf(record), listOf(record)) { null }

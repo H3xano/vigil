@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings, "Route through VPN / proxy" (upstream), packet capture and SIEM
+     export configuration. Protocol and product names (WireGuard, SOCKS5, DNS,
+     PCAPng, Wireshark, ECS, Splunk HEC, Elasticsearch) and configuration
+     syntax ([Interface], AllowedIPs, URLs) are not translated. -->
+<resources>
+
+    <!-- ===== Shared by the settings screens ===== -->
+
+    <!-- Text field label. -->
+    <string name="settings_field_host">Host</string>
+    <!-- Text field label (a network port number). -->
+    <string name="settings_field_port">Port</string>
+    <string name="settings_port_range">The port must be between 1 and 65535.</string>
+    <!-- %1$s: an error message, often from a server or the engine (may be English). -->
+    <string name="settings_last_error">Last error: %1$s</string>
+    <!-- Short option labels (segmented buttons): a number of days. -->
+    <plurals name="settings_days">
+        <item quantity="one">%d day</item>
+        <item quantity="other">%d days</item>
+    </plurals>
+    <!-- Short durations (abbreviated units). %1$d: a number. -->
+    <string name="settings_duration_seconds">%1$d s</string>
+    <string name="settings_duration_minutes">%1$d min</string>
+    <string name="settings_duration_hours">%1$d h</string>
+
+    <!-- ===== Settings screen ===== -->
+
+    <string name="settings_title">Settings</string>
+    <!-- Section titles. -->
+    <string name="settings_section_blocking">Blocking</string>
+    <string name="settings_section_network">Network</string>
+    <string name="settings_section_detection">Detection</string>
+    <string name="settings_section_enterprise">Enterprise</string>
+    <string name="settings_section_permissions">Permissions</string>
+    <string name="settings_section_data">Data</string>
+    <string name="settings_section_about">About</string>
+
+    <string name="settings_sinkhole_label">Answer for blocked domains</string>
+    <!-- Title of the help dialog about the answer given for blocked domains. -->
+    <string name="settings_sinkhole_help_title">Blocked-domain answer</string>
+    <string name="settings_sinkhole_nxdomain_summary">Blocked names are reported as nonexistent.</string>
+    <string name="settings_sinkhole_null_ip_summary">Blocked names resolve to an address that goes nowhere (recommended).</string>
+    <string name="settings_block_encrypted_dns_title">Block encrypted DNS</string>
+    <string name="settings_block_encrypted_dns_summary">Refuse DNS-over-TLS/QUIC and known DNS-over-HTTPS servers so apps fall back to DNS that vigil can inspect. Breaks DNS if Private DNS is in strict mode.</string>
+
+    <string name="settings_feeds_title">Threat intelligence feeds</string>
+    <!-- %1$s: settings_feeds_enabled, %2$s: settings_feeds_domains, %3$s: settings_feeds_ip_ranges. -->
+    <string name="settings_feeds_summary">%1$s · %2$s, %3$s · downloaded daily from their publishers</string>
+    <!-- Number of enabled threat intelligence feeds. -->
+    <plurals name="settings_feeds_enabled">
+        <item quantity="one">%d enabled</item>
+        <item quantity="other">%d enabled</item>
+    </plurals>
+    <plurals name="settings_feeds_domains">
+        <item quantity="one">%d domain</item>
+        <item quantity="other">%d domains</item>
+    </plurals>
+    <plurals name="settings_feeds_ip_ranges">
+        <item quantity="one">%d IP range</item>
+        <item quantity="other">%d IP ranges</item>
+    </plurals>
+    <string name="settings_health_title">Spyware health check</string>
+    <string name="settings_health_summary">Check installed apps and recorded activity against known spyware and stalkerware indicators, on this phone</string>
+    <string name="settings_rules_title">Custom rules</string>
+    <!-- %1$s: settings_rules_blocked, %2$s: settings_rules_allowed. -->
+    <string name="settings_rules_summary">%1$s · %2$s</string>
+    <!-- Number of blocked domains in the custom rules. -->
+    <plurals name="settings_rules_blocked">
+        <item quantity="one">%d blocked</item>
+        <item quantity="other">%d blocked</item>
+    </plurals>
+    <plurals name="settings_rules_allowed">
+        <item quantity="one">%d allowed domain</item>
+        <item quantity="other">%d allowed domains</item>
+    </plurals>
+
+    <!-- %1$s: the WireGuard server (host:port). -->
+    <string name="settings_route_wireguard_to">WireGuard to %1$s</string>
+    <!-- %1$s: the proxy (host:port). -->
+    <string name="settings_route_socks5">SOCKS5 proxy %1$s</string>
+    <string name="settings_route_direct">Direct. Use your WireGuard server or a SOCKS5 proxy (e.g. Tor) while vigil runs.</string>
+    <!-- %1$s: the route summary above (e.g. "WireGuard to vpn.example:51820"). -->
+    <string name="settings_route_falls_back">%1$s · falls back to direct</string>
+    <string name="settings_exclude_lan_title">Keep local network traffic direct</string>
+    <string name="settings_exclude_lan_summary">Private and link-local destinations (printers, casting, NAS) bypass the inspector. Changing this restarts inspection.</string>
+    <string name="settings_max_throughput_title">Maximum throughput</string>
+    <string name="settings_max_throughput_summary">Uses a second engine thread for the fastest connections (roughly above 500 Mbit/s). Uses more battery; off is best for everyday use. Changing this restarts inspection.</string>
+    <string name="settings_upstream_dns_label">Upstream DNS resolver</string>
+    <!-- Short option label (segmented button). -->
+    <string name="settings_upstream_dns_network">Network\'s resolver</string>
+    <!-- Short option label (segmented button). -->
+    <string name="settings_upstream_dns_custom">Custom</string>
+    <string name="settings_custom_resolvers_title">Custom resolvers</string>
+    <string name="settings_custom_resolvers_hint">Plain DNS resolvers, e.g. 1.1.1.1, 9.9.9.9:53, [2606:4700::1111]:53</string>
+    <!-- %1$s: the entries that are not valid resolver addresses. -->
+    <string name="settings_custom_resolvers_invalid">Invalid: %1$s</string>
+    <string name="settings_encrypted_dns_title">Encrypted DNS</string>
+    <!-- %1$s: e.g. "DNS over HTTPS · Quad9". -->
+    <string name="settings_encrypted_dns_falls_back">%1$s · falls back to plain DNS</string>
+    <string name="settings_encrypted_dns_off">Off: lookups go to the resolver above unencrypted. Use DNS over TLS or HTTPS instead.</string>
+    <!-- Shown instead of a server name when a custom encrypted DNS server has none. -->
+    <string name="settings_encrypted_dns_custom_server">custom</string>
+
+    <string name="settings_beacon_title">Beaconing detection</string>
+    <string name="settings_beacon_summary">Alert when an app contacts the same destination at a near-constant interval, or sends small bursts through one open connection at a near-constant interval: malware checking in with its command-and-control (C2) server, but also telemetry heartbeats. Push services are skipped.</string>
+    <!-- Sensitivity options (segmented buttons, keep short). -->
+    <string name="settings_beacon_strict">Strict</string>
+    <string name="settings_beacon_balanced">Balanced</string>
+    <string name="settings_beacon_sensitive">Sensitive</string>
+    <string name="settings_exfil_title">Unusual upload alerts</string>
+    <!-- %1$d: megabytes. -->
+    <string name="settings_exfil_summary">Alert when an app uploads far more than usual while in the background (possible data theft): at least %1$d MB in an hour and several times its own busiest hour of the past week.</string>
+    <string name="settings_novelty_title">New destination alerts</string>
+    <string name="settings_novelty_summary">After a one-day learning period, alert when an app contacts a domain it has never used before.</string>
+    <string name="settings_new_asn_title">New network alerts</string>
+    <!-- %d: the learning period in days. -->
+    <plurals name="settings_new_asn_summary">
+        <item quantity="one">Alert when an app contacts a network (autonomous system, e.g. AS13335 Cloudflare) it has never used before, after a %d-day learning period per app. Needs the IP-to-ASN database (Threat intelligence feeds).</item>
+        <item quantity="other">Alert when an app contacts a network (autonomous system, e.g. AS13335 Cloudflare) it has never used before, after a %d-day learning period per app. Needs the IP-to-ASN database (Threat intelligence feeds).</item>
+    </plurals>
+    <string name="settings_learning_period">Learning period</string>
+    <string name="settings_notify_title">Notify on alerts</string>
+    <string name="settings_notify_summary">Post a notification for medium and high severity alerts.</string>
+
+    <string name="settings_capture_off">Off. Keep recent packets in memory to export them as PCAPng for Wireshark, or stream them live.</string>
+    <!-- %1$d: buffer size in MB. -->
+    <string name="settings_capture_not_streaming">Recording (%1$d MB) · not streaming: add an allowed client address</string>
+    <!-- %1$d: buffer size in MB, %2$s: TCP port number. -->
+    <string name="settings_capture_streaming">Recording (%1$d MB) · streaming on port %2$s</string>
+    <!-- %1$d: buffer size in MB. -->
+    <string name="settings_capture_recording">Recording the most recent %1$d MB of packets in memory</string>
+
+    <!-- %1$s: what is sent (settings_siem_level_*), %2$s: "HTTP" or "syslog/udp", "syslog/tcp", "syslog/tls". -->
+    <string name="settings_siem_streaming">Streaming %1$s via %2$s</string>
+    <string name="settings_siem_level_alerts">alerts</string>
+    <string name="settings_siem_level_alerts_dns">alerts + dns</string>
+    <string name="settings_siem_level_all">all</string>
+
+    <string name="settings_usage_access_title">Usage access</string>
+    <string name="settings_usage_access_granted">Granted: flows are tagged foreground/background</string>
+    <string name="settings_usage_access_not_granted">Not granted</string>
+    <string name="settings_always_on_title">Always-on VPN</string>
+    <!-- Path in Android's settings; "Always-on" is Android's own label for the switch. -->
+    <string name="settings_always_on_summary">Start vigil at boot and keep it running: VPN settings → vigil → Always-on</string>
+    <string name="settings_notifications_title">Notifications</string>
+    <string name="settings_notifications_summary">Manage alert and status notifications</string>
+
+    <string name="settings_keep_history">Keep history for</string>
+    <string name="settings_clear_history_title">Clear history</string>
+    <string name="settings_clear_history_summary">Delete all recorded connections, lookups and alerts</string>
+    <string name="settings_clear_history_confirm_title">Clear history?</string>
+    <string name="settings_clear_history_confirm_text">All recorded connections, DNS lookups, alerts, learned destinations and learned networks will be deleted.</string>
+    <!-- Dialog button. -->
+    <string name="settings_clear_history_confirm">Clear</string>
+    <!-- %1$s: the engine's version number. -->
+    <string name="settings_engine_version">Engine %1$s · Apache-2.0</string>
+    <string name="settings_source_code">Source code &amp; documentation</string>
+
+    <!-- Encrypted DNS settings validation. -->
+    <string name="settings_dns_choose_provider">Choose a provider.</string>
+    <!-- %1$s: what the user typed. -->
+    <string name="settings_dns_not_ip">“%1$s” is not an IP address.</string>
+    <plurals name="settings_dns_too_many_addrs">
+        <item quantity="one">At most %d address.</item>
+        <item quantity="other">At most %d addresses.</item>
+    </plurals>
+    <string name="settings_dns_need_https_url">Enter an https:// URL, e.g. https://dns.example/dns-query.</string>
+    <string name="settings_dns_need_server_name">Enter the server\'s name (as in its certificate) or IP address.</string>
+    <string name="settings_dns_need_addrs">Enter the server\'s IP addresses, or allow plain DNS to look its name up.</string>
+
+    <!-- ===== Route through VPN / proxy (upstream) ===== -->
+
+    <string name="upstream_title">Route through VPN / proxy</string>
+    <string name="upstream_intro">Android runs one VPN at a time. Instead of your VPN app, vigil can send the traffic it inspects through your WireGuard server or a SOCKS5 proxy (e.g. Tor via Orbot). Inspection is unchanged; only the way out differs.</string>
+    <!-- Option label (segmented button, keep short): no tunnel or proxy. -->
+    <string name="upstream_mode_direct">Direct</string>
+    <string name="upstream_wg_import_hint">Import the wg-quick configuration (.conf) from your VPN provider or your own server.</string>
+    <!-- Label before a value in the WireGuard details, e.g. "Endpoint: ". Keep the trailing space. -->
+    <string name="upstream_detail_label">%1$s:\u0020</string>
+    <string name="upstream_endpoint">Endpoint</string>
+    <string name="upstream_addresses">Addresses</string>
+    <string name="upstream_dns_none">none (public resolvers through the tunnel)</string>
+    <string name="upstream_peer_key">Peer key</string>
+    <string name="upstream_private_key">Private key</string>
+    <!-- %1$s: dots hiding the key. -->
+    <string name="upstream_private_key_value">%1$s (stored on this device only)</string>
+    <string name="upstream_preshared_key">Pre-shared key</string>
+    <!-- Which destinations go through the tunnel. -->
+    <string name="upstream_routed">Routed</string>
+    <string name="upstream_routed_everything">everything</string>
+    <string name="upstream_keepalive">Keepalive</string>
+    <string name="upstream_keepalive_off">off</string>
+    <!-- Buttons (keep short). -->
+    <string name="upstream_import_file">Import file</string>
+    <string name="upstream_paste_text">Paste text</string>
+    <string name="upstream_remove">Remove</string>
+    <string name="upstream_wg_allowed_ips_note">Destinations outside the peer\'s AllowedIPs go direct, as with wg-quick. An address family AllowedIPs does not cover at all (IPv6 when it lists only 0.0.0.0/0) is refused while “Block traffic (fail closed)” is on, and goes direct when it is off; refused apps fall back to the other family. Tunnelling IPv6 needs ::/0 in AllowedIPs and an IPv6 Address in the configuration.</string>
+    <string name="upstream_socks5_title">SOCKS5 proxy</string>
+    <string name="upstream_username">Username (optional)</string>
+    <string name="upstream_password">Password (optional)</string>
+    <string name="upstream_pass_domains_title">Pass domain names</string>
+    <string name="upstream_pass_domains_summary">Connect by the name the app asked for (from TLS or HTTP) and let the proxy resolve it. Recommended for Tor. The connection to the proxy then starts when the app sends its first bytes.</string>
+    <string name="upstream_udp_label">UDP (QUIC, games, calls)</string>
+    <!-- Option label (segmented button, keep short). -->
+    <string name="upstream_udp_relay">Relay if supported</string>
+    <string name="upstream_udp_note">DNS always goes to the proxy over TCP. When UDP cannot be relayed (Tor cannot), it is blocked and apps fall back to TCP.</string>
+    <string name="upstream_proxy_app_title">Proxy app</string>
+    <!-- %1$s: the proxy app's package name, or upstream_proxy_app_none. -->
+    <string name="upstream_proxy_app_summary">%1$s: an app on this phone that provides the proxy (e.g. Orbot) must be excluded from vigil\'s VPN, or its own traffic would loop back into it. Changing this restarts inspection.</string>
+    <!-- No proxy app chosen. -->
+    <string name="upstream_proxy_app_none">None</string>
+    <string name="upstream_orbot_hint">Orbot: host 127.0.0.1, port 9050, proxy app Orbot, pass domain names on.</string>
+    <string name="upstream_direct_note">Traffic leaves through the phone\'s own network, as without vigil.</string>
+    <string name="upstream_down_section">When the tunnel or proxy is down</string>
+    <string name="upstream_fail_closed_title">Block traffic (fail closed)</string>
+    <string name="upstream_fail_closed_on">Connections fail and lookups get no answer until the tunnel or proxy works again. Nothing goes out directly.</string>
+    <string name="upstream_fail_closed_off">Connections fall back to the phone\'s own network while the tunnel or proxy is unreachable: your real IP address is exposed.</string>
+    <string name="upstream_unsaved">Unsaved changes. Saving applies them to new connections at once.</string>
+    <string name="upstream_paste_title">WireGuard configuration</string>
+    <!-- Dialog button. -->
+    <string name="upstream_import">Import</string>
+    <!-- Name shown for a configuration that was pasted rather than imported from a file. -->
+    <string name="upstream_pasted_name">pasted</string>
+    <string name="upstream_read_failed">Could not read the file (or it is larger than 64 KB).</string>
+    <!-- Tunnel or proxy state (status card title). -->
+    <string name="upstream_state_connected">Connected</string>
+    <string name="upstream_state_connecting">Connecting…</string>
+    <string name="upstream_state_idle">Idle (connects on first use)</string>
+    <string name="upstream_state_down">Down</string>
+    <!-- %1$s: host:port. -->
+    <string name="upstream_status_endpoint">Endpoint %1$s</string>
+    <!-- %1$s: a duration such as "5 min". -->
+    <string name="upstream_status_handshake">Last handshake %1$s ago</string>
+    <!-- %1$s and %2$s: amounts of data, e.g. "1.2 MB". -->
+    <string name="upstream_status_traffic">Sent %1$s · received %2$s</string>
+    <string name="upstream_loading">Loading…</string>
+
+    <!-- Upstream settings validation. -->
+    <string name="upstream_error_import_first">Import a WireGuard configuration first.</string>
+    <string name="upstream_error_enter_host">Enter the proxy host.</string>
+    <!-- %1$s: what the user typed. -->
+    <string name="upstream_error_bad_host">\"%1$s\" is not a host name or IP address.</string>
+    <string name="upstream_error_credentials_too_long">Username and password are limited to 255 bytes.</string>
+    <string name="upstream_error_password_needs_username">A password needs a username.</string>
+    <!-- %1$s: an internal mode name. -->
+    <string name="upstream_error_unknown_mode">Unknown mode %1$s.</string>
+
+    <!-- WireGuard configuration import. Section and key names in brackets
+         ([Interface], [Peer], PrivateKey, AllowedIPs...) are file syntax: keep them. -->
+    <string name="upstream_wg_too_large">The file is too large for a WireGuard configuration.</string>
+    <string name="upstream_wg_only_first_peer">Only the first [Peer] is used.</string>
+    <!-- %1$s: the section name found in the file. -->
+    <string name="upstream_wg_unknown_section">Unknown section [%1$s] ignored.</string>
+    <!-- %1$d: line number. -->
+    <string name="upstream_wg_not_key_value">Line %1$d is not \"Key = Value\".</string>
+    <!-- %1$d: line number. -->
+    <string name="upstream_wg_outside_section">Line %1$d is outside a section.</string>
+    <string name="upstream_wg_no_interface">No [Interface] section.</string>
+    <string name="upstream_wg_no_peer">No [Peer] section.</string>
+    <!-- %1$s: a key name from the file. -->
+    <string name="upstream_wg_interface_key_ignored">[Interface] %1$s ignored.</string>
+    <!-- %1$s: a key name from the file. -->
+    <string name="upstream_wg_peer_key_ignored">[Peer] %1$s ignored.</string>
+    <!-- %1$s: section and key, e.g. "[Peer] PublicKey". -->
+    <string name="upstream_wg_not_a_key">%1$s is not a WireGuard key.</string>
+    <!-- %1$s: section and key, e.g. "[Peer] Endpoint". -->
+    <string name="upstream_wg_missing">%1$s is missing.</string>
+    <!-- %1$s: the value in the file. -->
+    <string name="upstream_wg_endpoint_invalid">[Peer] Endpoint \"%1$s\" is not host:port.</string>
+    <!-- %1$s: the value in the file. -->
+    <string name="upstream_wg_address_invalid">[Interface] Address \"%1$s\" is not an IP address.</string>
+    <string name="upstream_wg_address_missing">[Interface] Address is missing.</string>
+    <string name="upstream_wg_first_address_only">Only the first IPv4 and the first IPv6 address are used.</string>
+    <string name="upstream_wg_search_domains">DNS search domains ignored.</string>
+    <!-- %1$s: the value in the file. -->
+    <string name="upstream_wg_mtu_invalid">[Interface] MTU \"%1$s\" is not a number between 576 and 65535.</string>
+    <!-- %1$s: the value in the file. -->
+    <string name="upstream_wg_allowed_ips_invalid">[Peer] AllowedIPs \"%1$s\" is not a CIDR range.</string>
+    <!-- %1$s: the value in the file. -->
+    <string name="upstream_wg_keepalive_invalid">[Peer] PersistentKeepalive \"%1$s\" is not a number.</string>
+    <string name="upstream_wg_ipv6_not_tunnelled">AllowedIPs has 0.0.0.0/0 but no ::/0: IPv6 does not go through the tunnel. With “Block traffic (fail closed)” on, IPv6 connections are refused (apps fall back to IPv4); with it off, they go direct, outside the tunnel. Add ::/0 to AllowedIPs (and an IPv6 Address) to tunnel IPv6 too.</string>
+
+    <!-- ===== Packet capture ===== -->
+
+    <string name="capture_title">Packet capture</string>
+    <string name="capture_record_title">Record packets</string>
+    <string name="capture_record_summary">Keep the most recent packets of every app in memory, to export them as a PCAPng file for Wireshark (from a connection, an alert or an app) or stream them live.</string>
+    <string name="capture_privacy_note">Captured packets hold everything that is not encrypted: plain HTTP requests and responses (pages, form data, cookies), DNS lookups and answers, and the handshakes of encrypted connections. HTTPS and QUIC contents stay encrypted. Packets are kept in memory only and are discarded when capture is turned off or inspection stops; nothing is written to storage unless you export.</string>
+    <string name="capture_section_buffer">Buffer</string>
+    <string name="capture_buffer_note">Memory for packets while inspecting; when it is full the oldest packets are overwritten. 16 MB holds a few minutes of browsing; downloads and video fill it in seconds.</string>
+    <string name="capture_starting">Starting…</string>
+    <string name="capture_starts_when_running">Recording starts when inspection runs.</string>
+    <!-- %1$d: packets held, %2$s and %3$s: amounts of data (used, buffer size). -->
+    <plurals name="capture_holding">
+        <item quantity="one">Holding %1$d packet (%2$s of %3$s)</item>
+        <item quantity="other">Holding %1$d packets (%2$s of %3$s)</item>
+    </plurals>
+    <!-- Appended after capture_holding, separated by " · ". -->
+    <plurals name="capture_overwritten">
+        <item quantity="one">%d older one overwritten</item>
+        <item quantity="other">%d older ones overwritten</item>
+    </plurals>
+    <string name="capture_export_all">Export all captured packets (PCAPng)</string>
+    <string name="capture_section_stream">Stream to Wireshark (PCAP-over-IP)</string>
+    <string name="capture_stream_title">Stream live packets</string>
+    <string name="capture_stream_summary">Serve the packets as they are captured to up to two clients on the network.</string>
+    <!-- "Record packets" is the title of capture_record_title. -->
+    <string name="capture_stream_needs_record">Turn on “Record packets” first.</string>
+    <!-- "This device", "Wi-Fi" and "All networks" are capture_bind_* options. -->
+    <string name="capture_stream_warning">The captured packets are sent unencrypted. “This device” accepts only connections through adb forward (from a computer, via the adb shell); other apps on the phone cannot connect. Wi-Fi and All networks require the address of your computer below: only the allowed addresses can connect, and anyone on the network able to use such an address could receive the packets. Use them on a trusted network and turn streaming off when done.</string>
+    <string name="capture_needs_allowlist">Streaming on Wi-Fi or all networks needs at least one allowed client address (your computer\'s), otherwise anyone on the network could receive your packets. Add one below, or listen on “This device” and connect through adb forward.</string>
+    <string name="capture_listen_on">Listen on</string>
+    <!-- Where the stream listens (segmented buttons, keep short). -->
+    <string name="capture_bind_wifi">Wi-Fi</string>
+    <string name="capture_bind_all">All networks</string>
+    <string name="capture_bind_loopback">This device</string>
+    <string name="capture_not_listening_no_allowlist">Not listening: add the address of your computer below (required for Wi-Fi and All networks).</string>
+    <string name="capture_not_listening_not_running">Not listening: inspection is not running.</string>
+    <string name="capture_not_listening_no_wifi">Not listening: not connected to Wi-Fi.</string>
+    <!-- %1$s: the engine's error message (English). -->
+    <string name="capture_not_listening_error">Not listening: %1$s</string>
+    <!-- %1$s: address:port, %2$d: connected clients (at most 2). -->
+    <string name="capture_listening">Listening on %1$s · %2$d of 2 clients connected</string>
+    <!-- Appended after capture_listening, separated by " · ". -->
+    <plurals name="capture_stream_dropped">
+        <item quantity="one">%d packet dropped for slow clients</item>
+        <item quantity="other">%d packets dropped for slow clients</item>
+    </plurals>
+    <!-- Appended after capture_listening, separated by " · ". -->
+    <plurals name="capture_stream_refused">
+        <item quantity="one">%d connection refused</item>
+        <item quantity="other">%d connections refused</item>
+    </plurals>
+    <string name="capture_wireshark_hint">In Wireshark, open the capture interface (or add it as a pipe under Capture → Options → Manage Interfaces):</string>
+    <string name="capture_from_shell">From a shell:</string>
+    <!-- %1$s: port number. "adb forward tcp:… tcp:…" is a command: keep it. -->
+    <string name="capture_loopback_hint">This device: only adb forward can connect. On the computer run adb forward tcp:%1$s tcp:%1$s, then use 127.0.0.1 there. Other apps on the phone are refused.</string>
+    <string name="capture_port_range">1024 to 65535</string>
+    <string name="capture_allowed_clients">Allowed clients</string>
+    <string name="capture_allowed_clients_required">Allowed clients (required)</string>
+    <!-- %1$s: the entries that are not valid. -->
+    <string name="capture_allow_invalid">Not an address or range: %1$s</string>
+    <plurals name="capture_allow_too_many">
+        <item quantity="one">At most %d entry</item>
+        <item quantity="other">At most %d entries</item>
+    </plurals>
+    <string name="capture_allow_required">Required for Wi-Fi and All networks: the address of your computer.</string>
+    <string name="capture_allow_network">Only these addresses can connect.</string>
+    <string name="capture_allow_loopback">Not needed for This device (adb forward only).</string>
+    <string name="capture_unavailable_title">Packets not available</string>
+    <!-- Button opening the packet capture settings. -->
+    <string name="capture_settings_button">Packet capture settings</string>
+    <string name="capture_ok">OK</string>
+    <string name="capture_app_export">Export app capture (PCAPng)</string>
+    <!-- %1$s: an app name. Followed by time choices (5 min, 15 min, 1 h, All held). -->
+    <string name="capture_app_window">Packets of %1$s from the last</string>
+    <!-- Time choice (segmented button, keep short): all the packets the buffer holds. -->
+    <string name="capture_window_all">All held</string>
+    <!-- Button. -->
+    <string name="capture_export">Export</string>
+    <string name="capture_unavailable_off">Packet capture is off. Turn it on in Settings → Packet capture: vigil then keeps the most recent packets in memory, and they can be exported from here. Packets from before it was on were not recorded.</string>
+    <string name="capture_unavailable_not_running">Inspection is not running. Packets are only held in memory while vigil inspects traffic.</string>
+    <string name="capture_unavailable_earlier_session">This is from an earlier inspection session. Packets are only held in memory for the running session, so they are gone.</string>
+    <string name="capture_export_failed_write">Export failed: the capture could not be written.</string>
+    <string name="capture_export_failed_stopped">Export failed: inspection stopped, or the capture could not be written.</string>
+    <string name="capture_export_failed_open">Export failed: the chosen file could not be opened.</string>
+    <!-- %1$s: the system's error message. -->
+    <string name="capture_export_failed">Export failed: %1$s</string>
+    <string name="capture_export_none_overwritten">No packets exported: they were already overwritten in the capture buffer (a larger buffer keeps more).</string>
+    <string name="capture_export_none_match">No captured packets match (capture may have been turned on after this traffic).</string>
+    <!-- %1$d: packets, %2$s: file size. -->
+    <plurals name="capture_exported">
+        <item quantity="one">Exported %1$d packet (%2$s).</item>
+        <item quantity="other">Exported %1$d packets (%2$s).</item>
+    </plurals>
+    <!-- %1$d: packets, %2$s: file size. -->
+    <plurals name="capture_exported_truncated">
+        <item quantity="one">Exported %1$d packet (%2$s). Older packets were already overwritten in the capture buffer.</item>
+        <item quantity="other">Exported %1$d packets (%2$s). Older packets were already overwritten in the capture buffer.</item>
+    </plurals>
+
+    <!-- ===== SIEM export ===== -->
+
+    <string name="export_title">SIEM export</string>
+    <string name="export_stream_title">Stream events</string>
+    <string name="export_stream_summary">Send structured events (ECS-style JSON) to your collector. No traffic data leaves the device while this is off.</string>
+    <string name="export_stream_needs_destination">Set up and save a destination below first.</string>
+    <string name="export_ecs_note">Fields follow the Elastic Common Schema (ECS).</string>
+    <string name="export_section_what">What to send</string>
+    <!-- What to send (segmented buttons, keep short). -->
+    <string name="export_level_alerts">Alerts</string>
+    <!-- Alerts plus DNS lookups. -->
+    <string name="export_level_dns">+ DNS</string>
+    <string name="export_level_all">Everything</string>
+    <string name="export_section_destination">Destination</string>
+    <!-- %1$d: size in KB. -->
+    <string name="export_syslog_note">RFC 5424 messages; TCP and TLS use octet-counting framing (RFC 6587). UDP and TCP are unencrypted. Over UDP each message is capped at %1$d KB: long values in larger records are shortened.</string>
+    <string name="export_endpoint_url">Endpoint URL</string>
+    <!-- "Authorization" is the HTTP header name. -->
+    <string name="export_auth_header">Authorization header</string>
+    <string name="export_section_mtls">Mutual TLS</string>
+    <string name="export_client_cert">Client certificate</string>
+    <string name="export_client_cert_none">None: tap to choose a certificate installed on this device</string>
+    <string name="export_remove_client_cert">Remove client certificate</string>
+    <string name="export_unsaved">Unsaved changes</string>
+    <string name="export_section_status">Status</string>
+    <!-- Record counts. -->
+    <string name="export_status_counts">Sent %1$d · queued %2$d · dropped %3$d</string>
+    <!-- Appended to export_status_counts, separated by " · ". -->
+    <string name="export_status_rejected">rejected %1$d</string>
+    <!-- Appended to export_status_counts. %1$s: a relative time, e.g. "5 min ago". -->
+    <string name="export_status_last_success">last success %1$s</string>
+    <!-- %1$s: one of the export_error_* problems, ending with a period. -->
+    <string name="export_config_problem">Configuration problem: %1$s Events stay queued and are retried once a minute.</string>
+    <string name="export_retrying">Undelivered events are queued and retried.</string>
+    <string name="export_test_sending">Sending…</string>
+    <string name="export_test_sent_udp">Test event sent (UDP cannot confirm delivery)</string>
+    <string name="export_test_delivered">Test event delivered</string>
+    <!-- %1$s: the error, often from the collector (may be English). -->
+    <string name="export_test_failed">Failed: %1$s</string>
+    <string name="export_send_test">Send test event</string>
+    <string name="export_send_test_unsaved">Send test event (unsaved settings)</string>
+
+    <!-- Export settings validation and delivery problems. -->
+    <string name="export_error_host">Enter the collector\'s host name or address.</string>
+    <string name="export_error_url_scheme">The URL must start with https:// or http://.</string>
+    <string name="export_error_url_invalid">The URL is not valid.</string>
+    <string name="export_error_bulk_index">An Elastic _bulk URL must name the index, e.g. https://host:9200/vigil-events/_bulk.</string>
+    <!-- %1$s: the URL the collector redirects to, %2$d: HTTP status code. -->
+    <string name="export_error_redirected">collector redirected to %1$s (HTTP %2$d); use that URL</string>
+    <!-- %1$d: HTTP status code. -->
+    <string name="export_error_redirect">collector answered with a redirect (HTTP %1$d); check the URL</string>
+    <!-- Splunk HEC error codes 7, 10 and 11. -->
+    <string name="export_error_hec_code7">Splunk HEC refuses events (code 7): incorrect index. The token may not write to the index; check the HEC token\'s allowed indexes.</string>
+    <string name="export_error_hec_code10">Splunk HEC refuses events (code 10): data channel is missing. Indexer acknowledgement is enabled for this HEC token; turn it off for vigil\'s token.</string>
+    <string name="export_error_hec_code11">Splunk HEC refuses events (code 11): invalid data channel. Indexer acknowledgement is enabled for this HEC token; turn it off for vigil\'s token.</string>
+    <!-- %1$s: Elasticsearch's reason (English). -->
+    <string name="export_error_elastic_validation">Elasticsearch refuses the request (%1$s). The URL must name the index: https://host:9200/&lt;index&gt;/_bulk.</string>
+    <!-- %1$d: HTTP status code. -->
+    <string name="export_error_refused_everything">the collector refused every record with HTTP %1$d, even one at a time, so the fault is likely the endpoint URL or the collector\'s settings (for Elasticsearch: https://host:9200/&lt;index&gt;/_bulk).</string>
+    <string name="export_error_waiting_network">waiting for a network connection</string>
+    <plurals name="export_error_held_rejected">
+        <item quantity="one">%d record refused by the collector (rejected)</item>
+        <item quantity="other">%d records refused by the collector (rejected)</item>
+    </plurals>
+    <!-- %1$s: the collector's error (e.g. "HTTP 400: …"). -->
+    <string name="export_error_retrying_smaller">%1$s (retrying in smaller batches)</string>
+    <!-- %1$s: the collector's error (e.g. "HTTP 413"). -->
+    <string name="export_error_record_rejected">%1$s (record rejected)</string>
+    <!-- %1$s: the collector's error (e.g. "HTTP 401"). -->
+    <string name="export_error_check_credentials">%1$s (check the endpoint and credentials)</string>
+</resources>

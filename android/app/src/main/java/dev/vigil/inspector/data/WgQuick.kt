@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.vpn.IpLiteral
 import java.util.Base64
 
@@ -13,15 +15,16 @@ import java.util.Base64
  * with a warning, as are extra peers and DNS search domains.
  */
 object WgQuick {
-    class ParseException(message: String) : Exception(message)
+    /** A configuration that cannot be used; [text] is shown to the user. */
+    class ParseException(val text: UiText) : Exception("WireGuard configuration refused: $text")
 
-    data class Parsed(val settings: WireGuardSettings, val warnings: List<String>)
+    data class Parsed(val settings: WireGuardSettings, val warnings: List<UiText>)
 
     private const val MAX_TEXT = 64 * 1024
 
     fun parse(text: String, name: String = ""): Parsed {
-        if (text.length > MAX_TEXT) throw ParseException("The file is too large for a WireGuard configuration.")
-        val warnings = mutableListOf<String>()
+        if (text.length > MAX_TEXT) throw ParseException(UiText.of(R.string.upstream_wg_too_large))
+        val warnings = mutableListOf<UiText>()
         var section: String? = null
         var peers = 0
         val iface = mutableMapOf<String, MutableList<String>>()
@@ -35,61 +38,61 @@ object WgQuick {
                 section = line.substring(1, line.length - 1).trim().lowercase()
                 when (section) {
                     "interface" -> Unit
-                    "peer" -> if (++peers == 2) warnings += "Only the first [Peer] is used."
-                    else -> warnings += "Unknown section [$section] ignored."
+                    "peer" -> if (++peers == 2) warnings += UiText.of(R.string.upstream_wg_only_first_peer)
+                    else -> warnings += UiText.of(R.string.upstream_wg_unknown_section, section.orEmpty())
                 }
                 return@forEachIndexed
             }
             val eq = line.indexOf('=')
-            if (eq <= 0) throw ParseException("Line ${i + 1} is not \"Key = Value\".")
+            if (eq <= 0) throw ParseException(UiText.of(R.string.upstream_wg_not_key_value, i + 1))
             val key = line.substring(0, eq).trim().lowercase()
             spelled.putIfAbsent(key, line.substring(0, eq).trim())
             val value = line.substring(eq + 1).trim()
             when (section) {
                 "interface" -> iface.getOrPut(key) { mutableListOf() } += value
                 "peer" -> if (peers == 1) peer.getOrPut(key) { mutableListOf() } += value
-                null -> throw ParseException("Line ${i + 1} is outside a section.")
+                null -> throw ParseException(UiText.of(R.string.upstream_wg_outside_section, i + 1))
             }
         }
-        if (iface.isEmpty()) throw ParseException("No [Interface] section.")
-        if (peers == 0) throw ParseException("No [Peer] section.")
+        if (iface.isEmpty()) throw ParseException(UiText.of(R.string.upstream_wg_no_interface))
+        if (peers == 0) throw ParseException(UiText.of(R.string.upstream_wg_no_peer))
 
-        for (k in iface.keys - setOf("privatekey", "address", "dns", "mtu")) warnings += "[Interface] ${spelled[k] ?: k} ignored."
-        for (k in peer.keys - setOf("publickey", "presharedkey", "endpoint", "allowedips", "persistentkeepalive")) warnings += "[Peer] ${spelled[k] ?: k} ignored."
+        for (k in iface.keys - setOf("privatekey", "address", "dns", "mtu")) warnings += UiText.of(R.string.upstream_wg_interface_key_ignored, spelled[k] ?: k)
+        for (k in peer.keys - setOf("publickey", "presharedkey", "endpoint", "allowedips", "persistentkeepalive")) warnings += UiText.of(R.string.upstream_wg_peer_key_ignored, spelled[k] ?: k)
 
         val privateKey = single(iface, "privatekey", "[Interface] PrivateKey")
-        if (!isKey(privateKey)) throw ParseException("[Interface] PrivateKey is not a WireGuard key.")
+        if (!isKey(privateKey)) throw ParseException(UiText.of(R.string.upstream_wg_not_a_key, "[Interface] PrivateKey"))
         val publicKey = single(peer, "publickey", "[Peer] PublicKey")
-        if (!isKey(publicKey)) throw ParseException("[Peer] PublicKey is not a WireGuard key.")
+        if (!isKey(publicKey)) throw ParseException(UiText.of(R.string.upstream_wg_not_a_key, "[Peer] PublicKey"))
         val psk = peer["presharedkey"]?.lastOrNull()
-        if (psk != null && !isKey(psk)) throw ParseException("[Peer] PresharedKey is not a WireGuard key.")
+        if (psk != null && !isKey(psk)) throw ParseException(UiText.of(R.string.upstream_wg_not_a_key, "[Peer] PresharedKey"))
 
         val endpoint = single(peer, "endpoint", "[Peer] Endpoint")
-        if (!isEndpoint(endpoint)) throw ParseException("[Peer] Endpoint \"$endpoint\" is not host:port.")
+        if (!isEndpoint(endpoint)) throw ParseException(UiText.of(R.string.upstream_wg_endpoint_invalid, endpoint))
 
         val addresses = list(iface["address"]).map {
-            normalizeCidr(it) ?: throw ParseException("[Interface] Address \"$it\" is not an IP address.")
+            normalizeCidr(it) ?: throw ParseException(UiText.of(R.string.upstream_wg_address_invalid, it))
         }
-        if (addresses.isEmpty()) throw ParseException("[Interface] Address is missing.")
+        if (addresses.isEmpty()) throw ParseException(UiText.of(R.string.upstream_wg_address_missing))
         val v4 = addresses.filter { !it.contains(':') }
         val v6 = addresses.filter { it.contains(':') }
-        if (v4.size > 1 || v6.size > 1) warnings += "Only the first IPv4 and the first IPv6 address are used."
+        if (v4.size > 1 || v6.size > 1) warnings += UiText.of(R.string.upstream_wg_first_address_only)
         val usedAddresses = listOfNotNull(v4.firstOrNull(), v6.firstOrNull())
 
         val dnsEntries = list(iface["dns"])
         val dns = dnsEntries.filter { IpLiteral.isV4(it) || IpLiteral.isV6(it) }
-        if (dns.size < dnsEntries.size) warnings += "DNS search domains ignored."
+        if (dns.size < dnsEntries.size) warnings += UiText.of(R.string.upstream_wg_search_domains)
 
         val mtu = iface["mtu"]?.lastOrNull()?.let {
-            it.toIntOrNull()?.takeIf { m -> m in 576..65535 } ?: throw ParseException("[Interface] MTU \"$it\" is not a number between 576 and 65535.")
+            it.toIntOrNull()?.takeIf { m -> m in 576..65535 } ?: throw ParseException(UiText.of(R.string.upstream_wg_mtu_invalid, it))
         }
         val allowed = list(peer["allowedips"]).map {
-            normalizeCidr(it) ?: throw ParseException("[Peer] AllowedIPs \"$it\" is not a CIDR range.")
+            normalizeCidr(it) ?: throw ParseException(UiText.of(R.string.upstream_wg_allowed_ips_invalid, it))
         }
         allowedIpsWarning(allowed)?.let { warnings += it }
         val keepalive = peer["persistentkeepalive"]?.lastOrNull()?.let {
             if (it.equals("off", ignoreCase = true)) 0
-            else it.toIntOrNull()?.takeIf { k -> k in 0..65535 } ?: throw ParseException("[Peer] PersistentKeepalive \"$it\" is not a number.")
+            else it.toIntOrNull()?.takeIf { k -> k in 0..65535 } ?: throw ParseException(UiText.of(R.string.upstream_wg_keepalive_invalid, it))
         } ?: 0
 
         return Parsed(
@@ -114,13 +117,11 @@ object WgQuick {
      * all around the tunnel, or refuses it when fail-closed is on. A file
      * routing all IPv4 (`0.0.0.0/0`) but no IPv6 is the common case: warn.
      */
-    fun allowedIpsWarning(allowed: List<String>): String? {
+    fun allowedIpsWarning(allowed: List<String>): UiText? {
         val allV4 = allowed.any { !it.contains(':') && it.endsWith("/0") }
         val anyV6 = allowed.any { it.contains(':') }
         if (!allV4 || anyV6) return null
-        return "AllowedIPs has 0.0.0.0/0 but no ::/0: IPv6 does not go through the tunnel. With “Block traffic (fail closed)” " +
-            "on, IPv6 connections are refused (apps fall back to IPv4); with it off, they go direct, outside the tunnel. " +
-            "Add ::/0 to AllowedIPs (and an IPv6 Address) to tunnel IPv6 too."
+        return UiText.of(R.string.upstream_wg_ipv6_not_tunnelled)
     }
 
     /** A base64 WireGuard key (32 bytes). */
@@ -171,6 +172,6 @@ object WgQuick {
         values.orEmpty().flatMap { it.split(',') }.map { it.trim() }.filter { it.isNotEmpty() }
 
     private fun single(map: Map<String, List<String>>, key: String, label: String): String =
-        map[key]?.lastOrNull()?.takeIf { it.isNotBlank() } ?: throw ParseException("$label is missing.")
+        map[key]?.lastOrNull()?.takeIf { it.isNotBlank() } ?: throw ParseException(UiText.of(R.string.upstream_wg_missing, label))
 
 }

@@ -2,6 +2,7 @@ package dev.vigil.inspector.ui
 
 import android.content.Context
 import android.net.Uri
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.PcapExportSummary
 import dev.vigil.inspector.engine.PcapFilter
 import dev.vigil.inspector.vpn.ActiveEngine
@@ -35,13 +36,11 @@ data class PcapRequest(
 
 /** Why a [PcapRequest] cannot be served now (shown instead of the file picker), or null. */
 object CaptureExport {
-    fun unavailable(captureEnabled: Boolean, active: ActiveEngine?, request: PcapRequest): String? = when {
-        !captureEnabled ->
-            "Packet capture is off. Turn it on in Settings → Packet capture: vigil then keeps the most recent packets in memory, " +
-                "and they can be exported from here. Packets from before it was on were not recorded."
-        active == null -> "Inspection is not running. Packets are only held in memory while vigil inspects traffic."
+    fun unavailable(captureEnabled: Boolean, active: ActiveEngine?, request: PcapRequest): UiText? = when {
+        !captureEnabled -> UiText.of(R.string.capture_unavailable_off)
+        active == null -> UiText.of(R.string.capture_unavailable_not_running)
         (request.session != null && request.session != active.session) || (request.itemTs != null && request.itemTs < active.session) ->
-            "This is from an earlier inspection session. Packets are only held in memory for the running session, so they are gone."
+            UiText.of(R.string.capture_unavailable_earlier_session)
         else -> null
     }
 
@@ -71,14 +70,14 @@ object CaptureExport {
     }
 
     /** The message after an export. */
-    fun resultMessage(s: PcapExportSummary?): String = when {
-        s == null -> "Export failed: the capture could not be written."
-        s.packets == 0L && s.truncatedByRing ->
-            "No packets exported: they were already overwritten in the capture buffer (a larger buffer keeps more)."
-        s.packets == 0L -> "No captured packets match (capture may have been turned on after this traffic)."
-        s.truncatedByRing ->
-            "Exported ${plural(s.packets, "packet")} (${formatBytes(s.bytes)}). Older packets were already overwritten in the capture buffer."
-        else -> "Exported ${plural(s.packets, "packet")} (${formatBytes(s.bytes)})."
+    fun resultMessage(s: PcapExportSummary?): UiText = when {
+        s == null -> UiText.of(R.string.capture_export_failed_write)
+        s.packets == 0L && s.truncatedByRing -> UiText.of(R.string.capture_export_none_overwritten)
+        s.packets == 0L -> UiText.of(R.string.capture_export_none_match)
+        else -> UiText.plural(
+            if (s.truncatedByRing) R.plurals.capture_exported_truncated else R.plurals.capture_exported,
+            s.packets.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), s.packets, formatBytes(s.bytes),
+        )
     }
 
     /**
@@ -92,13 +91,13 @@ object CaptureExport {
         val tmp = File.createTempFile("export-", ".pcapng", dir)
         return try {
             val summary = active.handle.exportPcap(filter, tmp.absolutePath)
-                ?: return "Export failed: inspection stopped, or the capture could not be written."
+                ?: return context.getString(R.string.capture_export_failed_stopped)
             val out = context.contentResolver.openOutputStream(target, "wt")
-                ?: return "Export failed: the chosen file could not be opened."
+                ?: return context.getString(R.string.capture_export_failed_open)
             out.use { o -> tmp.inputStream().use { it.copyTo(o, 256 * 1024) } }
-            resultMessage(summary)
+            resultMessage(summary).resolve(context)
         } catch (e: Exception) {
-            "Export failed: ${e.message ?: e.javaClass.simpleName}"
+            context.getString(R.string.capture_export_failed, e.message ?: e.javaClass.simpleName)
         } finally {
             tmp.delete()
         }

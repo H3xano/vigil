@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -46,9 +48,9 @@ class WgQuickTest {
         assertEquals(listOf("0.0.0.0/0", "::/0"), s.allowedIps)
         assertEquals(25, s.persistentKeepalive)
         assertEquals("mullvad-se.conf", s.name)
-        assertTrue(p.warnings.any { "search domains" in it })
-        assertTrue(p.warnings.any { "PostUp" in it })
-        assertTrue(p.warnings.any { "ListenPort" in it })
+        assertTrue(UiText.of(R.string.upstream_wg_search_domains) in p.warnings)
+        assertTrue(UiText.of(R.string.upstream_wg_interface_key_ignored, "PostUp") in p.warnings)
+        assertTrue(UiText.of(R.string.upstream_wg_interface_key_ignored, "ListenPort") in p.warnings)
     }
 
     @Test
@@ -87,9 +89,8 @@ class WgQuickTest {
             Endpoint = vpn.example.com:51820
             AllowedIPs = $allowed
             """.trimIndent(),
-        ).warnings.filter { "AllowedIPs" in it }
+        ).warnings.filter { it == UiText.of(R.string.upstream_wg_ipv6_not_tunnelled) }
         assertEquals(1, warnings("0.0.0.0/0").size)
-        assertTrue(warnings("0.0.0.0/0").single().contains("fail closed"))
         assertTrue(warnings("0.0.0.0/0, ::/0").isEmpty())
         assertTrue(warnings("0.0.0.0/0, 2000::/3").isEmpty())
         assertTrue(warnings("10.0.0.0/8").isEmpty())
@@ -114,8 +115,8 @@ class WgQuickTest {
         assertEquals(listOf("10.0.0.2/32", "fd00::2/128"), p.settings.addresses)
         assertEquals("vpn.example.com:51820", p.settings.endpoint)
         assertEquals(key2, p.settings.peerPublicKey)
-        assertTrue(p.warnings.any { "first [Peer]" in it })
-        assertTrue(p.warnings.any { "first IPv4" in it })
+        assertTrue(UiText.of(R.string.upstream_wg_only_first_peer) in p.warnings)
+        assertTrue(UiText.of(R.string.upstream_wg_first_address_only) in p.warnings)
     }
 
     @Test
@@ -160,7 +161,7 @@ class WgQuickTest {
     fun settingsValidation() {
         val wg = WgQuick.parse(conf).settings
         assertNull(UpstreamSettings().validationError())
-        assertEquals("Import a WireGuard configuration first.", UpstreamSettings(mode = "wireguard").validationError())
+        assertEquals(UiText.of(R.string.upstream_error_import_first), UpstreamSettings(mode = "wireguard").validationError())
         assertNull(UpstreamSettings(mode = "wireguard", wireguard = wg).validationError())
         val socks = UpstreamSettings(mode = "socks5")
         assertNull(socks.validationError())
@@ -168,7 +169,7 @@ class WgQuickTest {
         assertNull(socks.copy(socks5 = Socks5Settings(host = "proxy.example", username = "u", password = "p")).validationError())
         assertTrue(socks.copy(socks5 = Socks5Settings(host = "")).validationError() != null)
         assertTrue(socks.copy(socks5 = Socks5Settings(port = 0)).validationError() != null)
-        assertTrue(socks.copy(socks5 = Socks5Settings(host = "bad host")).validationError() != null)
+        assertEquals(UiText.of(R.string.upstream_error_bad_host, "bad host"), socks.copy(socks5 = Socks5Settings(host = "bad host")).validationError())
         assertTrue(socks.copy(socks5 = Socks5Settings(password = "p")).validationError() != null)
         assertTrue(socks.copy(socks5 = Socks5Settings(username = "u".repeat(256))).validationError() != null)
         // Only a SOCKS5 proxy app is excluded from the VPN.

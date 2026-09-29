@@ -1,6 +1,8 @@
 package dev.vigil.inspector.export
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.ExportSettings
+import dev.vigil.inspector.ui.UiText
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -143,7 +145,7 @@ class ExportPipelineTest {
         val first = h.attempts.size
         assertTrue("detected in a few attempts, not ~399: $first", first in 10..25)
         var s = h.pipeline.status.value
-        assertTrue(s.configProblem!!, s.configProblem!!.contains("HTTP 400"))
+        assertEquals(UiText.of(R.string.export_error_refused_everything, 400), s.configProblem)
         assertEquals(0L, s.rejected)
         assertEquals(200, s.queued)
         // Then about one detection round a minute, paced.
@@ -203,7 +205,10 @@ class ExportPipelineTest {
             """"type":"action_request_validation_exception","reason":"Validation Failed: 1: index is missing;"},"status":400}"""
         val e = HttpStatusException(400, body)
         assertEquals(FailureKind.CONFIG, ExportRetry.classify(e, es))
-        assertTrue(ExportRetry.configProblem(e, es)!!.contains("index is missing"))
+        assertEquals(
+            UiText.of(R.string.export_error_elastic_validation, "Validation Failed: 1: index is missing;"),
+            ExportRetry.configProblem(e, es),
+        )
         val h = harness(cfg = es) { _, _ -> throw e }
         repeat(50) { h.pipeline.offer(rec(it)) }
         backgroundScope.launch { h.pipeline.run() }
@@ -246,7 +251,7 @@ class ExportPipelineTest {
         runCurrent()
         assertEquals(1, h.attempts.size)
         assertEquals(1L, h.pipeline.status.value.rejected)
-        assertTrue(h.pipeline.status.value.lastError!!.contains("record rejected"))
+        assertEquals(UiText.of(R.string.export_error_record_rejected, UiText.Raw("HTTP 413")), h.pipeline.status.value.lastError)
     }
 
     @Test
@@ -262,7 +267,7 @@ class ExportPipelineTest {
         assertEquals("not split, not rejected", 1, h.attempts.size)
         assertEquals(0L, s.rejected)
         assertEquals(3, s.queued)
-        assertTrue(s.configProblem!!, s.configProblem!!.contains("code 7"))
+        assertEquals(UiText.of(R.string.export_error_hec_code7), s.configProblem)
         advanceTimeBy(59_000)
         runCurrent()
         assertEquals("retried slowly", 1, h.attempts.size)
@@ -316,7 +321,7 @@ class ExportPipelineTest {
         advanceTimeBy(2_000)
         runCurrent()
         assertEquals(2, h.attempts.size)
-        assertTrue(h.pipeline.status.value.lastError!!.startsWith("HTTP 401"))
+        assertEquals(UiText.of(R.string.export_error_check_credentials, UiText.Raw("HTTP 401")), h.pipeline.status.value.lastError)
         // Fixing the credentials retries immediately.
         h.config.value = enabled.copy(authHeader = "Bearer fixed")
         runCurrent()

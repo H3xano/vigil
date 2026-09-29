@@ -1,7 +1,9 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.EncryptedDnsConfig
 import dev.vigil.inspector.engine.EncryptedDnsServer
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.vpn.IpLiteral
 import kotlinx.serialization.Serializable
 
@@ -29,20 +31,36 @@ data class EncryptedDnsSettings(
     val enabled: Boolean get() = mode == "dot" || mode == "doh"
 
     /** Why these settings cannot be used, or null. Only checked when [enabled]. */
-    fun problem(): String? {
+    fun problemText(): UiText? {
         if (!enabled) return null
-        if (provider != CUSTOM) return if (DnsProviders.byId(provider) == null) "Choose a provider." else null
+        if (provider != CUSTOM) return if (DnsProviders.byId(provider) == null) UiText.of(R.string.settings_dns_choose_provider) else null
         val badAddr = customAddrs.firstOrNull { !IpLiteral.isV4(it) && !IpLiteral.isV6(it) }
         return when {
-            badAddr != null -> "“$badAddr” is not an IP address."
-            customAddrs.size > MAX_ADDRS -> "At most $MAX_ADDRS addresses."
-            mode == "doh" && parseDohUrl(customUrl) == null -> "Enter an https:// URL, e.g. https://dns.example/dns-query."
-            mode == "dot" && !isServerName(customHost) -> "Enter the server's name (as in its certificate) or IP address."
-            mode == "dot" && customPort !in 1..65535 -> "The port must be between 1 and 65535."
-            customAddrs.isEmpty() && !hostIsIp() && !fallbackPlain ->
-                "Enter the server's IP addresses, or allow plain DNS to look its name up."
+            badAddr != null -> UiText.of(R.string.settings_dns_not_ip, badAddr)
+            customAddrs.size > MAX_ADDRS -> UiText.plural(R.plurals.settings_dns_too_many_addrs, MAX_ADDRS, MAX_ADDRS)
+            mode == "doh" && parseDohUrl(customUrl) == null -> UiText.of(R.string.settings_dns_need_https_url)
+            mode == "dot" && !isServerName(customHost) -> UiText.of(R.string.settings_dns_need_server_name)
+            mode == "dot" && customPort !in 1..65535 -> UiText.of(R.string.settings_port_range)
+            customAddrs.isEmpty() && !hostIsIp() && !fallbackPlain -> UiText.of(R.string.settings_dns_need_addrs)
             else -> null
         }
+    }
+
+    /**
+     * English form of [problemText], for DnsScreen until it resolves
+     * [problemText] itself; remove then.
+     */
+    fun problem(): String? = when (val t = problemText()) {
+        null -> null
+        is UiText.Res -> when (t.id) {
+            R.string.settings_dns_choose_provider -> "Choose a provider."
+            R.string.settings_dns_not_ip -> "“${t.args[0]}” is not an IP address."
+            R.string.settings_dns_need_https_url -> "Enter an https:// URL, e.g. https://dns.example/dns-query."
+            R.string.settings_dns_need_server_name -> "Enter the server's name (as in its certificate) or IP address."
+            R.string.settings_port_range -> "The port must be between 1 and 65535."
+            else -> "Enter the server's IP addresses, or allow plain DNS to look its name up."
+        }
+        else -> "At most $MAX_ADDRS addresses."
     }
 
     private fun hostIsIp(): Boolean {
@@ -52,7 +70,7 @@ data class EncryptedDnsSettings(
 
     /** The engine configuration; `off` when disabled or invalid (see [problem]). */
     fun toEngine(): EncryptedDnsConfig {
-        if (!enabled || problem() != null) return EncryptedDnsConfig()
+        if (!enabled || problemText() != null) return EncryptedDnsConfig()
         val server = if (provider == CUSTOM) {
             if (mode == "doh") {
                 EncryptedDnsServer(url = customUrl.trim(), addrs = customAddrs)
@@ -66,12 +84,16 @@ data class EncryptedDnsSettings(
         return EncryptedDnsConfig(mode = mode, servers = listOf(server), fallbackPlain = fallbackPlain)
     }
 
-    /** Short description, e.g. "DNS over HTTPS · Quad9". */
-    fun summary(): String {
+    /**
+     * Short description, e.g. "DNS over HTTPS · Quad9" (protocol and
+     * provider names are not translated). [customLabel] names a custom
+     * server whose name is unknown.
+     */
+    fun summary(customLabel: String = "custom"): String {
         if (!enabled) return "Off"
         val transport = if (mode == "doh") "DNS over HTTPS" else "DNS over TLS"
         val who = if (provider == CUSTOM) {
-            if (mode == "doh") parseDohUrl(customUrl)?.host ?: "custom" else customHost.ifBlank { "custom" }
+            if (mode == "doh") parseDohUrl(customUrl)?.host ?: customLabel else customHost.ifBlank { customLabel }
         } else {
             DnsProviders.byId(provider)?.name ?: provider
         }
