@@ -1,5 +1,7 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.engine.StatsEvent
+
 /** Pure decisions of [VigilVpnService], kept here so they are unit-testable. */
 object ServicePolicy {
     /**
@@ -28,4 +30,18 @@ object ServicePolicy {
     /** One line for the ongoing notification. */
     fun lockdownShort(excludedPackage: String, proxyLabel: String? = null): String =
         "${proxyLabel?.takeIf { it.isNotBlank() } ?: excludedPackage} has no network (always-on lockdown); connections fail"
+
+    /** Wireshark clients connected to the PCAP-over-IP stream (0 when none or off). */
+    fun streamClients(stats: StatsEvent?): Long = stats?.capture?.stream?.clients ?: 0
+
+    /**
+     * The ongoing notification's note while someone receives the packet
+     * stream, so a connected client is never invisible. Null when none is.
+     */
+    fun streamingNotice(stats: StatsEvent?): String? {
+        val n = streamClients(stats)
+        if (n <= 0) return null
+        val where = stats?.capture?.stream?.listening?.let { " on $it" }.orEmpty()
+        return "Streaming packets to $n Wireshark client${if (n == 1L) "" else "s"}$where"
+    }
 }

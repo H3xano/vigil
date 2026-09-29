@@ -154,8 +154,10 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
                         if (wg != null) TextButton(onClick = { draft = draft.copy(wireguard = null); warnings = emptyList() }) { Text("Remove") }
                     }
                     Text(
-                        "Destinations outside the peer's AllowedIPs go direct, as with wg-quick. IPv6 needs an IPv6 Address in the configuration; " +
-                            "without one, apps fall back to IPv4.",
+                        "Destinations outside the peer's AllowedIPs go direct, as with wg-quick. An address family AllowedIPs does not " +
+                            "cover at all (IPv6 when it lists only 0.0.0.0/0) is refused while “Block traffic (fail closed)” is on, " +
+                            "and goes direct when it is off; refused apps fall back to the other family. Tunnelling IPv6 needs " +
+                            "::/0 in AllowedIPs and an IPv6 Address in the configuration.",
                         Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

@@ -17,10 +17,35 @@ data class CaptureSettings(
     val streamPort: Int = DEFAULT_STREAM_PORT,
     /** Where the server listens: [BIND_WIFI] (default), [BIND_ALL] or [BIND_LOOPBACK]. */
     val streamBind: String = BIND_WIFI,
-    /** Client addresses or CIDR ranges allowed to connect; empty = anyone who can reach the port. */
+    /**
+     * Client addresses or CIDR ranges allowed to connect. Required when the
+     * stream listens on the network ([BIND_WIFI], [BIND_ALL]): with an empty
+     * list the stream does not listen at all ([streamRefusal]).
+     */
     val streamAllow: List<String> = emptyList(),
 ) {
+    /** The allowlist as the engine gets it: valid entries only, trimmed, de-duplicated, at most [MAX_ALLOW]. */
+    fun allowList(): List<String> = streamAllow.map { it.trim() }.filter { isValidAllowEntry(it) }.distinct().take(MAX_ALLOW)
+
+    /**
+     * Why the stream may not listen with these settings, or null. A listener
+     * on the network ([BIND_WIFI], [BIND_ALL]) needs a non-empty allowlist:
+     * otherwise anyone on the network would receive the packets.
+     */
+    fun streamRefusal(): String? = if (streamEnabled && needsAllowList(streamBind) && allowList().isEmpty()) NEEDS_ALLOWLIST else null
+
     companion object {
+        const val MAX_ALLOW = 32
+
+        /** Shown when network streaming has no allowlist. */
+        const val NEEDS_ALLOWLIST =
+            "Streaming on Wi-Fi or all networks needs at least one allowed client address (your computer's), " +
+                "otherwise anyone on the network could receive your packets. Add one below, or listen on “This device” " +
+                "and connect through adb forward."
+
+        /** True for the bind choices that listen on the network rather than on loopback. */
+        fun needsAllowList(bind: String) = bind != BIND_LOOPBACK
+
         const val DEFAULT_STREAM_PORT = 57012
         const val BIND_WIFI = "wifi"
         const val BIND_ALL = "all"

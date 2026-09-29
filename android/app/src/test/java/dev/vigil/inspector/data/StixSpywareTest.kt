@@ -49,9 +49,30 @@ class StixSpywareTest {
 
     @Test
     fun urlHostsCanBeIgnored() {
-        val p = "[url:value='https://github.com/karma9874/AndroRAT']"
-        assertEquals(listOf("github.com"), StixPattern.extract(p).domains)
+        val p = "[url:value='https://evil.example/karma9874/AndroRAT']"
+        assertEquals(listOf("evil.example"), StixPattern.extract(p).domains)
         assertTrue(StixPattern.extract(p, urlHosts = false).isEmpty)
+    }
+
+    @Test
+    fun urlHostsOfSharedPlatformsAreDropped() {
+        // A TAXII URL indicator on a shared platform must not block the whole platform.
+        for (url in listOf(
+            "https://github.com/x/y/a.apk", "https://raw.githubusercontent.com/x/y/main/a.apk", "https://drive.google.com/file/d/1",
+            "https://cdn.discordapp.com/attachments/1/2/a.apk", "https://www.dropbox.com/s/x/a.apk", "https://1drv.ms/u/s!x",
+            "https://mega.nz/file/x", "https://pastebin.com/raw/x", "https://t.me/x", "https://bit.ly/x", "https://herokuapp.com/",
+        )) {
+            assertTrue(url, StixPattern.extract("[url:value = '$url']").isEmpty)
+            val o = Json.parseToJsonElement(
+                """{"type":"indicator","id":"indicator--1","pattern":"[url:value = '$url']","pattern_type":"stix"}""",
+            ).jsonObject
+            assertNull(url, Stix.item(o))
+        }
+        // A customer's subdomain of a hosting platform, and IP hosts, stay indicators.
+        assertEquals(listOf("evil-c2.herokuapp.com"), StixPattern.extract("[url:value = 'https://evil-c2.herokuapp.com/x']").domains)
+        assertEquals(listOf("203.0.113.9"), StixPattern.extract("[url:value = 'http://203.0.113.9/a.apk']").ips)
+        // Explicit domain indicators are left to the source.
+        assertEquals(listOf("github.com"), StixPattern.extract("[domain-name:value = 'github.com']").domains)
     }
 
     @Test

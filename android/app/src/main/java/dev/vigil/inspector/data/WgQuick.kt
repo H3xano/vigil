@@ -86,6 +86,7 @@ object WgQuick {
         val allowed = list(peer["allowedips"]).map {
             normalizeCidr(it) ?: throw ParseException("[Peer] AllowedIPs \"$it\" is not a CIDR range.")
         }
+        allowedIpsWarning(allowed)?.let { warnings += it }
         val keepalive = peer["persistentkeepalive"]?.lastOrNull()?.let {
             if (it.equals("off", ignoreCase = true)) 0
             else it.toIntOrNull()?.takeIf { k -> k in 0..65535 } ?: throw ParseException("[Peer] PersistentKeepalive \"$it\" is not a number.")
@@ -106,6 +107,20 @@ object WgQuick {
             ),
             warnings,
         )
+    }
+
+    /**
+     * The engine sends an address family that AllowedIPs does not cover at
+     * all around the tunnel, or refuses it when fail-closed is on. A file
+     * routing all IPv4 (`0.0.0.0/0`) but no IPv6 is the common case: warn.
+     */
+    fun allowedIpsWarning(allowed: List<String>): String? {
+        val allV4 = allowed.any { !it.contains(':') && it.endsWith("/0") }
+        val anyV6 = allowed.any { it.contains(':') }
+        if (!allV4 || anyV6) return null
+        return "AllowedIPs has 0.0.0.0/0 but no ::/0: IPv6 does not go through the tunnel. With “Block traffic (fail closed)” " +
+            "on, IPv6 connections are refused (apps fall back to IPv4); with it off, they go direct, outside the tunnel. " +
+            "Add ::/0 to AllowedIPs (and an IPv6 Address) to tunnel IPv6 too."
     }
 
     /** A base64 WireGuard key (32 bytes). */

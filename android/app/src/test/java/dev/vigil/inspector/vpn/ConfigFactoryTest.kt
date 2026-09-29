@@ -242,6 +242,7 @@ class ConfigFactoryTest {
         assertTrue(start, start.contains("\"device_state\":$DEVICE_STATE_JSON"))
     }
 
+    @Test
     fun captureSection() {
         val wifi = "192.168.1.23"
         // Off by default: the engine's defaults, spelled out.
@@ -267,6 +268,21 @@ class ConfigFactoryTest {
         val odd = ConfigFactory.captureConfig(on.capture.copy(bufferMb = 4096, streamPort = 80), wifi)
         assertEquals(128L * 1024 * 1024, odd.bufferBytes)
         assertEquals(57012, odd.stream.port)
+        // A listener on the network is never emitted without an allowlist (only invalid entries count as none).
+        for (bind in listOf(CaptureSettings.BIND_WIFI, CaptureSettings.BIND_ALL)) {
+            for (allow in listOf(emptyList(), listOf("bogus", "10.0.0.0/33"))) {
+                val open = on.capture.copy(streamBind = bind, streamAllow = allow)
+                assertEquals(CaptureSettings.NEEDS_ALLOWLIST, open.streamRefusal())
+                val cfg = ConfigFactory.captureConfig(open, wifi)
+                assertTrue(cfg.enabled)
+                assertFalse(bind, cfg.stream.enabled)
+            }
+        }
+        // Loopback (adb forward) needs none.
+        val local = on.capture.copy(streamBind = CaptureSettings.BIND_LOOPBACK, streamAllow = emptyList())
+        assertEquals(null, local.streamRefusal())
+        assertTrue(ConfigFactory.captureConfig(local, wifi).stream.enabled)
+        assertEquals(null, on.capture.copy(streamEnabled = false, streamAllow = emptyList()).streamRefusal())
         assertTrue(CaptureSettings.isValidAllowEntry("2001:db8::/32"))
         assertFalse(CaptureSettings.isValidAllowEntry("192.168.1.0/"))
         assertFalse(CaptureSettings.isValidAllowEntry("host.example"))

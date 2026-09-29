@@ -205,6 +205,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 "Packet capture",
                 when {
                     !s.capture.enabled -> "Off. Keep recent packets in memory to export them as PCAPng for Wireshark, or stream them live."
+                    s.capture.streamRefusal() != null -> "Recording (${s.capture.bufferMb} MB) · not streaming: add an allowed client address"
                     s.capture.streamEnabled -> "Recording (${s.capture.bufferMb} MB) · streaming on port ${s.capture.streamPort}"
                     else -> "Recording the most recent ${s.capture.bufferMb} MB of packets in memory"
                 },

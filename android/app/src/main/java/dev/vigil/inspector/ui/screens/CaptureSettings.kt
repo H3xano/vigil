@@ -52,8 +52,11 @@ private const val PRIVACY_NOTE =
         "nothing is written to storage unless you export."
 
 private const val STREAM_WARNING =
-    "Anyone on the network who can reach this port receives the captured packets, unencrypted. " +
-        "Use it on a trusted network, restrict it to your computer's address below, and turn it off when done."
+    "The captured packets are sent unencrypted. “This device” accepts only connections through adb forward " +
+        "(from a computer, via the adb shell); other apps on the phone cannot connect. Wi-Fi and All networks " +
+        "require the address of your computer below: only the allowed addresses can connect, and anyone on the " +
+        "network able to use such an address could receive the packets. Use them on a trusted network and turn " +
+        "streaming off when done."
 
 /** Settings → Packet capture: the capture ring, export, and PCAP-over-IP for Wireshark. */
 @Composable
@@ -107,17 +110,29 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
             SettingRow(
                 "Stream live packets",
                 if (c.enabled) "Serve the packets as they are captured to up to two clients on the network." else "Turn on “Record packets” first.",
-                c.streamEnabled, onChecked = { v -> update { it.copy(streamEnabled = v) } },
+                c.streamEnabled,
+                onChecked = { v ->
+                    // Never on the network without an allowlist: anyone there would get the packets.
+                    val refusal = c.copy(streamEnabled = v).streamRefusal()
+                    if (v && refusal != null) vm.showMessage(refusal) else update { it.copy(streamEnabled = v) }
+                },
                 enabled = c.enabled || c.streamEnabled,
             )
             Text(STREAM_WARNING, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = VigilColors.Medium)
-            if (c.streamEnabled) {
+            // Shown before streaming is on, so the address or "This device" can be set first.
+            if (c.enabled || c.streamEnabled) {
                 Text("Listen on", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
                 Segmented(
                     listOf(CaptureSettings.BIND_WIFI to "Wi-Fi", CaptureSettings.BIND_ALL to "All networks", CaptureSettings.BIND_LOOPBACK to "This device"),
-                    c.streamBind, { v -> update { it.copy(streamBind = v) } },
+                    c.streamBind,
+                    { v ->
+                        val refusal = c.copy(streamBind = v).streamRefusal()
+                        if (refusal != null) vm.showMessage(refusal) else update { it.copy(streamBind = v) }
+                    },
                 )
                 StreamFields(c) { t -> update(t) }
+            }
+            if (c.streamEnabled) {
                 val host = when (c.streamBind) {
                     CaptureSettings.BIND_LOOPBACK -> "127.0.0.1"
                     else -> network.wifiAddress
@@ -126,6 +141,7 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         when {
+                            c.streamRefusal() != null -> "Not listening: add the address of your computer below (required for Wi-Fi and All networks)."
                             !running || !c.enabled -> "Not listening: inspection is not running."
                             st?.listening != null -> "Listening on ${st.listening} · ${st.clients} of 2 clients connected" +
                                 (if (st.dropped > 0) " · ${st.dropped} packets dropped for slow clients" else "") +
@@ -144,7 +160,8 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
                         Text("wireshark -k -i TCP@$host:${c.streamPort}\nnc $host ${c.streamPort} | wireshark -k -i -",
                             fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                         if (c.streamBind == CaptureSettings.BIND_LOOPBACK) {
-                            Text("This device only: reach it with adb forward tcp:${c.streamPort} tcp:${c.streamPort}, then use 127.0.0.1 on the computer.",
+                            Text("This device: only adb forward can connect. On the computer run adb forward tcp:${c.streamPort} tcp:${c.streamPort}, " +
+                                "then use 127.0.0.1 there. Other apps on the phone are refused.",
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
@@ -162,6 +179,7 @@ private fun StreamFields(c: CaptureSettings, update: ((CaptureSettings) -> Captu
     val port = portText.toIntOrNull()?.takeIf { CaptureSettings.isValidPort(it) }
     val allow = allowText.split(',', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
     val badAllow = allow.filterNot { CaptureSettings.isValidAllowEntry(it) }
+    val network = CaptureSettings.needsAllowList(c.streamBind)
     Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             portText,
@@ -178,15 +196,26 @@ private fun StreamFields(c: CaptureSettings, update: ((CaptureSettings) -> Captu
             { v ->
                 allowText = v
                 val entries = v.split(',', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
-                if (entries.all { CaptureSettings.isValidAllowEntry(it) } && entries.size <= 32) {
+                // Not saved when invalid, nor when it would leave network streaming without an allowlist.
+                val refused = c.copy(streamAllow = entries).streamRefusal() != null
+                if (entries.all { CaptureSettings.isValidAllowEntry(it) } && entries.size <= CaptureSettings.MAX_ALLOW && !refused) {
                     update { it.copy(streamAllow = entries.distinct()) }
                 }
             },
-            Modifier.fillMaxWidth(), label = { Text("Allowed clients (optional)") },
+            Modifier.fillMaxWidth(),
+            label = { Text(if (network) "Allowed clients (required)" else "Allowed clients") },
             placeholder = { Text("192.168.1.10, 192.168.1.0/24") },
-            isError = badAllow.isNotEmpty(),
+            isError = badAllow.isNotEmpty() || (network && allow.isEmpty()),
             supportingText = {
-                Text(if (badAllow.isNotEmpty()) "Not an address or range: ${badAllow.joinToString()}" else "Empty: any device that can reach the port.")
+                Text(
+                    when {
+                        badAllow.isNotEmpty() -> "Not an address or range: ${badAllow.joinToString()}"
+                        allow.size > CaptureSettings.MAX_ALLOW -> "At most ${CaptureSettings.MAX_ALLOW} entries"
+                        network && allow.isEmpty() -> "Required for Wi-Fi and All networks: the address of your computer."
+                        network -> "Only these addresses can connect."
+                        else -> "Not needed for This device (adb forward only)."
+                    },
+                )
             },
         )
     }

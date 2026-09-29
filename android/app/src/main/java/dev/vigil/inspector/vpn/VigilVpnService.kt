@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -199,7 +200,10 @@ class VigilVpnService : android.net.VpnService() {
                 handle(cmd)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Errors too (OutOfMemoryError, UnsatisfiedLinkError or ExceptionInInitializerError
+                // from loading the engine): the loop must survive to tear the VPN down and to
+                // handle Stop, revoke and destroy, or the device is left black-holed.
                 Log.e(TAG, "command $cmd failed", e)
                 if (cmd != Command.Destroy) {
                     runCatching { handle(Command.Crash(e.message ?: e.javaClass.simpleName)) }.onFailure { Log.e(TAG, "recovery failed", it) }
@@ -311,6 +315,7 @@ class VigilVpnService : android.net.VpnService() {
             launch { applyConfigChanges(s) }
             launch { pushDeviceState(s) }
             launch { updateNotification(s) }
+            launch { notifyStreamClients() }
         }
         ServiceState.engine.value = ActiveEngine(s.id, s.engine)
         ServiceState.status.value = VpnStatus.Running(s.id)
@@ -384,23 +389,32 @@ class VigilVpnService : android.net.VpnService() {
             null
         } ?: return Result.failure(IllegalStateException("Could not create the VPN interface."))
 
-        // Ids are start times; keep them strictly increasing across quick restarts.
-        val id = maxOf(System.currentTimeMillis(), (previousId ?: 0L) + 1)
-        val config = buildConfig(settings, net)
-        // The engine loads the feeds before it processes the first packet, so
-        // blocking and threat alerts cover the session from its start.
-        val state = currentDeviceState(settings)
-        val startConfig = ConfigFactory.startConfig(config, feeds, state) { app.feeds.fileFor(it).absolutePath }
-        val handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
-        if (handle == 0L) {
+        // From here on the interface is up: anything that throws (including an Error from
+        // loading the native library) must close it, or all traffic goes into a dead TUN.
+        var handle = 0L
+        try {
+            // Ids are start times; keep them strictly increasing across quick restarts.
+            val id = maxOf(System.currentTimeMillis(), (previousId ?: 0L) + 1)
+            val config = buildConfig(settings, net)
+            // The engine loads the feeds before it processes the first packet, so
+            // blocking and threat alerts cover the session from its start.
+            val state = currentDeviceState(settings)
+            val startConfig = ConfigFactory.startConfig(config, feeds, state) { app.feeds.fileFor(it).absolutePath }
+            handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
+            if (handle == 0L) {
+                runCatching { pfd.close() }
+                return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
+            }
+            val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil, app.spywareLabels) { message ->
+                commands.trySend(Command.EngineError(id, message))
+            }
+            val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }
+            return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded, state))
+        } catch (t: Throwable) {
+            if (handle != 0L) runCatching { VigilNative.nativeStop(handle) }.onFailure { Log.e(TAG, "stopping the engine failed", it) }
             runCatching { pfd.close() }
-            return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
+            throw t
         }
-        val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil, app.spywareLabels) { message ->
-            commands.trySend(Command.EngineError(id, message))
-        }
-        val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }
-        return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded, state))
     }
 
     /**
@@ -629,6 +643,13 @@ class VigilVpnService : android.net.VpnService() {
         }
     }
 
+    /** Refreshes the notification as soon as a PCAP-over-IP client connects or leaves. */
+    private suspend fun notifyStreamClients() {
+        ServiceState.stats.map { ServicePolicy.streamClients(it) }.distinctUntilChanged().drop(1).collect {
+            notifications.notify(NOTIFICATION_ID, buildNotification(ServiceState.stats.value))
+        }
+    }
+
     private fun refreshNetworkInfo(network: Network? = connectivity.activeNetwork, lp: LinkProperties? = null): NetworkInfo {
         val props = lp ?: network?.let { connectivity.getLinkProperties(it) }
         val virtual = setOf(EngineConfig.VIRTUAL_DNS_V4, EngineConfig.VIRTUAL_DNS_V6)
@@ -745,9 +766,12 @@ class VigilVpnService : android.net.VpnService() {
         val stop = PendingIntent.getService(
             this, 1, Intent(this, VigilVpnService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
-        val text = stats?.let {
+        val counts = stats?.let {
             "${formatCount(it.flowsTotal)} connections · ${formatCount(it.blocked)} blocked · ${formatCount(it.dnsQueries)} lookups"
-        } ?: "Inspecting device traffic on-device"
+        }
+        // A connected Wireshark client comes first, so it is never hidden by truncation.
+        val text = listOfNotNull(ServicePolicy.streamingNotice(stats), counts).joinToString(" · ")
+            .ifEmpty { "Inspecting device traffic on-device" }
         val warning = ServiceState.upstreamWarning.value
         val excluded = current?.excludedPackage
         return NotificationCompat.Builder(this, AlertNotifier.CHANNEL_SERVICE)

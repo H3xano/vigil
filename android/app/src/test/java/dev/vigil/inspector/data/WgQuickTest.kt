@@ -76,6 +76,27 @@ class WgQuickTest {
     }
 
     @Test
+    fun warnsWhenAllowedIpsCoverIpv4Only() {
+        fun warnings(allowed: String) = WgQuick.parse(
+            """
+            [Interface]
+            PrivateKey = $key1
+            Address = 10.0.0.2/32
+            [Peer]
+            PublicKey = $key2
+            Endpoint = vpn.example.com:51820
+            AllowedIPs = $allowed
+            """.trimIndent(),
+        ).warnings.filter { "AllowedIPs" in it }
+        assertEquals(1, warnings("0.0.0.0/0").size)
+        assertTrue(warnings("0.0.0.0/0").single().contains("fail closed"))
+        assertTrue(warnings("0.0.0.0/0, ::/0").isEmpty())
+        assertTrue(warnings("0.0.0.0/0, 2000::/3").isEmpty())
+        assertTrue(warnings("10.0.0.0/8").isEmpty())
+        assertTrue(warnings("::/0").isEmpty())
+    }
+
+    @Test
     fun onlyTheFirstPeerAndFirstAddressPerFamily() {
         val p = WgQuick.parse(
             """
