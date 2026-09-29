@@ -103,10 +103,15 @@ class ExportPipelineTest {
         repeat(8) { h.pipeline.offer(rec(it)) }
         backgroundScope.launch { h.pipeline.run() }
         runCurrent()
+        // Attempts after a refusal are paced (1 s), not sent in a burst.
+        assertEquals(1, h.attempts.size)
+        advanceTimeBy(10_000)
+        runCurrent()
         assertEquals(7L, h.pipeline.status.value.sent)
         assertEquals(1L, h.pipeline.status.value.rejected)
         assertEquals(0, h.pipeline.status.value.queued)
-        // [0-7] -> [0-3] ok, [4-7] -> [4,5] -> [4] ok, [5] rejected; then [6,7]. No backoff waits.
+        assertEquals(null, h.pipeline.status.value.configProblem)
+        // [0-7] -> [0-3] ok, [4-7] -> [4,5] -> [4] ok, [5] rejected; then [6,7].
         assertEquals(listOf(8, 4, 4, 2, 1, 1, 2), h.attempts.map { it.size })
         assertEquals(listOf(bad), h.attempts[5])
         h.pipeline.offer(rec(9))
@@ -119,11 +124,118 @@ class ExportPipelineTest {
         val h = harness { _, batch -> if (batch.size > 50) throw HttpStatusException(413) else SendOutcome(batch.size) }
         repeat(200) { h.pipeline.offer(rec(it)) }
         backgroundScope.launch { h.pipeline.run() }
+        advanceTimeBy(10_000)
         runCurrent()
         assertEquals(200L, h.pipeline.status.value.sent)
         assertEquals(0L, h.pipeline.status.value.rejected)
         // Order is kept.
         assertEquals((0 until 200).map(::rec), h.attempts.filter { it.size <= 50 }.flatten())
+    }
+
+    @Test
+    fun collectorRefusingEverythingKeepsRecordsQueued() = runTest {
+        // E.g. an Elastic _bulk URL without an index behind a proxy that hides the error body.
+        val h = harness { _, _ -> throw HttpStatusException(400, "bad request") }
+        repeat(200) { h.pipeline.offer(rec(it)) }
+        backgroundScope.launch { h.pipeline.run() }
+        advanceTimeBy(40_000)
+        runCurrent()
+        val first = h.attempts.size
+        assertTrue("detected in a few attempts, not ~399: $first", first in 10..25)
+        var s = h.pipeline.status.value
+        assertTrue(s.configProblem!!, s.configProblem!!.contains("HTTP 400"))
+        assertEquals(0L, s.rejected)
+        assertEquals(200, s.queued)
+        // Then about one detection round a minute, paced.
+        advanceTimeBy(10 * 60_000L)
+        runCurrent()
+        s = h.pipeline.status.value
+        assertTrue("attempts=${h.attempts.size}", h.attempts.size <= first * 11)
+        assertEquals(0L, s.rejected)
+        assertEquals(0L, s.dropped)
+        assertEquals(200, s.queued)
+        assertTrue(s.retrying)
+        // Every attempt was at least a second after the previous one: 10 min 40 s allows at most 640.
+        assertTrue(h.attempts.size <= 640)
+    }
+
+    @Test
+    fun refusedFirstRecordIsStillIsolatedAndRejected() = runTest {
+        val bad = rec(0)
+        val h = harness { _, batch -> if (bad in batch) throw HttpStatusException(400, "mapper_parsing_exception") else SendOutcome(batch.size) }
+        repeat(8) { h.pipeline.offer(rec(it)) }
+        backgroundScope.launch { h.pipeline.run() }
+        advanceTimeBy(10_000)
+        runCurrent()
+        val s = h.pipeline.status.value
+        assertEquals(7L, s.sent)
+        assertEquals(1L, s.rejected)
+        assertEquals(0, s.queued)
+        assertEquals(null, s.configProblem)
+        // [0-7] -> [0-3] -> [0,1] -> [0] held, then the rest [1-7] at once.
+        assertEquals(listOf(8, 4, 2, 1, 7), h.attempts.map { it.size })
+    }
+
+    @Test
+    fun loneRefusedRecordIsRejectedOnceOthersGetThrough() = runTest {
+        val bad = rec(0)
+        val h = harness { _, batch -> if (bad in batch) throw HttpStatusException(400) else SendOutcome(batch.size) }
+        h.pipeline.offer(bad)
+        backgroundScope.launch { h.pipeline.run() }
+        runCurrent()
+        // Alone, it cannot be told from a collector refusing everything: kept.
+        assertEquals(0L, h.pipeline.status.value.rejected)
+        assertEquals(1, h.pipeline.status.value.queued)
+        repeat(3) { h.pipeline.offer(rec(it + 1)) }
+        advanceTimeBy(70_000)
+        runCurrent()
+        val s = h.pipeline.status.value
+        assertEquals(3L, s.sent)
+        assertEquals(1L, s.rejected)
+        assertEquals(0, s.queued)
+        assertEquals(null, s.configProblem)
+    }
+
+    @Test
+    fun elasticRequestValidationErrorIsAConfigProblem() = runTest {
+        val es = enabled.copy(mode = "http", url = "https://es:9200/vigil/_bulk", httpFormat = "elastic_bulk")
+        val body = """{"error":{"root_cause":[{"type":"action_request_validation_exception","reason":"Validation Failed: 1: index is missing;"}],""" +
+            """"type":"action_request_validation_exception","reason":"Validation Failed: 1: index is missing;"},"status":400}"""
+        val e = HttpStatusException(400, body)
+        assertEquals(FailureKind.CONFIG, ExportRetry.classify(e, es))
+        assertTrue(ExportRetry.configProblem(e, es)!!.contains("index is missing"))
+        val h = harness(cfg = es) { _, _ -> throw e }
+        repeat(50) { h.pipeline.offer(rec(it)) }
+        backgroundScope.launch { h.pipeline.run() }
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("not split", 1, h.attempts.size)
+        assertEquals(50, h.pipeline.status.value.queued)
+        assertEquals(0L, h.pipeline.status.value.rejected)
+    }
+
+    @Test
+    fun alertsHaveTheirOwnQueueAndGoFirst() = runTest {
+        val config = MutableStateFlow(enabled)
+        val attempts = mutableListOf<List<JsonObject>>()
+        val pipeline = ExportPipeline(config, MutableStateFlow(true), { _, batch ->
+            attempts += batch
+            SendOutcome(batch.size)
+        }, capacity = 5, batchSize = 4, alertCapacity = 3)
+        val alert = { n: Int -> JsonObject(mapOf("alert" to JsonPrimitive(n))) }
+        // The alert queue drops its own oldest when it overflows.
+        repeat(4) { pipeline.offer(alert(it), alert = true) }
+        assertEquals(1L, pipeline.status.value.dropped)
+        // An outage's worth of flows: they overflow their own queue only.
+        repeat(20) { pipeline.offer(rec(it)) }
+        assertEquals(16L, pipeline.status.value.dropped)
+        assertEquals(8, pipeline.status.value.queued)
+        backgroundScope.launch { pipeline.run() }
+        runCurrent()
+        assertEquals(listOf(alert(1), alert(2), alert(3), rec(15)), attempts[0])
+        assertEquals(listOf(rec(16), rec(17), rec(18), rec(19)), attempts[1])
+        assertEquals(8L, pipeline.status.value.sent)
+        assertEquals(0, pipeline.status.value.queued)
     }
 
     @Test

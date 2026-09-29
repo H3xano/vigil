@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -63,13 +64,16 @@ enum class FailureKind {
      * The collector refused this payload (400/413/422): retrying the same
      * bytes cannot succeed. The batch is split in halves until the offending
      * records are isolated (a 413 on a batch usually only means it was too
-     * large); a single refused record is counted as rejected.
+     * large); a single refused record is counted as rejected once another
+     * part of the batch got through (see [ExportPipeline]).
      */
     BAD_BATCH,
     /**
      * The collector's own configuration refuses every record (Splunk HEC
-     * codes 7, 10, 11): keep the records queued and retry slowly until the
-     * settings change or the collector is fixed.
+     * codes 7, 10, 11, an Elasticsearch request validation error, a
+     * redirect, an Elastic `_bulk` URL without an index): keep the records
+     * queued and retry slowly until the settings change or the collector
+     * is fixed.
      */
     CONFIG,
 }
@@ -92,15 +96,37 @@ object ExportRetry {
         return (obj["code"] as? JsonPrimitive)?.intOrNull
     }
 
+    /**
+     * The reason of an Elasticsearch request-level validation error
+     * (`action_request_validation_exception`, e.g. "index is missing" for a
+     * `_bulk` URL without an index), or null. Such an error refuses the
+     * request as a whole, whatever the documents.
+     */
+    fun elasticValidationError(body: String?): String? {
+        if (body.isNullOrBlank() || !body.contains("action_request_validation_exception")) return null
+        val obj = runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+        val error = obj?.get("error") as? JsonObject
+        val reason = (error?.get("reason") as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+        return reason ?: "action_request_validation_exception"
+    }
+
     /** A user-facing explanation if [e] is a collector configuration error, else null. */
     fun configProblem(e: Throwable, cfg: ExportSettings): String? {
+        if (e is ExportConfigException) return e.message
         val http = e as? HttpStatusException ?: return null
-        if (cfg.mode != "http" || cfg.httpFormat != "splunk_hec") return null
+        if (cfg.mode != "http") return null
+        if (http.code == 400) {
+            elasticValidationError(http.body)?.let {
+                return "Elasticsearch refuses the request ($it). The URL must name the index: https://host:9200/<index>/_bulk."
+            }
+        }
+        if (cfg.httpFormat != "splunk_hec") return null
         val code = splunkHecCode(http.body) ?: return null
         return HEC_CONFIG_CODES[code]?.let { "Splunk HEC refuses events (code $code): $it" }
     }
 
     fun classify(e: Throwable, cfg: ExportSettings? = null): FailureKind {
+        if (e is ExportConfigException) return FailureKind.CONFIG
         val code = (e as? HttpStatusException)?.code ?: return FailureKind.TRANSIENT
         if (cfg != null && configProblem(e, cfg) != null) return FailureKind.CONFIG
         return when {
@@ -116,12 +142,20 @@ object ExportRetry {
 
 /**
  * The export queue and delivery loop, independent of Android so it can be
- * tested on the JVM. Records wait in a bounded queue (the oldest are dropped
- * and counted when it overflows). The head batch is retried until it is
- * delivered, the collector rejects its records, or export is turned off:
- * while offline it waits for the network instead of burning attempts, and a
- * settings change retries at once. A batch the collector refuses as a whole
- * is split until the refused records are isolated.
+ * tested on the JVM. Records wait in bounded queues (the oldest are dropped
+ * and counted when one overflows); alerts have their own queue, which flow
+ * and DNS records cannot evict, and are sent first. The head batch is
+ * retried until it is delivered, the collector rejects its records, or
+ * export is turned off: while offline it waits for the network instead of
+ * burning attempts, and a settings change retries at once.
+ *
+ * A batch the collector refuses as a whole (400/413/422) is split, one
+ * attempt per [ExportRetry.MIN_BACKOFF_MS] at most, until the refused
+ * records are isolated. A refused single record is only discarded once the
+ * collector has accepted another part of the batch: if it refuses every
+ * part with the same status, the fault is its configuration (e.g. a URL it
+ * answers 400 to), so the records stay queued as a [FailureKind.CONFIG]
+ * problem.
  */
 class ExportPipeline(
     private val config: StateFlow<ExportSettings>,
@@ -132,30 +166,58 @@ class ExportPipeline(
     private val clock: () -> Long = System::currentTimeMillis,
     capacity: Int = 10_000,
     private val batchSize: Int = 200,
+    alertCapacity: Int = 2_000,
 ) {
     private val _status = MutableStateFlow(ExportStatus())
     val status: StateFlow<ExportStatus> = _status.asStateFlow()
 
-    /** Records in [queue] (a channel does not expose its size). */
+    /** Records in [queue] and [alerts] (a channel does not expose its size). */
     private val inQueue = AtomicInteger(0)
 
-    /** Records taken from the queue and not yet delivered, rejected or discarded. */
+    /** Records taken from the queues and not yet delivered, rejected or discarded. */
     @Volatile private var inFlight = 0
 
-    private val queue = Channel<JsonObject>(capacity, BufferOverflow.DROP_OLDEST) {
+    private val onOverflow: (JsonObject) -> Unit = {
         inQueue.decrementAndGet()
         _status.update { s -> s.copy(dropped = s.dropped + 1) }
     }
 
+    private val queue = Channel(capacity, BufferOverflow.DROP_OLDEST, onOverflow)
+
+    /** Alerts only: flows and DNS records, far more numerous, cannot push them out. */
+    private val alerts = Channel(alertCapacity, BufferOverflow.DROP_OLDEST, onOverflow)
+
     private fun publishQueued() = _status.update { it.copy(queued = inQueue.get().coerceAtLeast(0) + inFlight) }
 
-    fun offer(record: JsonObject) {
+    fun offer(record: JsonObject, alert: Boolean = false) {
         inQueue.incrementAndGet()
-        if (queue.trySend(record).isFailure) inQueue.decrementAndGet()
+        if ((if (alert) alerts else queue).trySend(record).isFailure) inQueue.decrementAndGet()
         publishQueued()
     }
 
     fun reportError(message: String?) = _status.update { it.copy(lastError = message) }
+
+    /**
+     * Refusal bookkeeping of the head batch: single records refused while
+     * no part of the batch has been accepted yet are [held], not rejected.
+     */
+    private class Refusals {
+        val held = ArrayList<JsonObject>()
+        var accepted = false
+        var code: Int? = null
+        var mixed = false
+
+        fun note(code: Int) {
+            if (this.code == null) this.code = code else if (code != this.code) mixed = true
+        }
+
+        fun reset() {
+            held.clear()
+            accepted = false
+            code = null
+            mixed = false
+        }
+    }
 
     /** Runs until the calling coroutine is cancelled. */
     suspend fun run() {
@@ -164,15 +226,24 @@ class ExportPipeline(
             // The head batch, possibly split into parts after the collector
             // refused it as a whole; the first part is sent next.
             val parts = ArrayDeque<List<JsonObject>>()
+            val refusals = Refusals()
             parts.addLast(nextBatch())
             var lastCfg: ExportSettings? = null
+            // Set after the collector refused the whole batch: records queued
+            // meanwhile join it, so a lone bad record can still be isolated.
+            var topUp = false
             while (parts.isNotEmpty()) {
+                if (topUp) {
+                    topUp = false
+                    topUp(parts, refusals)
+                }
                 val batch = parts.first()
                 val cfg = config.value
                 if (!cfg.enabled) {
                     // Turned off: what is queued will never be sent. Count it.
-                    discard(parts.sumOf { it.size } + drain())
+                    discard(parts.sumOf { it.size } + refusals.held.size + drain())
                     parts.clear()
+                    refusals.reset()
                     break
                 }
                 if (cfg != lastCfg) {
@@ -186,16 +257,21 @@ class ExportPipeline(
                 }
                 val result = runCatching { transport(cfg, batch) }
                 var wait = false
+                var pace = false
                 result.onSuccess { out ->
                     parts.removeFirst()
                     if (out.retry.isNotEmpty()) parts.addFirst(out.retry)
-                    settle(parts)
+                    // The collector takes this kind of request: records it refused alone were bad.
+                    refusals.accepted = true
+                    val heldRejected = refusals.held.size
+                    refusals.held.clear()
+                    settle(parts, refusals)
                     _status.update { s ->
                         s.copy(
                             sent = s.sent + out.delivered,
-                            rejected = s.rejected + out.rejected,
+                            rejected = s.rejected + out.rejected + heldRejected,
                             lastSuccess = if (out.delivered > 0) clock() else s.lastSuccess,
-                            lastError = out.detail,
+                            lastError = out.detail ?: if (heldRejected > 0) "$heldRejected record(s) refused by the collector (rejected)" else null,
                             retrying = out.retry.isNotEmpty(),
                             configProblem = if (out.delivered > 0) null else s.configProblem,
                         )
@@ -208,17 +284,48 @@ class ExportPipeline(
                     onFailure()
                     val msg = error.message ?: error.javaClass.simpleName
                     when (ExportRetry.classify(error, cfg)) {
-                        FailureKind.BAD_BATCH -> if (batch.size > 1) {
-                            // Try the halves at once: only the refused records are lost.
-                            parts.removeFirst()
-                            parts.addFirst(batch.subList(batch.size / 2, batch.size))
-                            parts.addFirst(batch.subList(0, batch.size / 2))
-                            _status.update { it.copy(lastError = "$msg (retrying in smaller batches)", retrying = true) }
-                        } else {
-                            parts.removeFirst()
-                            settle(parts)
-                            _status.update { s ->
-                                s.copy(rejected = s.rejected + 1, lastError = "$msg (record rejected)", retrying = parts.isNotEmpty())
+                        FailureKind.BAD_BATCH -> {
+                            val code = (error as HttpStatusException).code
+                            refusals.note(code)
+                            pace = true
+                            val undecided = !refusals.accepted && !refusals.mixed && code != 413
+                            if (undecided && refusals.held.size >= REFUSED_SINGLES_FOR_CONFIG) {
+                                // Refused alone twice, and the rest of the batch too: nothing gets through.
+                                refusedWholeBatch(parts, refusals, code, msg)
+                                topUp = true
+                                backoff = ExportRetry.MAX_BACKOFF_MS
+                                wait = true
+                                pace = false
+                            } else if (batch.size > 1) {
+                                parts.removeFirst()
+                                parts.addFirst(batch.subList(batch.size / 2, batch.size))
+                                parts.addFirst(batch.subList(0, batch.size / 2))
+                                _status.update { it.copy(lastError = "$msg (retrying in smaller batches)", retrying = true) }
+                            } else if (undecided) {
+                                // Bad record, or a collector that refuses everything? Try all the rest at once.
+                                parts.removeFirst()
+                                refusals.held += batch
+                                val rest = parts.flatten()
+                                parts.clear()
+                                if (rest.isNotEmpty()) parts.addLast(rest)
+                                settle(parts, refusals)
+                                if (parts.isEmpty()) {
+                                    refusedWholeBatch(parts, refusals, code, msg)
+                                    topUp = true
+                                    backoff = ExportRetry.MAX_BACKOFF_MS
+                                    wait = true
+                                    pace = false
+                                } else {
+                                    _status.update { it.copy(lastError = "$msg (retrying in smaller batches)", retrying = true) }
+                                }
+                            } else {
+                                parts.removeFirst()
+                                val n = 1 + refusals.held.size
+                                refusals.held.clear()
+                                settle(parts, refusals)
+                                _status.update { s ->
+                                    s.copy(rejected = s.rejected + n, lastError = "$msg (record rejected)", retrying = parts.isNotEmpty())
+                                }
                             }
                         }
                         FailureKind.CONFIG -> {
@@ -241,22 +348,76 @@ class ExportPipeline(
                 if (wait && parts.isNotEmpty()) {
                     waitOrConfigChange(cfg, backoff)
                     backoff = ExportRetry.nextBackoff(backoff)
+                } else if (pace && parts.isNotEmpty()) {
+                    // No burst of requests while a refused batch is split.
+                    waitOrConfigChange(cfg, ExportRetry.MIN_BACKOFF_MS)
                 }
+            }
+            if (refusals.held.isNotEmpty()) {
+                // Only reachable if the parts ran out after an acceptance; count them.
+                val n = refusals.held.size
+                refusals.held.clear()
+                _status.update { s -> s.copy(rejected = s.rejected + n) }
+                settle(parts, refusals)
             }
         }
     }
 
+    /**
+     * The collector refused every part of the head batch with the same
+     * status: keep all its records as one batch, retried slowly (see
+     * [topUp]), and report a configuration problem.
+     */
+    private fun refusedWholeBatch(parts: ArrayDeque<List<JsonObject>>, refusals: Refusals, code: Int, msg: String) {
+        val all = ArrayList<JsonObject>(batchSize)
+        all += refusals.held
+        parts.forEach { all += it }
+        refusals.reset()
+        parts.clear()
+        parts.addLast(all)
+        settle(parts, refusals)
+        _status.update {
+            it.copy(
+                lastError = msg,
+                retrying = true,
+                configProblem = "the collector refused every record with HTTP $code, even one at a time, so the fault is likely " +
+                    "the endpoint URL or the collector's settings (for Elasticsearch: https://host:9200/<index>/_bulk).",
+            )
+        }
+    }
+
+    /** Fills the single remaining part up to [batchSize] with queued records. */
+    private fun topUp(parts: ArrayDeque<List<JsonObject>>, refusals: Refusals) {
+        if (parts.size != 1 || parts.first().size >= batchSize) return
+        val all = ArrayList(parts.first())
+        var added = 0
+        while (all.size < batchSize) {
+            all += nextQueued() ?: break
+            added++
+        }
+        if (added == 0) return
+        inQueue.addAndGet(-added)
+        parts[0] = all
+        settle(parts, refusals)
+    }
+
     /** Updates the queue depth after the records still held changed. */
-    private fun settle(parts: ArrayDeque<List<JsonObject>>) {
-        inFlight = parts.sumOf { it.size }
+    private fun settle(parts: ArrayDeque<List<JsonObject>>, refusals: Refusals) {
+        inFlight = parts.sumOf { it.size } + refusals.held.size
         publishQueued()
     }
 
+    /** The next queued record without waiting, alerts first. */
+    private fun nextQueued(): JsonObject? = alerts.tryReceive().getOrNull() ?: queue.tryReceive().getOrNull()
+
     private suspend fun nextBatch(): List<JsonObject> {
-        val first = queue.receive()
+        val first = nextQueued() ?: select {
+            alerts.onReceive { it }
+            queue.onReceive { it }
+        }
         val batch = ArrayList<JsonObject>(batchSize)
         batch += first
-        while (batch.size < batchSize) batch += queue.tryReceive().getOrNull() ?: break
+        while (batch.size < batchSize) batch += nextQueued() ?: break
         inQueue.addAndGet(-batch.size)
         inFlight = batch.size
         publishQueued()
@@ -265,7 +426,7 @@ class ExportPipeline(
 
     private fun drain(): Int {
         var n = 0
-        while (queue.tryReceive().isSuccess) n++
+        while (nextQueued() != null) n++
         inQueue.addAndGet(-n)
         return n
     }
@@ -279,5 +440,14 @@ class ExportPipeline(
     /** Sleeps for [ms], returning early when the export settings change. */
     private suspend fun waitOrConfigChange(cfg: ExportSettings, ms: Long) {
         withTimeoutOrNull(ms) { config.first { it != cfg } }
+    }
+
+    private companion object {
+        /**
+         * Single records refused (with nothing in the batch accepted, and
+         * the rest of the batch refused as well) before the collector is
+         * taken to refuse everything.
+         */
+        const val REFUSED_SINGLES_FOR_CONFIG = 2
     }
 }
