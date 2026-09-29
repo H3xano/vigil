@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -314,6 +315,7 @@ class VigilVpnService : android.net.VpnService() {
             launch { applyConfigChanges(s) }
             launch { pushDeviceState(s) }
             launch { updateNotification(s) }
+            launch { notifyStreamClients() }
         }
         ServiceState.engine.value = ActiveEngine(s.id, s.engine)
         ServiceState.status.value = VpnStatus.Running(s.id)
@@ -641,6 +643,13 @@ class VigilVpnService : android.net.VpnService() {
         }
     }
 
+    /** Refreshes the notification as soon as a PCAP-over-IP client connects or leaves. */
+    private suspend fun notifyStreamClients() {
+        ServiceState.stats.map { ServicePolicy.streamClients(it) }.distinctUntilChanged().drop(1).collect {
+            notifications.notify(NOTIFICATION_ID, buildNotification(ServiceState.stats.value))
+        }
+    }
+
     private fun refreshNetworkInfo(network: Network? = connectivity.activeNetwork, lp: LinkProperties? = null): NetworkInfo {
         val props = lp ?: network?.let { connectivity.getLinkProperties(it) }
         val virtual = setOf(EngineConfig.VIRTUAL_DNS_V4, EngineConfig.VIRTUAL_DNS_V6)
@@ -757,9 +766,12 @@ class VigilVpnService : android.net.VpnService() {
         val stop = PendingIntent.getService(
             this, 1, Intent(this, VigilVpnService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
-        val text = stats?.let {
+        val counts = stats?.let {
             "${formatCount(it.flowsTotal)} connections · ${formatCount(it.blocked)} blocked · ${formatCount(it.dnsQueries)} lookups"
-        } ?: "Inspecting device traffic on-device"
+        }
+        // A connected Wireshark client comes first, so it is never hidden by truncation.
+        val text = listOfNotNull(ServicePolicy.streamingNotice(stats), counts).joinToString(" · ")
+            .ifEmpty { "Inspecting device traffic on-device" }
         val warning = ServiceState.upstreamWarning.value
         val excluded = current?.excludedPackage
         return NotificationCompat.Builder(this, AlertNotifier.CHANNEL_SERVICE)

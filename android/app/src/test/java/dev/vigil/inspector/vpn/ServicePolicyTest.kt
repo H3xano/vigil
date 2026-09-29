@@ -1,5 +1,9 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.engine.CaptureStats
+import dev.vigil.inspector.engine.CaptureStreamStats
+import dev.vigil.inspector.engine.StatsEvent
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -29,5 +33,17 @@ class ServicePolicyTest {
         val unnamed = ServicePolicy.lockdownWarning("org.torproject.android", lockdown = true, proxyLabel = " ")!!
         assertTrue(unnamed, unnamed.startsWith("org.torproject.android has no network"))
         assertTrue(ServicePolicy.lockdownShort("org.torproject.android", "Orbot").startsWith("Orbot has no network"))
+    }
+
+    @Test
+    fun connectedStreamClientsAreNamedInTheNotification() {
+        assertNull(ServicePolicy.streamingNotice(null))
+        assertNull(ServicePolicy.streamingNotice(StatsEvent()))
+        val listening = CaptureStats(enabled = true, stream = CaptureStreamStats(listening = "127.0.0.1:57012"))
+        assertNull(ServicePolicy.streamingNotice(StatsEvent(capture = listening)))
+        val one = StatsEvent(capture = listening.copy(stream = listening.stream!!.copy(clients = 1)))
+        assertEquals("Streaming packets to 1 Wireshark client on 127.0.0.1:57012", ServicePolicy.streamingNotice(one))
+        val two = StatsEvent(capture = CaptureStats(enabled = true, stream = CaptureStreamStats(clients = 2)))
+        assertEquals("Streaming packets to 2 Wireshark clients", ServicePolicy.streamingNotice(two))
     }
 }
