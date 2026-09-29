@@ -1,6 +1,8 @@
 package dev.vigil.inspector.data
 
 import android.util.Log
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -125,30 +127,30 @@ object TrackerDatabase {
 
     fun isTrackingCategory(category: String) = category in TRACKING
 
-    /** A readable category name. */
-    fun categoryLabel(category: String): String = when (category) {
-        "advertising" -> "Advertising"
-        "pornvertising" -> "Adult advertising"
-        "site_analytics" -> "Analytics"
-        "mobile_analytics" -> "Mobile analytics"
-        "telemetry" -> "Telemetry"
-        "social_media" -> "Social media"
-        "customer_interaction" -> "Customer interaction"
-        "audio_video_player" -> "Audio/video player"
-        "cdn" -> "CDN"
-        "hosting" -> "Hosting"
-        "essential" -> "Essential"
-        "consent" -> "Consent management"
-        "email" -> "Email"
-        "comments" -> "Comments"
-        "extensions" -> "Extensions"
-        "misc" -> "Miscellaneous"
-        "unknown" -> "Unknown"
-        else -> category.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    /** A readable category name; categories added to the database later are shown from their id. */
+    fun categoryLabel(category: String): UiText = when (category) {
+        "advertising" -> UiText.of(R.string.trackers_category_advertising)
+        "pornvertising" -> UiText.of(R.string.trackers_category_pornvertising)
+        "site_analytics" -> UiText.of(R.string.trackers_category_site_analytics)
+        "mobile_analytics" -> UiText.of(R.string.trackers_category_mobile_analytics)
+        "telemetry" -> UiText.of(R.string.trackers_category_telemetry)
+        "social_media" -> UiText.of(R.string.trackers_category_social_media)
+        "customer_interaction" -> UiText.of(R.string.trackers_category_customer_interaction)
+        "audio_video_player" -> UiText.of(R.string.trackers_category_audio_video_player)
+        "cdn" -> UiText.of(R.string.trackers_category_cdn)
+        "hosting" -> UiText.of(R.string.trackers_category_hosting)
+        "essential" -> UiText.of(R.string.trackers_category_essential)
+        "consent" -> UiText.of(R.string.trackers_category_consent)
+        "email" -> UiText.of(R.string.trackers_category_email)
+        "comments" -> UiText.of(R.string.trackers_category_comments)
+        "extensions" -> UiText.of(R.string.trackers_category_extensions)
+        "misc" -> UiText.of(R.string.trackers_category_misc)
+        "unknown" -> UiText.of(R.string.trackers_category_unknown)
+        else -> UiText.Raw(category.replace('_', ' ').replaceFirstChar { it.uppercase() })
     }
 
     /** "Google · Advertising". */
-    fun label(t: Tracker): String = "${t.company} · ${categoryLabel(t.category)}"
+    fun label(t: Tracker): UiText = UiText.of(R.string.trackers_label, t.company, categoryLabel(t.category))
 
     data class Stats(val domains: Int, val rejected: Int, val trackers: Int, val companies: Int)
 

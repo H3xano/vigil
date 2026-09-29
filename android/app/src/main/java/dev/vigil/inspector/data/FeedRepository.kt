@@ -94,7 +94,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         dao.upsert(
             FeedEntity(
                 id = id, name = name, url = url, category = if (ja4) "ja4" else category, enabled = true, builtin = false,
-                description = if (ja4) "Custom JA4 feed" else "Custom feed", authHeader = authHeader?.takeIf { it.isNotBlank() },
+                description = if (ja4) FeedCatalog.CUSTOM_JA4_DESCRIPTION else FeedCatalog.CUSTOM_DESCRIPTION, authHeader = authHeader?.takeIf { it.isNotBlank() },
                 kind = if (ja4) FeedKinds.JA4 else FeedKinds.LIST,
             ),
         )
@@ -113,7 +113,7 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
         dao.upsert(
             FeedEntity(
                 id = id, name = name, url = collection.apiRoot, category = category, enabled = true, builtin = false,
-                description = "TAXII 2.1 collection “${collection.title}”", authHeader = auth,
+                description = FeedCatalog.taxiiDescription(collection.title), authHeader = auth,
                 authHeaderName = authHeaderName?.trim()?.takeIf { auth != null && it.isNotEmpty() && !it.equals("Authorization", ignoreCase = true) },
                 kind = FeedKinds.TAXII, taxiiCollection = collection.id,
             ),

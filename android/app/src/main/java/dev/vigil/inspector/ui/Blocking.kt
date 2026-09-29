@@ -1,5 +1,8 @@
 package dev.vigil.inspector.ui
 
+import androidx.compose.runtime.Composable
+import dev.vigil.inspector.R
+import dev.vigil.inspector.data.FeedCatalog
 import dev.vigil.inspector.data.FeedEntity
 
 /**
@@ -131,44 +134,58 @@ object BlockReasons {
     fun isPerApp(reason: String?): Boolean = reason != null &&
         (reason == "app" || reason.startsWith(APP_RULE) || reason.startsWith(APP_DOMAIN_RULE))
 
-    private fun condition(c: String) = when (c) {
-        "wifi" -> "while the device is on Wi-Fi"
-        "cellular" -> "while the device is on mobile data"
-        "background" -> "while it is in the background"
-        "screen off" -> "while the screen is off"
-        else -> "($c)"
-    }
-
     /**
      * [reason] is `feed:<id> (<rule>)`, `custom (<rule>)`, `app`, `app rule: <condition>`,
      * `app domain rule (<rule>)`, `ja4:<feed> (<rule>)`, optionally with ` via CNAME <name>`
      * inside the rule.
      */
-    fun explain(reason: String?, feeds: List<FeedEntity>, appLabel: String? = null): String {
-        if (reason.isNullOrBlank()) return "Blocked (no reason recorded)."
+    @Composable
+    fun explain(reason: String?, feeds: List<FeedEntity>, appLabel: String? = null): String = explainText(reason, feeds, appLabel).asString()
+
+    /** [explain] as a [UiText], for code without Compose and for tests. */
+    fun explainText(reason: String?, feeds: List<FeedEntity>, appLabel: String? = null): UiText {
+        if (reason.isNullOrBlank()) return UiText.of(R.string.block_reason_none)
         val code = reason.substringBefore(' ').trim()
         val rule = reason.substringAfter('(', "").substringBeforeLast(')', "").ifBlank { null }
         val cname = rule?.substringAfter(" via CNAME ", "")?.ifBlank { null }
         val listed = rule?.substringBefore(" via CNAME ")?.ifBlank { null }
-        val via = cname?.let { " The name is an alias (CNAME) of $it, which is listed." }.orEmpty()
-        val app = appLabel ?: "this app"
+        fun withCname(text: UiText): UiText = if (cname == null) text else UiText.of(R.string.block_reason_with_cname, text, cname)
+        val app: Any = appLabel ?: UiText.of(R.string.block_reason_this_app)
         return when {
-            reason.startsWith(APP_RULE) ->
-                "Network access of $app is blocked ${condition(reason.removePrefix(APP_RULE))} (Apps → $app → Network access)."
-            reason.startsWith(APP_DOMAIN_RULE) ->
-                "Your rule for $app${listed?.let { " blocks $it" } ?: " blocks this name"} (for this app only).$via"
-            code == "app" -> "All network access is blocked for $app (Apps → block all network access)."
-            code == "custom" -> "Your block rule${listed?.let { " for $it" }.orEmpty()} (Settings → Custom rules).$via"
+            reason.startsWith(APP_RULE) -> when (val c = reason.removePrefix(APP_RULE)) {
+                "wifi" -> UiText.of(R.string.block_reason_app_wifi, app)
+                "cellular" -> UiText.of(R.string.block_reason_app_cellular, app)
+                "background" -> UiText.of(R.string.block_reason_app_background, app)
+                "screen off" -> UiText.of(R.string.block_reason_app_screen_off, app)
+                else -> UiText.of(R.string.block_reason_app_other, app, c)
+            }
+            reason.startsWith(APP_DOMAIN_RULE) -> withCname(
+                if (listed != null) UiText.of(R.string.block_reason_app_domain, app, listed)
+                else UiText.of(R.string.block_reason_app_domain_this_name, app),
+            )
+            code == "app" -> UiText.of(R.string.block_reason_app_all, app)
+            code == "custom" -> withCname(
+                if (listed != null) UiText.of(R.string.block_reason_custom, listed) else UiText.of(R.string.block_reason_custom_unnamed),
+            )
             code.startsWith("feed:") -> {
                 val id = code.removePrefix("feed:")
                 val feed = feeds.firstOrNull { it.id == id }
-                val name = feed?.name ?: id
-                val category = feed?.category?.let { " ($it)" }.orEmpty()
-                "Listed by the feed “$name”$category${listed?.let { " as $it" }.orEmpty()}.$via"
+                val name: UiText = feed?.let(FeedCatalog::nameText) ?: UiText.Raw(id)
+                val category = feed?.category
+                withCname(
+                    when {
+                        category != null && listed != null -> UiText.of(R.string.block_reason_feed_category_rule, name, category, listed)
+                        category != null -> UiText.of(R.string.block_reason_feed_category, name, category)
+                        listed != null -> UiText.of(R.string.block_reason_feed_rule, name, listed)
+                        else -> UiText.of(R.string.block_reason_feed, name)
+                    },
+                )
             }
-            code.startsWith("ja4:") -> "Its TLS fingerprint is listed by the JA4 feed ${code.removePrefix("ja4:")}" +
-                (listed?.let { " ($it)" }.orEmpty()) + ", and blocking JA4 matches is on."
-            else -> reason
+            code.startsWith("ja4:") -> {
+                val feed = code.removePrefix("ja4:")
+                if (listed != null) UiText.of(R.string.block_reason_ja4_rule, feed, listed) else UiText.of(R.string.block_reason_ja4, feed)
+            }
+            else -> UiText.Raw(reason)
         }
     }
 }

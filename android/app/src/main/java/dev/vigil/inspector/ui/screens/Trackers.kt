@@ -21,12 +21,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.data.CompanyApps
 import dev.vigil.inspector.data.CompanyHits
@@ -39,16 +42,16 @@ import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.Tag
 import dev.vigil.inspector.ui.formatCount
-import dev.vigil.inspector.ui.plural
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.theme.VigilColors
 
 /** Explains tracker labels (help icons). */
-internal const val TRACKER_HELP =
-    "vigil names the company behind a destination from the AdGuard companiesdb tracker database, " +
-        "downloaded to the device weekly and looked up locally. Advertising, analytics, telemetry and social " +
-        "media trackers are highlighted; CDNs, hosting and other services are labelled but not counted as trackers. " +
-        "Labels never block anything: use the tracking and ads feeds or block rules for that. " +
-        "Data: ${TrackerDatabase.ATTRIBUTION}."
+@Composable
+internal fun trackerHelp(): String = stringResource(R.string.trackers_help, TrackerDatabase.ATTRIBUTION)
+
+/** The "Tracker labels" help icon. */
+@Composable
+private fun TrackerHelpIcon() = HelpIcon(stringResource(R.string.trackers_labels), trackerHelp())
 
 /** The loaded tracker labels (null when off or not downloaded); rows use it without a view model. */
 @Composable
@@ -68,8 +71,9 @@ private fun rememberTrackerMatch(host: String?): TrackerMatch? {
 @Composable
 fun TrackerTag(host: String?) {
     val m = rememberTrackerMatch(host) ?: return
-    if (m.tracker.isTracking) Tag(TrackerDatabase.label(m.tracker), VigilColors.Medium, filled = true)
-    else Tag(TrackerDatabase.label(m.tracker))
+    val label = TrackerDatabase.label(m.tracker).asString()
+    if (m.tracker.isTracking) Tag(label, VigilColors.Medium, filled = true)
+    else Tag(label)
 }
 
 /** Tracker and company rows for the connection detail. */
@@ -77,9 +81,15 @@ fun TrackerTag(host: String?) {
 fun TrackerFields(host: String?) {
     val m = rememberTrackerMatch(host) ?: return
     val t = m.tracker
-    Field("Tracker", "${t.name} · ${TrackerDatabase.categoryLabel(t.category)}" + if (m.domain != host?.lowercase()) " (listed as ${m.domain})" else "",
-        help = TRACKER_HELP)
-    Field("Company", t.companyName?.let { c -> c + (t.companyWebsite?.let { " · $it" } ?: "") })
+    val category = TrackerDatabase.categoryLabel(t.category).asString()
+    Field(
+        stringResource(R.string.trackers_field_tracker),
+        if (m.domain != host?.lowercase()) stringResource(R.string.trackers_field_tracker_listed_as, t.name, category, m.domain)
+        else stringResource(R.string.trackers_label, t.name, category),
+        help = trackerHelp(),
+    )
+    // Company name and website: data, not translated.
+    Field(stringResource(R.string.trackers_field_company), t.companyName?.let { c -> c + (t.companyWebsite?.let { " · $it" } ?: "") })
 }
 
 /** Section title and attribution for the tracker labels in the feed catalogue. */
@@ -89,15 +99,19 @@ fun TrackerLabelsHeader() {
     val uri = LocalUriHandler.current
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("Tracker labels")
-            HelpIcon("Tracker labels", TRACKER_HELP)
+            SectionTitle(stringResource(R.string.trackers_labels))
+            TrackerHelpIcon()
+        }
+        val loaded = index?.let {
+            stringResource(
+                R.string.trackers_labels_loaded,
+                pluralStringResource(R.plurals.trackers_count_domains, it.domainCount, formatCount(it.domainCount.toLong())),
+                pluralStringResource(R.plurals.trackers_count_trackers, it.trackerCount, formatCount(it.trackerCount.toLong())),
+                pluralStringResource(R.plurals.trackers_count_companies, it.companyCount, formatCount(it.companyCount.toLong())),
+            )
         }
         Text(
-            "Company and category of known tracker domains, shown next to connections, lookups and apps. " +
-                "Downloaded by this device from AdGuard's repository; the database started from WhoTracks.me data " +
-                "and is maintained by AdGuard." +
-                (index?.let { " Loaded: ${formatCount(it.domainCount.toLong())} domains, ${formatCount(it.trackerCount.toLong())} trackers, " +
-                    "${formatCount(it.companyCount.toLong())} companies." } ?: ""),
+            stringResource(R.string.trackers_labels_text) + (loaded?.let { " $it" } ?: ""),
             Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -124,18 +138,21 @@ fun AppTrackersSection(vm: MainViewModel, pkg: String, days: Int) {
     Column(Modifier.fillMaxWidth()) {
         val tracking = companies?.count { it.tracking } ?: 0
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle(if (companies == null) "Trackers" else "Trackers · ${plural(tracking.toLong(), "company", "companies")}")
-            HelpIcon("Tracker labels", TRACKER_HELP)
+            SectionTitle(
+                if (companies == null) stringResource(R.string.trackers_section)
+                else pluralStringResource(R.plurals.trackers_section_count, tracking, tracking),
+            )
+            TrackerHelpIcon()
         }
         when {
-            companies == null -> Hint("Tracker labels are off or not downloaded yet (Settings → Threat intelligence feeds → Tracker labels).")
-            companies.isEmpty() -> Hint("No known tracker or service domains in the ${windowLabel(days)}.")
+            companies == null -> Hint(stringResource(R.string.trackers_off))
+            companies.isEmpty() -> Hint(pluralStringResource(R.plurals.trackers_none_in_window, days, days))
             else -> {
                 val shown = if (showAll) companies else companies.take(COLLAPSED)
                 for (c in shown) CompanyRow(c, expanded = open == c.company, onClick = { open = if (open == c.company) null else c.company })
                 if (companies.size > COLLAPSED) {
                     TextButton(onClick = { showAll = !showAll }, Modifier.padding(horizontal = 4.dp)) {
-                        Text(if (showAll) "Show fewer" else "Show all ${companies.size}")
+                        Text(if (showAll) stringResource(R.string.trackers_show_fewer) else stringResource(R.string.trackers_show_all, companies.size))
                     }
                 }
             }
@@ -154,36 +171,48 @@ private fun Hint(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
+/** Counts joined with " · ", e.g. "3 connections · 2 lookups · 1 blocked". */
+@Composable
 private fun hitsText(flows: Long, lookups: Long, blocked: Long): String = listOfNotNull(
-    flows.takeIf { it > 0 }?.let { plural(it, "connection") },
-    lookups.takeIf { it > 0 }?.let { plural(it, "lookup") },
-    blocked.takeIf { it > 0 }?.let { "${formatCount(it)} blocked" },
+    flows.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.trackers_hits_connections, quantity(it), it) },
+    lookups.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.trackers_hits_lookups, quantity(it), it) },
+    blocked.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.trackers_hits_blocked, quantity(it), formatCount(it)) },
 ).joinToString(" · ")
+
+/** A count as the quantity that selects a plural form. */
+private fun quantity(n: Long): Int = n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
 @Composable
 private fun CompanyRow(c: CompanyHits, expanded: Boolean, onClick: () -> Unit) {
     Column(
         Modifier.fillMaxWidth()
-            .clickable(onClickLabel = if (expanded) "Hide domains" else "Show domains", role = Role.Button, onClick = onClick)
+            .clickable(
+                onClickLabel = stringResource(if (expanded) R.string.trackers_hide_domains else R.string.trackers_show_domains),
+                role = Role.Button, onClick = onClick,
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(c.company, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 fontWeight = if (c.tracking) FontWeight.Medium else null)
             when {
-                c.allBlocked -> Tag("blocked", VigilColors.Block, filled = true)
-                c.blocked > 0 -> Tag("partly blocked", VigilColors.Block)
-                else -> Tag("allowed", VigilColors.Allow)
+                c.allBlocked -> Tag(stringResource(R.string.trackers_tag_blocked), VigilColors.Block, filled = true)
+                c.blocked > 0 -> Tag(stringResource(R.string.trackers_tag_partly_blocked), VigilColors.Block)
+                else -> Tag(stringResource(R.string.trackers_tag_allowed), VigilColors.Allow)
             }
         }
         Row(Modifier.padding(top = 3.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             for (cat in c.categories.take(3)) {
-                if (TrackerDatabase.isTrackingCategory(cat)) Tag(TrackerDatabase.categoryLabel(cat), VigilColors.Medium, filled = true)
-                else Tag(TrackerDatabase.categoryLabel(cat))
+                if (TrackerDatabase.isTrackingCategory(cat)) Tag(TrackerDatabase.categoryLabel(cat).asString(), VigilColors.Medium, filled = true)
+                else Tag(TrackerDatabase.categoryLabel(cat).asString())
             }
         }
         Text(
-            "${plural(c.domains.size.toLong(), "domain")} · ${hitsText(c.flows, c.lookups, c.blocked)}",
+            stringResource(
+                R.string.trackers_details,
+                pluralStringResource(R.plurals.trackers_company_domains, c.domains.size, c.domains.size),
+                hitsText(c.flows, c.lookups, c.blocked),
+            ),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (expanded) {
@@ -192,7 +221,11 @@ private fun CompanyRow(c: CompanyHits, expanded: Boolean, onClick: () -> Unit) {
                     Text(d.domain, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         color = if (d.total > 0 && d.blocked >= d.total) VigilColors.Block else MaterialTheme.colorScheme.onSurface)
                     Text(
-                        "${d.tracker.name} · ${TrackerDatabase.categoryLabel(d.tracker.category)} · ${hitsText(d.flows, d.lookups, d.blocked)}",
+                        stringResource(
+                            R.string.trackers_details,
+                            stringResource(R.string.trackers_label, d.tracker.name, TrackerDatabase.categoryLabel(d.tracker.category).asString()),
+                            hitsText(d.flows, d.lookups, d.blocked),
+                        ),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -207,21 +240,22 @@ fun LazyListScope.topTrackerCompanies(companies: List<CompanyApps>, nav: NavCont
     if (companies.isEmpty()) return
     item {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("Top tracker companies")
-            HelpIcon("Tracker labels", TRACKER_HELP)
+            SectionTitle(stringResource(R.string.trackers_top_companies))
+            TrackerHelpIcon()
         }
     }
     items(companies, key = { "t-" + it.company }) { c ->
         Row(
-            Modifier.fillMaxWidth().clickable(onClickLabel = "Open apps") { nav.navigateTab("apps") }.padding(horizontal = 16.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().clickable(onClickLabel = stringResource(R.string.trackers_open_apps)) { nav.navigateTab("apps") }.padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(c.company, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(c.categories.joinToString(", ") { TrackerDatabase.categoryLabel(it) }, style = MaterialTheme.typography.bodySmall,
+                val context = LocalContext.current
+                Text(c.categories.joinToString(", ") { TrackerDatabase.categoryLabel(it).resolve(context) }, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text(plural(c.apps.toLong(), "app"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(pluralStringResource(R.plurals.trackers_apps_count, c.apps, c.apps), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

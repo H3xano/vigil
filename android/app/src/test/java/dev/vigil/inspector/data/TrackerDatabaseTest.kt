@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.vpn.ConfigFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,11 +43,11 @@ class TrackerDatabaseTest {
         assertEquals("Google", dc.companyName)
         assertEquals("http://www.google.com", dc.companyWebsite)
         assertTrue(dc.isTracking)
-        assertEquals("Google · Advertising", TrackerDatabase.label(dc))
+        assertEquals(UiText.of(R.string.trackers_label, "Google", UiText.of(R.string.trackers_category_advertising)), TrackerDatabase.label(dc))
 
         val firebase = index.match("app-measurement.com")!!.tracker
         assertEquals("mobile_analytics", firebase.category)
-        assertEquals("Google · Mobile analytics", TrackerDatabase.label(firebase))
+        assertEquals(UiText.of(R.string.trackers_label, "Google", UiText.of(R.string.trackers_category_mobile_analytics)), TrackerDatabase.label(firebase))
 
         val apis = index.match("www.googleapis.com")!!.tracker
         assertEquals("cdn", apis.category)
@@ -59,7 +61,7 @@ class TrackerDatabaseTest {
         assertNull(t.companyName)
         assertNull(t.companyWebsite)
         assertEquals("Acceptable Ads Exchange", t.company)
-        assertEquals("Acceptable Ads Exchange · Advertising", TrackerDatabase.label(t))
+        assertEquals(UiText.of(R.string.trackers_label, "Acceptable Ads Exchange", UiText.of(R.string.trackers_category_advertising)), TrackerDatabase.label(t))
     }
 
     @Test
@@ -131,7 +133,10 @@ class TrackerDatabaseTest {
             ),
         )
         assertEquals(1, index.domainCount)
-        assertEquals("Google · Analytics", TrackerDatabase.label(index.match("ssl.google-analytics.com")!!.tracker))
+        assertEquals(
+            UiText.of(R.string.trackers_label, "Google", UiText.of(R.string.trackers_category_site_analytics)),
+            TrackerDatabase.label(index.match("ssl.google-analytics.com")!!.tracker),
+        )
     }
 
     @Test
@@ -146,9 +151,10 @@ class TrackerDatabaseTest {
 
     @Test
     fun categoryLabels() {
-        assertEquals("Mobile analytics", TrackerDatabase.categoryLabel("mobile_analytics"))
-        assertEquals("CDN", TrackerDatabase.categoryLabel("cdn"))
-        assertEquals("New thing", TrackerDatabase.categoryLabel("new_thing"))
+        assertEquals(UiText.of(R.string.trackers_category_mobile_analytics), TrackerDatabase.categoryLabel("mobile_analytics"))
+        assertEquals(UiText.of(R.string.trackers_category_cdn), TrackerDatabase.categoryLabel("cdn"))
+        // Categories added to the database later are shown from their id.
+        assertEquals(UiText.Raw("New thing"), TrackerDatabase.categoryLabel("new_thing"))
         assertTrue(TrackerDatabase.isTrackingCategory("telemetry"))
         assertFalse(TrackerDatabase.isTrackingCategory("hosting"))
     }

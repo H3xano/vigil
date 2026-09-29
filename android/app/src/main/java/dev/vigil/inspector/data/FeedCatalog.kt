@@ -1,6 +1,12 @@
 package dev.vigil.inspector.data
 
-/** Built-in feeds. URLs verified to serve formats vigil parses. */
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
+
+/**
+ * Built-in feeds. URLs verified to serve formats vigil parses. The English
+ * descriptions are what Room stores; the screen shows [descriptionText].
+ */
 object FeedCatalog {
     private const val HAGEZI = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main"
 
@@ -118,6 +124,86 @@ object FeedCatalog {
                 "and others, by Amnesty International, Citizen Lab and others). Adds one feed per pack below. Index: MIT.",
         ),
     )
+
+    /** Stored descriptions of the feeds the user adds (see [FeedRepository]). */
+    const val CUSTOM_DESCRIPTION = "Custom feed"
+    const val CUSTOM_JA4_DESCRIPTION = "Custom JA4 feed"
+    private const val TAXII_PREFIX = "TAXII 2.1 collection “"
+    private const val TAXII_SUFFIX = "”"
+
+    fun taxiiDescription(title: String) = "$TAXII_PREFIX$title$TAXII_SUFFIX"
+
+    /** Translated descriptions of the built-in feeds, by feed id. */
+    private val descriptionIds: Map<String, Int> = mapOf(
+        "hagezi-tif-medium" to R.string.feeds_desc_hagezi_tif_medium,
+        "urlhaus" to R.string.feeds_desc_urlhaus,
+        "threatfox" to R.string.feeds_desc_threatfox,
+        "feodo" to R.string.feeds_desc_feodo,
+        "phishing-army" to R.string.feeds_desc_phishing_army,
+        "hagezi-tif-ips" to R.string.feeds_desc_hagezi_tif_ips,
+        "spamhaus-drop" to R.string.feeds_desc_spamhaus_drop,
+        "hagezi-tif-full" to R.string.feeds_desc_hagezi_tif_full,
+        "hagezi-pro" to R.string.feeds_desc_hagezi_pro,
+        "adguard-dns" to R.string.feeds_desc_adguard_dns,
+        "stevenblack" to R.string.feeds_desc_stevenblack,
+        "disconnect" to R.string.feeds_desc_disconnect,
+        "native-samsung" to R.string.feeds_desc_native_samsung,
+        "native-xiaomi" to R.string.feeds_desc_native_xiaomi,
+        "native-huawei" to R.string.feeds_desc_native_huawei,
+        "native-oppo" to R.string.feeds_desc_native_oppo,
+        "native-vivo" to R.string.feeds_desc_native_vivo,
+        "native-tiktok" to R.string.feeds_desc_native_tiktok,
+        "native-amazon" to R.string.feeds_desc_native_amazon,
+        "foxio-ja4-mapping" to R.string.feeds_desc_foxio_ja4_mapping,
+        "iptoasn" to R.string.feeds_desc_iptoasn,
+        TrackerDatabase.FEED_ID to R.string.feeds_desc_trackers,
+        "echap-stalkerware-network" to R.string.feeds_desc_echap_network,
+        "echap-stalkerware-apps" to R.string.feeds_desc_echap_apps,
+        "echap-watchware" to R.string.feeds_desc_echap_watchware,
+        MVT_INDEX_ID to R.string.feeds_desc_mvt_index,
+    )
+
+    /** Translated names of the built-in feeds whose name describes them; the others are product names. */
+    private val nameIds: Map<String, Int> = mapOf(
+        "native-samsung" to R.string.feeds_name_native_samsung,
+        "native-xiaomi" to R.string.feeds_name_native_xiaomi,
+        "native-huawei" to R.string.feeds_name_native_huawei,
+        "native-oppo" to R.string.feeds_name_native_oppo,
+        "native-vivo" to R.string.feeds_name_native_vivo,
+        "native-tiktok" to R.string.feeds_name_native_tiktok,
+        "native-amazon" to R.string.feeds_name_native_amazon,
+        "disconnect" to R.string.feeds_name_disconnect,
+        "foxio-ja4-mapping" to R.string.feeds_name_foxio_ja4_mapping,
+        "iptoasn" to R.string.feeds_name_iptoasn,
+        TrackerDatabase.FEED_ID to R.string.feeds_name_trackers,
+        "echap-stalkerware-network" to R.string.feeds_name_echap_network,
+        "echap-stalkerware-apps" to R.string.feeds_name_echap_apps,
+        "echap-watchware" to R.string.feeds_name_echap_watchware,
+        MVT_INDEX_ID to R.string.feeds_name_mvt_index,
+    )
+
+    /** The name of [f] to show: translated for descriptive built-in names, else the stored name. */
+    fun nameText(f: FeedEntity): UiText = (if (f.builtin) nameIds[f.id] else null)?.let { UiText.of(it) } ?: UiText.Raw(f.name)
+
+    /**
+     * The description of [f] in the app's language: built-in and custom feeds
+     * are translated; others (MVT packs, which describe themselves) show the
+     * stored text. Null when there is none.
+     */
+    fun descriptionText(f: FeedEntity): UiText? {
+        val builtinId = if (f.builtin) descriptionIds[f.id] else null
+        val d = f.description
+        return when {
+            builtinId == R.string.feeds_desc_trackers -> UiText.of(builtinId, TrackerDatabase.ATTRIBUTION)
+            builtinId != null -> UiText.of(builtinId)
+            f.builtin -> null
+            f.kind == FeedKinds.LIST && d == CUSTOM_DESCRIPTION -> UiText.of(R.string.feeds_desc_custom)
+            f.kind == FeedKinds.JA4 && d == CUSTOM_JA4_DESCRIPTION -> UiText.of(R.string.feeds_desc_custom_ja4)
+            f.isTaxii && d.startsWith(TAXII_PREFIX) && d.endsWith(TAXII_SUFFIX) ->
+                UiText.of(R.string.feeds_desc_taxii, d.removePrefix(TAXII_PREFIX).removeSuffix(TAXII_SUFFIX))
+            else -> null
+        } ?: d.takeIf { it.isNotEmpty() }?.let { UiText.Raw(it) }
+    }
 
     val categories = listOf("malware", "phishing", "c2", "ja4", "tracking", "ads", "custom", AsnDatabase.CATEGORY, TrackerDatabase.CATEGORY)
 

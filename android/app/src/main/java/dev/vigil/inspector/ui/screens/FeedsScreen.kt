@@ -40,6 +40,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -47,6 +50,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.FeedCatalog
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.AsnDatabase
@@ -57,6 +61,7 @@ import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
@@ -77,6 +82,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
     val adding = rememberRetained("feeds.add") { null as FeedDraft? }
     var confirmDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     val confirmDelete = confirmDeleteId?.let { id -> feeds.firstOrNull { it.id == id } }
+    val resources = LocalResources.current
 
     // Report when an update the user can see (running or waiting) finishes.
     var wasBusy by remember { mutableStateOf(false) }
@@ -85,32 +91,28 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             wasBusy = true
         } else if (wasBusy) {
             wasBusy = false
-            vm.showMessage("Feed update finished")
+            vm.showMessage(resources.getString(R.string.feeds_update_finished))
         }
     }
 
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Threat intelligence", nav) {
+        VigilTopBar(stringResource(R.string.feeds_title), nav) {
             IconButton(onClick = {
                 vm.refreshFeeds()
-                vm.showMessage("Updating threat feeds…")
-            }, enabled = work != FeedWork.RUNNING) { Icon(Icons.Default.Refresh, "Update all") }
-            IconButton(onClick = { adding.value = FeedDraft() }) { Icon(Icons.Default.Add, "Add feed") }
+                vm.showMessage(resources.getString(R.string.feeds_updating))
+            }, enabled = work != FeedWork.RUNNING) { Icon(Icons.Default.Refresh, stringResource(R.string.feeds_update_all)) }
+            IconButton(onClick = { adding.value = FeedDraft() }) { Icon(Icons.Default.Add, stringResource(R.string.feeds_add_feed)) }
         }
         when (work) {
-            FeedWork.RUNNING -> Progress("Downloading feeds…")
-            FeedWork.WAITING -> Progress("Feed update queued; waiting for a network connection…")
+            FeedWork.RUNNING -> Progress(stringResource(R.string.feeds_progress_downloading))
+            FeedWork.WAITING -> Progress(stringResource(R.string.feeds_progress_waiting))
             FeedWork.IDLE -> {}
         }
         LazyColumn {
             item {
                 Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 8.dp)) {
                     Text(
-                        "Hits on malware, phishing and C2 feeds raise high-severity alerts; tracking and ads lists only block. " +
-                            "Enabled feeds are downloaded daily from their publishers (GitHub, abuse.ch, Spamhaus and others); " +
-                            "turn a feed off to stop downloading it. Custom feeds accept hosts files, domain lists, " +
-                            "AdGuard ||domain^ rules and IP/CIDR lists (for example a MISP text export with an API key in " +
-                            "the Authorization header), JA4 fingerprint lists, and TAXII 2.1 collections (MISP, OpenCTI).",
+                        stringResource(R.string.feeds_intro),
                         Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     HelpIcon("C2", Glossary.C2)
@@ -126,13 +128,13 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             for (category in FeedCatalog.categories.filter { it in groups }) {
                 item {
                     when (category) {
-                        "ja4" -> SectionTitle("JA4 fingerprints")
+                        "ja4" -> SectionTitle(stringResource(R.string.feeds_section_ja4))
                         AsnDatabase.CATEGORY -> Row(verticalAlignment = Alignment.CenterVertically) {
-                            SectionTitle("Network (ASN) data")
+                            SectionTitle(stringResource(R.string.feeds_section_asn))
                             HelpIcon("ASN", Glossary.ASN)
                         }
                         TrackerDatabase.CATEGORY -> TrackerLabelsHeader()
-                        else -> SectionTitle(category)
+                        else -> SectionTitle(categoryTitle(category))
                     }
                 }
                 items(groups.getValue(category), key = { it.id }) { f ->
@@ -143,12 +145,12 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             if (spyware.isNotEmpty()) {
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionTitle("Spyware & stalkerware")
-                        HelpIcon("Spyware packs", Glossary.SPYWARE_PACKS)
+                        SectionTitle(stringResource(R.string.feeds_section_spyware))
+                        HelpIcon(stringResource(R.string.feeds_help_spyware_packs), Glossary.SPYWARE_PACKS)
                     }
                 }
                 item {
-                    TextButton(onClick = { nav.navigate("health") }, Modifier.padding(horizontal = 8.dp)) { Text("Open the health check") }
+                    TextButton(onClick = { nav.navigate("health") }, Modifier.padding(horizontal = 8.dp)) { Text(stringResource(R.string.feeds_open_health_check)) }
                 }
                 // The index first, then Echap's lists, then the packs it lists.
                 val ordered = spyware.sortedWith(
@@ -163,7 +165,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             if (taxii.isNotEmpty()) {
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionTitle("TAXII collections")
+                        SectionTitle(stringResource(R.string.feeds_section_taxii))
                         HelpIcon("TAXII", Glossary.TAXII)
                     }
                 }
@@ -178,20 +180,31 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
     confirmDelete?.let { f ->
         AlertDialog(
             onDismissRequest = { confirmDeleteId = null },
-            title = { Text("Delete ${f.name}?") },
-            text = { Text("The feed and its downloaded copy are removed. Its entries stop matching the next time inspection loads feeds.") },
+            title = { Text(stringResource(R.string.feeds_delete_title, f.name)) },
+            text = { Text(stringResource(R.string.feeds_delete_text)) },
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteFeed(f.id)
-                    vm.showMessage("Deleted ${f.name}")
+                    vm.showMessage(resources.getString(R.string.feeds_deleted, f.name))
                     confirmDeleteId = null
-                }) { Text("Delete") }
+                }) { Text(stringResource(R.string.feeds_delete)) }
             },
-            dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 
     if (adding.value != null) AddFeedDialog(vm, adding, onDismiss = { adding.value = null })
+}
+
+/** Section title of a feed category; categories without a translation (c2, custom ones) show their id. */
+@Composable
+private fun categoryTitle(category: String): String = when (category) {
+    "malware" -> stringResource(R.string.feeds_category_malware)
+    "phishing" -> stringResource(R.string.feeds_category_phishing)
+    "tracking" -> stringResource(R.string.feeds_category_tracking)
+    "ads" -> stringResource(R.string.feeds_category_ads)
+    "custom" -> stringResource(R.string.feeds_category_custom)
+    else -> category
 }
 
 /** Explains JA4 matching and holds the block switch (alert-only by default). */
@@ -199,13 +212,11 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
 private fun Ja4Settings(block: Boolean, onBlock: (Boolean) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
         Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("JA4 fingerprint matching", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-            HelpIcon("JA4 match", Glossary.JA4_MATCH)
+            Text(stringResource(R.string.feeds_ja4_title), Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            HelpIcon(stringResource(R.string.feeds_help_ja4_match), Glossary.JA4_MATCH)
         }
         Text(
-            "Every TLS and QUIC connection's JA4 fingerprint is compared with the enabled JA4 feeds and the JA4 indicators " +
-                "of TAXII collections. A match raises a high-severity alert naming the app and destination. Fingerprints " +
-                "identify TLS libraries, so benign apps can match; blocking is therefore off by default.",
+            stringResource(R.string.feeds_ja4_text),
             Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -215,9 +226,9 @@ private fun Ja4Settings(block: Boolean, onBlock: (Boolean) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("Block matching connections", style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.feeds_ja4_block), style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Resets the connection before the handshake reaches the server. Allowlisted domains are exempt.",
+                    stringResource(R.string.feeds_ja4_block_text),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -251,6 +262,7 @@ private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, on
     // A lookup in flight is not retained: after a rotation, look up again.
     var looking by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val resources = LocalResources.current
 
     val trimmedUrl = d.url.trim()
     val urlOk = (trimmedUrl.startsWith("https://") || trimmedUrl.startsWith("http://")) && trimmedUrl.length > 10
@@ -264,45 +276,58 @@ private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, on
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add feed") },
+        title = { Text(stringResource(R.string.feeds_add_title)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Segmented(
-                    listOf(FeedKinds.LIST to "Domains / IPs", FeedKinds.JA4 to "JA4", FeedKinds.TAXII to "TAXII"),
+                    listOf(FeedKinds.LIST to stringResource(R.string.feeds_kind_list), FeedKinds.JA4 to "JA4", FeedKinds.TAXII to "TAXII"),
                     d.kind, { k -> edit { it.copy(kind = k, collections = null, chosen = null, lookupError = null) } }, Modifier,
                 )
-                OutlinedTextField(d.name, { v -> edit { it.copy(name = v) } }, label = { Text("Name") }, singleLine = true)
+                OutlinedTextField(d.name, { v -> edit { it.copy(name = v) } }, label = { Text(stringResource(R.string.feeds_field_name)) }, singleLine = true)
                 OutlinedTextField(
                     d.url, { v -> edit { it.copy(url = v, collections = null, chosen = null) } },
-                    label = { Text(if (d.kind == FeedKinds.TAXII) "Discovery or API root URL" else "URL") }, singleLine = true,
+                    label = { Text(stringResource(if (d.kind == FeedKinds.TAXII) R.string.feeds_field_taxii_url else R.string.feeds_field_url)) }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
                 when (d.kind) {
                     FeedKinds.LIST -> {
-                        SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Authorization header (optional)")
+                        SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, stringResource(R.string.feeds_field_auth_optional))
                         CleartextWarning(trimmedUrl, hasSecret = d.auth.isNotBlank(), isFeed = true)
-                        Segmented(listOf("malware" to "Malware", "c2" to "C2", "phishing" to "Phish"), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
-                        Segmented(listOf("tracking" to "Tracking", "ads" to "Ads", "custom" to "Other"), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
-                    }
-                    FeedKinds.JA4 -> {
-                        SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Authorization header (optional)")
-                        CleartextWarning(trimmedUrl, hasSecret = d.auth.isNotBlank(), isFeed = true)
-                        Hint(
-                            "One JA4 fingerprint per line, optionally followed by a label, e.g.\n" +
-                                "t13d190900_9dc949149365_97f8aa674fd9  Sliver\n" +
-                                "Lines starting with # are comments. a_b_* matches any extension set.",
+                        Segmented(threatCategories(), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
+                        Segmented(
+                            listOf(
+                                "tracking" to stringResource(R.string.feeds_seg_tracking),
+                                "ads" to stringResource(R.string.feeds_seg_ads),
+                                "custom" to stringResource(R.string.feeds_seg_other),
+                            ),
+                            d.category, { v -> edit { it.copy(category = v) } }, Modifier,
                         )
                     }
+                    FeedKinds.JA4 -> {
+                        SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, stringResource(R.string.feeds_field_auth_optional))
+                        CleartextWarning(trimmedUrl, hasSecret = d.auth.isNotBlank(), isFeed = true)
+                        Hint(stringResource(R.string.feeds_ja4_hint))
+                    }
                     FeedKinds.TAXII -> {
-                        Segmented(listOf("none" to "No auth", "basic" to "Basic", "header" to "API key"), d.authMode, { v -> edit { it.copy(authMode = v) } }, Modifier)
+                        Segmented(
+                            listOf(
+                                "none" to stringResource(R.string.feeds_auth_none),
+                                "basic" to stringResource(R.string.feeds_auth_basic),
+                                "header" to stringResource(R.string.feeds_auth_api_key),
+                            ),
+                            d.authMode, { v -> edit { it.copy(authMode = v) } }, Modifier,
+                        )
                         when (d.authMode) {
                             "basic" -> {
-                                OutlinedTextField(d.user, { v -> edit { it.copy(user = v) } }, label = { Text("Username") }, singleLine = true)
-                                SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Password")
+                                OutlinedTextField(d.user, { v -> edit { it.copy(user = v) } }, label = { Text(stringResource(R.string.feeds_field_username)) }, singleLine = true)
+                                SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, stringResource(R.string.feeds_field_password))
                             }
                             "header" -> {
-                                OutlinedTextField(d.headerName, { v -> edit { it.copy(headerName = v) } }, label = { Text("Header name") }, singleLine = true)
-                                SecretField(d.auth, { v -> edit { it.copy(auth = v) } }, "Header value", placeholder = "e.g. Bearer <token> or the MISP key")
+                                OutlinedTextField(d.headerName, { v -> edit { it.copy(headerName = v) } }, label = { Text(stringResource(R.string.feeds_field_header_name)) }, singleLine = true)
+                                SecretField(
+                                    d.auth, { v -> edit { it.copy(auth = v) } }, stringResource(R.string.feeds_field_header_value),
+                                    placeholder = stringResource(R.string.feeds_field_header_value_placeholder),
+                                )
                             }
                         }
                         CleartextWarning(trimmedUrl, hasSecret = d.authMode != "none", isFeed = true)
@@ -317,14 +342,14 @@ private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, on
                                             it.copy(
                                                 collections = list,
                                                 chosen = list.singleOrNull { c -> c.canRead },
-                                                lookupError = if (list.isEmpty()) "The server lists no collections." else null,
+                                                lookupError = if (list.isEmpty()) resources.getString(R.string.feeds_taxii_no_collections) else null,
                                             )
                                         }
                                     }
                                     .onFailure { e -> edit { it.copy(lookupError = e.message ?: e.javaClass.simpleName) } }
                                 looking = false
                             }
-                        }) { Text(if (looking) "Looking up…" else "Find collections") }
+                        }) { Text(stringResource(if (looking) R.string.feeds_taxii_looking_up else R.string.feeds_taxii_find_collections)) }
                         d.lookupError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = VigilColors.Block) }
                         d.collections?.forEach { c ->
                             Row(
@@ -336,20 +361,17 @@ private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, on
                                 Column(Modifier.padding(start = 8.dp)) {
                                     Text(c.title, style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        (if (c.canRead) "" else "not readable with these credentials · ") + c.id,
+                                        if (c.canRead) c.id else stringResource(R.string.feeds_taxii_unreadable, c.id),
                                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
                         }
                         if (d.chosen != null) {
-                            Text("Treat its domains and IPs as", style = MaterialTheme.typography.bodySmall)
-                            Segmented(listOf("malware" to "Malware", "c2" to "C2", "phishing" to "Phish"), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
+                            Text(stringResource(R.string.feeds_taxii_treat_as), style = MaterialTheme.typography.bodySmall)
+                            Segmented(threatCategories(), d.category, { v -> edit { it.copy(category = v) } }, Modifier)
                         }
-                        Hint(
-                            "Uses indicators for domains, IP addresses and ranges, URLs (their host) and JA4 fingerprints. " +
-                                "Polled with the daily feed update, incrementally.",
-                        )
+                        Hint(stringResource(R.string.feeds_taxii_hint))
                     }
                 }
             }
@@ -364,13 +386,21 @@ private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, on
                 } else {
                     vm.addFeed(d.name.trim(), trimmedUrl, d.category, d.auth, d.kind)
                 }
-                vm.showMessage("Added ${d.name.trim()}; downloading…")
+                vm.showMessage(resources.getString(R.string.feeds_added, d.name.trim()))
                 onDismiss()
-            }) { Text("Add") }
+            }) { Text(stringResource(R.string.feeds_add)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
+
+/** The threat categories offered for a feed; "C2" is not translated. */
+@Composable
+private fun threatCategories(): List<Pair<String, String>> = listOf(
+    "malware" to stringResource(R.string.feeds_seg_malware),
+    "c2" to "C2",
+    "phishing" to stringResource(R.string.feeds_seg_phishing),
+)
 
 @Composable
 private fun Hint(text: String) {
@@ -396,13 +426,13 @@ private fun FeedRow(f: FeedEntity, active: Boolean, onToggle: (Boolean) -> Unit,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(f.name, style = MaterialTheme.typography.bodyLarge)
-                if (f.description.isNotEmpty()) {
-                    Text(f.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(FeedCatalog.nameText(f).asString(), style = MaterialTheme.typography.bodyLarge)
+                FeedCatalog.descriptionText(f)?.let { description ->
+                    Text(description.asString(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (f.isTaxii) {
                     Text(
-                        "${f.url} · treated as ${f.category}",
+                        stringResource(R.string.feeds_taxii_treated_as, f.url, f.category),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -410,36 +440,35 @@ private fun FeedRow(f: FeedEntity, active: Boolean, onToggle: (Boolean) -> Unit,
                     if (f.lastUpdated != null) {
                         Tag(
                             listOfNotNull(
-                                f.domains.takeIf { it > 0 }?.let { "${formatCount(it.toLong())} domains" },
-                                f.ipRanges.takeIf { it > 0 }?.let { "${formatCount(it.toLong())} ranges" },
-                                f.ja4.takeIf { it > 0 }?.let { "${formatCount(it.toLong())} JA4" },
+                                f.domains.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.feeds_tag_domains, it, formatCount(it.toLong())) },
+                                f.ipRanges.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.feeds_tag_ranges, it, formatCount(it.toLong())) },
+                                f.ja4.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.feeds_tag_ja4, it, formatCount(it.toLong())) },
                             ).joinToString(" · ").ifEmpty {
                                 when (f.kind) {
-                                    FeedKinds.SPYWARE_INDEX -> "pack list"
-                                    FeedKinds.SPYWARE_APPS, FeedKinds.SPYWARE -> "for the health check"
-                                    else -> "empty"
+                                    FeedKinds.SPYWARE_INDEX -> stringResource(R.string.feeds_tag_pack_list)
+                                    FeedKinds.SPYWARE_APPS, FeedKinds.SPYWARE -> stringResource(R.string.feeds_tag_for_health_check)
+                                    else -> stringResource(R.string.feeds_tag_empty)
                                 }
                             },
                         )
-                        Tag("updated ${formatRelative(f.lastUpdated)}")
+                        Tag(stringResource(R.string.feeds_tag_updated, formatRelative(f.lastUpdated)))
                     } else if (f.enabled) {
-                        Tag("not downloaded", VigilColors.Low, filled = true)
+                        Tag(stringResource(R.string.feeds_tag_not_downloaded), VigilColors.Low, filled = true)
                     }
-                    if (active) Tag("active", VigilColors.Allow, filled = true)
+                    if (active) Tag(stringResource(R.string.feeds_tag_active), VigilColors.Allow, filled = true)
                     if (f.url.startsWith("http://")) Tag("http", VigilColors.Medium, filled = true)
                 }
-                f.lastError?.let { Text("Error: $it", style = MaterialTheme.typography.bodySmall, color = VigilColors.Block) }
+                f.lastError?.let { Text(stringResource(R.string.feeds_error, it), style = MaterialTheme.typography.bodySmall, color = VigilColors.Block) }
                 if (!f.builtin && f.url.startsWith("http://")) {
                     Text(
-                        "Downloaded without encryption: the list can be altered in transit" +
-                            if (f.authHeader != null) ", and the credentials are sent in clear text." else ".",
+                        stringResource(if (f.authHeader != null) R.string.feeds_http_warning_credentials else R.string.feeds_http_warning),
                         style = MaterialTheme.typography.bodySmall, color = VigilColors.Medium,
                     )
                 }
             }
             Switch(checked = f.enabled, onCheckedChange = null)
         }
-        if (!f.builtin) IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Delete ${f.name}") }
+        if (!f.builtin) IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, stringResource(R.string.feeds_delete_named, f.name)) }
     }
 }
 
@@ -459,7 +488,7 @@ fun SecretField(value: String, onChange: (String) -> Unit, label: String, modifi
         keyboardOptions = SECRET_KEYBOARD,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         trailingIcon = {
-            if (value.isNotEmpty()) TextButton(onClick = { visible = !visible }) { Text(if (visible) "Hide" else "Show") }
+            if (value.isNotEmpty()) TextButton(onClick = { visible = !visible }) { Text(stringResource(if (visible) R.string.feeds_secret_hide else R.string.feeds_secret_show)) }
         },
     )
 }
@@ -475,9 +504,9 @@ val SECRET_KEYBOARD = KeyboardOptions(keyboardType = KeyboardType.Password, auto
 fun CleartextWarning(url: String, hasSecret: Boolean, isFeed: Boolean) {
     if (!url.startsWith("http://")) return
     val text = when {
-        hasSecret -> "This URL uses http://: the Authorization header will be sent unencrypted, readable by anyone on the network path. Use https://."
-        isFeed -> "This URL uses http://: the list can be altered in transit (to block or hide domains). Prefer https://."
-        else -> "This URL uses http://: events are sent unencrypted. Prefer https:// outside a trusted network."
+        hasSecret -> R.string.feeds_cleartext_secret
+        isFeed -> R.string.feeds_cleartext_feed
+        else -> R.string.feeds_cleartext_export
     }
-    Text(text, style = MaterialTheme.typography.bodySmall, color = VigilColors.Medium)
+    Text(stringResource(text), style = MaterialTheme.typography.bodySmall, color = VigilColors.Medium)
 }
