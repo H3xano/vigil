@@ -346,8 +346,11 @@ Health check); retention and clear history.
       work added queries and settings, no schema change) (exported to
       `android/app/schemas`); every entity change needs a hand-written
       migration and a `MigrationTest` case.
-    - Move UI strings to resources (localisation) and add a theme toggle /
-      dynamic colour; both were left out of the review fixes.
+    - Add a theme toggle / dynamic colour. (UI strings moved to resources
+      on 2026-09-29; see docs/TRANSLATING.md.)
+    - Translations: set up hosted Weblate (owner account), then translate
+      the feed download error details and spyware pack descriptions, which
+      are still stored as English text.
     - Persist unsent SIEM alerts across process death (the retry queue is
       in memory).
 11. **Open findings of the 2026-09-29 review** (lower priority, not fixed):
@@ -441,3 +444,4 @@ Health check); retention and clear history.
 | PCAP-over-IP in Rust, Wi-Fi address only by default | The packets are already in the engine; streaming through Kotlin would cost a JNI call per packet. Exposure is limited to the local Wi-Fi and to an allowlist of client addresses, required for any network bind; on the device only the shell (`adb forward`) or root may connect. |
 | Spyware packs from MVT's index and Echap, downloaded by the device; labels kept app-side | Source allowlist (mvt-project, AmnestyTech, AssoEchap on GitHub); the engine carries no per-entry labels for domain feeds. A small hand-written YAML reader instead of a YAML library. |
 | AdGuard companiesdb for tracker labels, not loaded by the engine | CC BY-SA 4.0 (commercial use allowed; DuckDuckGo, Ghostery and Disconnect data are non-commercial); labels are looked up at display and export time. |
+| UI strings in one resource file per area; `UiText` for text built without a Context | Smaller files for translators (one Weblate component each) and no merge conflicts between areas; data-layer and view-model messages stay testable on the JVM by comparing resource ids. Alert messages stay English in Room and the SIEM export (machine data); screens render a translated sentence from kind + detail, falling back to the stored message. |

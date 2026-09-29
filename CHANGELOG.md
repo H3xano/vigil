@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+Translation support:
+
+- Every user-visible string is an Android resource (about 900 strings and
+  80 plurals in `res/values/strings_<area>.xml`), with plurals for counts
+  and whole sentences with positional placeholders. Alerts are shown in the
+  app language from their kind and details; the stored and exported message
+  stays English. The per-app language setting (Android 13+) lists the
+  translated locales, generated at build time. Debug builds enable the en-XA
+  and ar-XB pseudolocales. `StringResourcesTest` fails on English passed
+  straight to the UI and on translations whose placeholders differ from the
+  English. Guide for translators: `docs/TRANSLATING.md`. No translations
+  yet.
+- Wording: the notification counts "1 connection" (was "1 connections");
+  `new_asn` alerts are titled "New network".
+
 Fixes from the third review (2026-09-29):
 
 - **PCAP-over-IP:** only the shell (`adb forward`) or root may connect from

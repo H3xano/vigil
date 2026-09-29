@@ -65,7 +65,8 @@ publishers (see [docs/PRIVACY.md](docs/PRIVACY.md)).
 
 Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the event
 schema is in [docs/EVENTS.md](docs/EVENTS.md). What vigil can and cannot see is
-covered in [docs/PRIVACY.md](docs/PRIVACY.md).
+covered in [docs/PRIVACY.md](docs/PRIVACY.md). The app is translatable; see
+[docs/TRANSLATING.md](docs/TRANSLATING.md) to add a language.
 
 **Picking the project up again?** Start with [docs/STATUS.md](docs/STATUS.md)
 (state, backlog, decisions), then [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
@@ -87,7 +88,7 @@ scripts/
   android-lifecycle.sh, android-features.sh,
   android-newfeatures.sh                      on-device lifecycle and feature tests
   bench-throughput.sh throughput through the engine vs. direct
-docs/                 architecture, event schema, privacy notes, health check, development, status, screenshots
+docs/                 architecture, event schema, privacy notes, health check, development, translating, status, screenshots
 fastlane/             F-Droid store metadata
 packaging/fdroid/     draft F-Droid recipe
 ```

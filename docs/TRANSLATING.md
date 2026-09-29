@@ -45,8 +45,11 @@ comment says so where it matters. Check long translations with a large
 font size.
 
 What stays in English on purpose: the events and records vigil sends to a
-SIEM, the alert message stored with each alert (it is exported), log
-messages, and the names of feeds and data sources.
+SIEM, the alert message stored with each alert (it is exported; the screens
+build a translated sentence from the alert's kind and details instead), log
+messages, and the names of feeds and data sources. Not translated yet: the
+details of feed download errors and the publishers' descriptions of spyware
+packs, which are stored as text when they are downloaded.
 
 ### Trying a translation
 
