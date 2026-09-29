@@ -205,6 +205,11 @@ class FeedRepository(private val context: Context, private val dao: FeedDao) {
             Result.failure(e)
         } catch (e: RuntimeException) {
             Result.failure(e)
+        } catch (e: OutOfMemoryError) {
+            // An oversized or malicious feed must not take the process (and the VPN in it) down.
+            Result.failure(IOException("feed too large to process on this device", e))
+        } catch (e: StackOverflowError) {
+            Result.failure(IOException("feed nested too deeply to process", e))
         } finally {
             tmp.delete()
             converted.delete()

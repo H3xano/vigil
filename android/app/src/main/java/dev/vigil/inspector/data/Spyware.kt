@@ -81,12 +81,19 @@ object SpywareConverters {
     /** At most this many indicators per pack (the largest source has about 10 k). */
     const val MAX_INDICATORS = 200_000
 
-    fun convert(format: String, input: File, defaultLabel: String): List<SpywareGroup> = when (format) {
-        FORMAT_STIX2 -> input.bufferedReader().use { stix(it, defaultLabel) }
-        FORMAT_ECHAP_NETWORK_CSV -> echapNetworkCsv(input.readText(), defaultLabel)
-        FORMAT_ECHAP_IOC_YAML -> echapYaml(input.readText(), SpywareSeverity.INDICATOR)
-        FORMAT_ECHAP_WATCHWARE_YAML -> echapYaml(input.readText(), SpywareSeverity.WARNING)
-        else -> throw IOException("unknown spyware pack format $format")
+    /** Converts [input]; an input too large for memory fails with an [IOException] instead of killing the process. */
+    fun convert(format: String, input: File, defaultLabel: String): List<SpywareGroup> = try {
+        when (format) {
+            FORMAT_STIX2 -> input.bufferedReader().use { stix(it, defaultLabel) }
+            FORMAT_ECHAP_NETWORK_CSV -> echapNetworkCsv(input.readText(), defaultLabel)
+            FORMAT_ECHAP_IOC_YAML -> echapYaml(input.readText(), SpywareSeverity.INDICATOR)
+            FORMAT_ECHAP_WATCHWARE_YAML -> echapYaml(input.readText(), SpywareSeverity.WARNING)
+            else -> throw IOException("unknown spyware pack format $format")
+        }
+    } catch (e: OutOfMemoryError) {
+        throw IOException("spyware pack too large to process on this device", e)
+    } catch (e: StackOverflowError) {
+        throw IOException("spyware pack nested too deeply to process", e)
     }
 
     /**

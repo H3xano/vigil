@@ -199,7 +199,10 @@ class VigilVpnService : android.net.VpnService() {
                 handle(cmd)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Errors too (OutOfMemoryError, UnsatisfiedLinkError or ExceptionInInitializerError
+                // from loading the engine): the loop must survive to tear the VPN down and to
+                // handle Stop, revoke and destroy, or the device is left black-holed.
                 Log.e(TAG, "command $cmd failed", e)
                 if (cmd != Command.Destroy) {
                     runCatching { handle(Command.Crash(e.message ?: e.javaClass.simpleName)) }.onFailure { Log.e(TAG, "recovery failed", it) }
@@ -384,23 +387,32 @@ class VigilVpnService : android.net.VpnService() {
             null
         } ?: return Result.failure(IllegalStateException("Could not create the VPN interface."))
 
-        // Ids are start times; keep them strictly increasing across quick restarts.
-        val id = maxOf(System.currentTimeMillis(), (previousId ?: 0L) + 1)
-        val config = buildConfig(settings, net)
-        // The engine loads the feeds before it processes the first packet, so
-        // blocking and threat alerts cover the session from its start.
-        val state = currentDeviceState(settings)
-        val startConfig = ConfigFactory.startConfig(config, feeds, state) { app.feeds.fileFor(it).absolutePath }
-        val handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
-        if (handle == 0L) {
+        // From here on the interface is up: anything that throws (including an Error from
+        // loading the native library) must close it, or all traffic goes into a dead TUN.
+        var handle = 0L
+        try {
+            // Ids are start times; keep them strictly increasing across quick restarts.
+            val id = maxOf(System.currentTimeMillis(), (previousId ?: 0L) + 1)
+            val config = buildConfig(settings, net)
+            // The engine loads the feeds before it processes the first packet, so
+            // blocking and threat alerts cover the session from its start.
+            val state = currentDeviceState(settings)
+            val startConfig = ConfigFactory.startConfig(config, feeds, state) { app.feeds.fileFor(it).absolutePath }
+            handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
+            if (handle == 0L) {
+                runCatching { pfd.close() }
+                return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
+            }
+            val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil, app.spywareLabels) { message ->
+                commands.trySend(Command.EngineError(id, message))
+            }
+            val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }
+            return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded, state))
+        } catch (t: Throwable) {
+            if (handle != 0L) runCatching { VigilNative.nativeStop(handle) }.onFailure { Log.e(TAG, "stopping the engine failed", it) }
             runCatching { pfd.close() }
-            return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
+            throw t
         }
-        val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil, app.spywareLabels) { message ->
-            commands.trySend(Command.EngineError(id, message))
-        }
-        val preloaded = feeds.associate { it.id to (it.lastUpdated ?: 0L) }
-        return Result.success(Session(id, pfd, EngineHandle(handle), processor, routes, excluded, config, preloaded, state))
     }
 
     /**
