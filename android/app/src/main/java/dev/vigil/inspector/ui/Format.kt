@@ -1,5 +1,7 @@
 package dev.vigil.inspector.ui
 
+import androidx.compose.runtime.Composable
+import dev.vigil.inspector.R
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -23,16 +25,21 @@ fun formatCount(n: Long): String = when {
     else -> n.toString()
 }
 
-fun formatRelative(ts: Long, now: Long = System.currentTimeMillis()): String {
+/** "now", "30s ago", "5m ago", "2h ago", "3d ago". */
+fun relativeTime(ts: Long, now: Long = System.currentTimeMillis()): UiText {
     val d = (now - ts).coerceAtLeast(0) / 1000
+    fun ago(id: Int, n: Long) = UiText.plural(id, n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), n)
     return when {
-        d < 5 -> "now"
-        d < 60 -> "${d}s ago"
-        d < 3600 -> "${d / 60}m ago"
-        d < 86_400 -> "${d / 3600}h ago"
-        else -> "${d / 86_400}d ago"
+        d < 5 -> UiText.of(R.string.activity_time_now)
+        d < 60 -> ago(R.plurals.activity_time_seconds_ago, d)
+        d < 3600 -> ago(R.plurals.activity_time_minutes_ago, d / 60)
+        d < 86_400 -> ago(R.plurals.activity_time_hours_ago, d / 3600)
+        else -> ago(R.plurals.activity_time_days_ago, d / 86_400)
     }
 }
+
+@Composable
+fun formatRelative(ts: Long, now: Long = System.currentTimeMillis()): String = relativeTime(ts, now).asString()
 
 fun formatTime(ts: Long): String = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(ts))
 

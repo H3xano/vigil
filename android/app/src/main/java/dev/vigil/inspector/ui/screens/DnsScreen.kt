@@ -21,7 +21,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -32,21 +34,31 @@ import dev.vigil.inspector.engine.StatsEvent
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.SectionTitle
-import dev.vigil.inspector.ui.formatRelative
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
+import dev.vigil.inspector.ui.asString
+import dev.vigil.inspector.ui.relativeTime
 import dev.vigil.inspector.ui.theme.VigilColors
 import dev.vigil.inspector.vpn.VpnStatus
 
 /** One line on how encrypted DNS is doing, and whether it is a problem; null when it is off. */
-internal fun encryptedDnsStatus(s: EncryptedDnsSettings, running: Boolean, stats: StatsEvent?, now: Long): Pair<String, Boolean>? {
+internal fun encryptedDnsStatus(s: EncryptedDnsSettings, running: Boolean, stats: StatsEvent?, now: Long): Pair<UiText, Boolean>? {
     if (!s.enabled) return null
-    if (!running) return "Takes effect while inspection is running." to false
-    if (stats == null || (stats.encryptedDnsOk == 0L && stats.encryptedDnsFailed == 0L)) return "Waiting for the first lookup…" to false
-    val counts = "${stats.encryptedDnsOk} answered encrypted, ${stats.encryptedDnsFailed} failed" +
-        if (stats.encryptedDnsFallback > 0) " (${stats.encryptedDnsFallback} answered over plain DNS)" else ""
-    return if (stats.encryptedDnsLastErrorTs > stats.encryptedDnsLastOkTs) {
-        "Failing (last error ${formatRelative(stats.encryptedDnsLastErrorTs, now)}): ${stats.encryptedDnsLastError ?: "unknown error"} · $counts" to true
+    if (!running) return UiText.of(R.string.dns_status_inactive) to false
+    if (stats == null || (stats.encryptedDnsOk == 0L && stats.encryptedDnsFailed == 0L)) return UiText.of(R.string.dns_status_waiting) to false
+    fun count(id: Int, n: Long) = UiText.plural(id, quantity(n), n)
+    val answered = count(R.plurals.dns_status_answered, stats.encryptedDnsOk)
+    val failed = count(R.plurals.dns_status_failed, stats.encryptedDnsFailed)
+    val counts = if (stats.encryptedDnsFallback > 0) {
+        UiText.of(R.string.dns_status_counts_fallback, answered, failed, count(R.plurals.dns_status_fallback, stats.encryptedDnsFallback))
     } else {
-        "Working: last encrypted answer ${formatRelative(stats.encryptedDnsLastOkTs, now)} · $counts" to false
+        UiText.of(R.string.dns_status_counts, answered, failed)
+    }
+    return if (stats.encryptedDnsLastErrorTs > stats.encryptedDnsLastOkTs) {
+        val error = stats.encryptedDnsLastError?.let { UiText.Raw(it) } ?: UiText.of(R.string.dns_status_unknown_error)
+        UiText.of(R.string.dns_status_failing, relativeTime(stats.encryptedDnsLastErrorTs, now), error, counts) to true
+    } else {
+        UiText.of(R.string.dns_status_working, relativeTime(stats.encryptedDnsLastOkTs, now), counts) to false
     }
 }
 
@@ -70,41 +82,41 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
     val dirty = candidate != saved
 
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Encrypted DNS", nav)
+        VigilTopBar(stringResource(R.string.dns_title), nav)
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text(
-                "vigil answers every app's lookups itself and forwards them to a resolver. Encrypting that hop keeps the network " +
-                    "(Wi-Fi operator, carrier) from reading or altering your lookups, as Android's Private DNS does. " +
-                    "Blocking, alerts and the DNS log work the same.",
+                stringResource(R.string.dns_intro),
                 Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodyMedium,
             )
             encryptedDnsStatus(saved, status is VpnStatus.Running, stats, System.currentTimeMillis())?.let { (line, bad) ->
                 Text(
-                    line,
+                    line.asString(),
                     Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (bad) MaterialTheme.colorScheme.error else VigilColors.Allow,
                 )
             }
 
-            SectionTitle("Protocol")
+            SectionTitle(stringResource(R.string.dns_protocol))
             Segmented(
-                listOf("off" to "Off", "dot" to "DoT", "doh" to "DoH"),
+                listOf("off" to stringResource(R.string.state_off), "dot" to "DoT", "doh" to "DoH"),
                 draft.mode, { v -> draft = draft.copy(mode = v) },
             )
             Text(
-                when (draft.mode) {
-                    "dot" -> "DNS over TLS (RFC 7858), port 853. Easy for a network to recognise (and block) by its port."
-                    "doh" -> "DNS over HTTPS (RFC 8484), port 443. Looks like ordinary HTTPS; HTTP/2 when the server offers it."
-                    else -> "Lookups leave in cleartext to the resolvers chosen under Settings → Upstream DNS resolver."
-                },
+                stringResource(
+                    when (draft.mode) {
+                        "dot" -> R.string.dns_dot_description
+                        "doh" -> R.string.dns_doh_description
+                        else -> R.string.dns_off_description
+                    },
+                ),
                 Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             if (draft.enabled) {
-                SectionTitle("Provider")
+                SectionTitle(stringResource(R.string.dns_provider))
                 for (p in DnsProviders.ALL) {
                     ProviderRow(
                         p.name,
@@ -112,7 +124,7 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
                         draft.provider == p.id,
                     ) { draft = draft.copy(provider = p.id) }
                 }
-                ProviderRow("Custom", "Your own server", draft.provider == EncryptedDnsSettings.CUSTOM) {
+                ProviderRow(stringResource(R.string.dns_custom), stringResource(R.string.dns_custom_summary), draft.provider == EncryptedDnsSettings.CUSTOM) {
                     draft = draft.copy(provider = EncryptedDnsSettings.CUSTOM)
                 }
                 if (draft.provider == EncryptedDnsSettings.CUSTOM) {
@@ -120,42 +132,33 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
                         if (draft.mode == "doh") {
                             OutlinedTextField(
                                 draft.customUrl, { v -> draft = draft.copy(customUrl = v.trim()) }, Modifier.fillMaxWidth(),
-                                label = { Text("URL") }, placeholder = { Text("https://dns.example/dns-query") }, singleLine = true,
+                                label = { Text(stringResource(R.string.dns_url)) }, placeholder = { Text("https://dns.example/dns-query") }, singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                             )
                         } else {
                             OutlinedTextField(
                                 draft.customHost, { v -> draft = draft.copy(customHost = v.trim()) }, Modifier.fillMaxWidth(),
-                                label = { Text("Server name") }, placeholder = { Text("dns.example") }, singleLine = true,
+                                label = { Text(stringResource(R.string.dns_server_name)) }, placeholder = { Text("dns.example") }, singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                             )
                             OutlinedTextField(
                                 portText, { v -> portText = v.filter(Char::isDigit).take(5) }, Modifier.fillMaxWidth(),
-                                label = { Text("Port") }, singleLine = true,
+                                label = { Text(stringResource(R.string.dns_port)) }, singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             )
                         }
                         OutlinedTextField(
                             addrsText, { v -> addrsText = v }, Modifier.fillMaxWidth(),
-                            label = { Text("IP addresses") }, placeholder = { Text("192.0.2.53, 2001:db8::53") },
-                            supportingText = {
-                                Text("Where to connect. The certificate is still checked against the name. " +
-                                    "Without addresses the name is looked up over plain DNS, which needs the fallback below.")
-                            },
+                            label = { Text(stringResource(R.string.dns_ip_addresses)) }, placeholder = { Text("192.0.2.53, 2001:db8::53") },
+                            supportingText = { Text(stringResource(R.string.dns_ip_addresses_help)) },
                         )
                     }
                 }
 
-                SectionTitle("When the encrypted server fails")
+                SectionTitle(stringResource(R.string.dns_when_fails))
                 SettingRow(
-                    "Fall back to plain DNS",
-                    if (draft.fallbackPlain) {
-                        "On: if the server cannot be reached (a network that blocks it, a captive portal), lookups are sent " +
-                            "unencrypted to the plain resolvers instead of failing. Convenient, but the network can then read them."
-                    } else {
-                        "Off: lookups fail rather than leave unencrypted. Captive portal sign-in pages may not load until you " +
-                            "turn encrypted DNS off."
-                    },
+                    stringResource(R.string.dns_fallback),
+                    stringResource(if (draft.fallbackPlain) R.string.dns_fallback_on else R.string.dns_fallback_off),
                     draft.fallbackPlain, onChecked = { v -> draft = draft.copy(fallbackPlain = v) },
                 )
             }
@@ -168,12 +171,12 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
                     Button(enabled = dirty && problem == null, onClick = {
                         vm.updateSettings { it.copy(encryptedDns = candidate) }
                         draft = candidate
-                    }) { Text("Save") }
+                    }) { Text(stringResource(R.string.action_save)) }
                     OutlinedButton(enabled = dirty, onClick = {
                         draft = saved
                         addrsText = saved.customAddrs.joinToString(", ")
                         portText = saved.customPort.toString()
-                    }) { Text("Discard") }
+                    }) { Text(stringResource(R.string.action_discard)) }
                 }
             }
         }

@@ -37,7 +37,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.annotation.PluralsRes
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.background
@@ -46,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.AsnDatabase
 import dev.vigil.inspector.data.DnsEntity
 import dev.vigil.inspector.data.FlowEntity
@@ -65,14 +69,14 @@ fun ActivityScreen(vm: MainViewModel, nav: NavController) {
     val tab by vm.activityTab.collectAsStateWithLifecycle()
     val paused by vm.activityPaused.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
-        VigilTopBar("Activity") {
+        VigilTopBar(stringResource(R.string.activity_title)) {
             // Paused: the lists stop following new traffic so rows do not move while reading.
             FilterChip(
                 selected = paused,
                 onClick = { vm.activityPaused.value = !paused },
-                label = { Text(if (paused) "Paused" else "Live") },
+                label = { Text(stringResource(if (paused) R.string.activity_paused else R.string.activity_live)) },
                 leadingIcon = if (paused) {
-                    { Icon(Icons.Default.PlayArrow, "Resume live updates", Modifier.size(FilterChipDefaults.IconSize)) }
+                    { Icon(Icons.Default.PlayArrow, stringResource(R.string.activity_resume), Modifier.size(FilterChipDefaults.IconSize)) }
                 } else {
                     null
                 },
@@ -80,7 +84,7 @@ fun ActivityScreen(vm: MainViewModel, nav: NavController) {
             )
         }
         SecondaryTabRow(selectedTabIndex = tab) {
-            Tab(tab == 0, onClick = { vm.activityTab.value = 0 }, text = { Text("Connections") })
+            Tab(tab == 0, onClick = { vm.activityTab.value = 0 }, text = { Text(stringResource(R.string.activity_tab_connections)) })
             Tab(tab == 1, onClick = { vm.activityTab.value = 1 }, text = { Text("DNS") })
         }
         if (tab == 0) FlowList(vm, nav) else DnsList(vm, nav)
@@ -99,15 +103,17 @@ private fun AppFilterChip(vm: MainViewModel) {
         FilterChip(
             selected = current != null,
             onClick = { if (current != null) vm.activityApp.value = null else open = true },
-            label = { Text(if (current != null) label(current) else "App", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            label = {
+                Text(if (current != null) label(current) else stringResource(R.string.activity_filter_app), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            },
             trailingIcon = if (current != null) {
-                { Icon(Icons.Default.Close, "Show all apps", Modifier.size(FilterChipDefaults.IconSize)) }
+                { Icon(Icons.Default.Close, stringResource(R.string.activity_filter_all_apps), Modifier.size(FilterChipDefaults.IconSize)) }
             } else {
                 null
             },
         )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (apps.isEmpty()) DropdownMenuItem(text = { Text("No apps seen yet") }, onClick = { open = false }, enabled = false)
+            if (apps.isEmpty()) DropdownMenuItem(text = { Text(stringResource(R.string.activity_no_apps)) }, onClick = { open = false }, enabled = false)
             apps.sortedBy { label(it.pkg).lowercase() }.forEach { a ->
                 DropdownMenuItem(
                     text = { Text(label(a.pkg), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -134,7 +140,7 @@ private fun SearchBar(query: String, onQuery: (String) -> Unit, blockedOnly: Boo
             leadingIcon = { Icon(Icons.Default.Search, null) },
         )
         Spacer(Modifier.width(8.dp))
-        FilterChip(selected = blockedOnly, onClick = { onBlockedOnly(!blockedOnly) }, label = { Text("Blocked") })
+        FilterChip(selected = blockedOnly, onClick = { onBlockedOnly(!blockedOnly) }, label = { Text(stringResource(R.string.state_blocked)) })
     }
 }
 
@@ -144,20 +150,25 @@ private fun FlowList(vm: MainViewModel, nav: NavController) {
     val query by vm.flowQuery.collectAsStateWithLifecycle()
     val blockedOnly by vm.flowBlockedOnly.collectAsStateWithLifecycle()
     val path by vm.flowPath.collectAsStateWithLifecycle()
-    SearchBar(query, { vm.flowQuery.value = it }, blockedOnly, { vm.flowBlockedOnly.value = it }, "Domain, IP, network or app")
+    SearchBar(query, { vm.flowQuery.value = it }, blockedOnly, { vm.flowBlockedOnly.value = it }, stringResource(R.string.activity_search_connections))
     val app by vm.activityApp.collectAsStateWithLifecycle()
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AppFilterChip(vm)
-        for ((value, text) in listOf(PathFilter.TUNNEL to "Via tunnel/proxy", PathFilter.DIRECT to "Direct")) {
+        for ((value, text) in listOf(PathFilter.TUNNEL to R.string.activity_path_tunnel, PathFilter.DIRECT to R.string.activity_path_direct)) {
             FilterChip(
                 selected = path == value,
                 onClick = { vm.flowPath.value = if (path == value) PathFilter.ALL else value },
-                label = { Text(text) },
+                label = { Text(stringResource(text)) },
             )
         }
     }
     if (flows.isEmpty()) {
-        EmptyState("No connections", if (query.isNotEmpty() || blockedOnly || path != PathFilter.ALL || app != null) "Nothing matches the current filter." else "Connections appear here while inspection is running.")
+        EmptyState(
+            stringResource(R.string.activity_no_connections),
+            stringResource(
+                if (query.isNotEmpty() || blockedOnly || path != PathFilter.ALL || app != null) R.string.activity_no_match else R.string.activity_no_connections_body,
+            ),
+        )
         return
     }
     val label = rememberAppLabels(vm, flows.map { it.pkg }.distinct())
@@ -166,7 +177,7 @@ private fun FlowList(vm: MainViewModel, nav: NavController) {
             FlowRow(f, label(f.pkg)) { nav.navigate("flow/${f.id}") }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
-        if (flows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote("connections") }
+        if (flows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote(R.plurals.activity_limit_connections) }
     }
 }
 
@@ -178,8 +189,9 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (f.isActive) {
+                    val activeDescription = stringResource(R.string.activity_active_connection)
                     // Not colour alone: the dot is announced, and its presence is the signal.
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(VigilColors.Allow).semantics { contentDescription = "Active connection" })
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(VigilColors.Allow).semantics { contentDescription = activeDescription })
                     Spacer(Modifier.width(6.dp))
                 }
                 Text(
@@ -203,11 +215,11 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
                 Tag((f.appProto ?: f.proto).uppercase())
                 if (f.dstPort != 443 && f.dstPort != 80) Tag(":${f.dstPort}")
                 if (PathLabels.isTunnelled(f.via)) PathLabels.via(f.via)?.let { Tag(it, VigilColors.Info, filled = true) }
-                if (f.background == true) Tag("background", VigilColors.Low, filled = true)
+                if (f.background == true) Tag(stringResource(R.string.activity_tag_background), VigilColors.Low, filled = true)
                 f.tagList.forEach { t ->
                     when (t) {
                         "encrypted_dns" -> Tag("DoH/DoT", VigilColors.Medium, filled = true)
-                        "plaintext_http" -> Tag("cleartext", VigilColors.Low, filled = true)
+                        "plaintext_http" -> Tag(stringResource(R.string.activity_tag_cleartext), VigilColors.Low, filled = true)
                         "ech" -> Tag("ECH", VigilColors.Info, filled = true)
                     }
                 }
@@ -230,10 +242,13 @@ private fun DnsList(vm: MainViewModel, nav: NavController) {
     val app by vm.activityApp.collectAsStateWithLifecycle()
     // The row whose sheet is open (its id survives rotation; the row itself is looked up).
     var sheetFor by rememberSaveable { mutableStateOf<Long?>(null) }
-    SearchBar(query, { vm.dnsQuery.value = it }, blockedOnly, { vm.dnsBlockedOnly.value = it }, "Domain or app")
+    SearchBar(query, { vm.dnsQuery.value = it }, blockedOnly, { vm.dnsBlockedOnly.value = it }, stringResource(R.string.activity_search_lookups))
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp)) { AppFilterChip(vm) }
     if (rows.isEmpty()) {
-        EmptyState("No lookups", if (query.isNotEmpty() || blockedOnly || app != null) "Nothing matches the current filter." else "DNS lookups appear here while inspection is running.")
+        EmptyState(
+            stringResource(R.string.activity_no_lookups),
+            stringResource(if (query.isNotEmpty() || blockedOnly || app != null) R.string.activity_no_match else R.string.activity_no_lookups_body),
+        )
         return
     }
     val label = rememberAppLabels(vm, rows.map { it.pkg }.distinct())
@@ -242,7 +257,7 @@ private fun DnsList(vm: MainViewModel, nav: NavController) {
             DnsRow(d, label(d.pkg)) { sheetFor = d.id }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
-        if (rows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote("lookups") }
+        if (rows.size >= MainViewModel.ACTIVITY_LIMIT) item { LimitNote(R.plurals.activity_limit_lookups) }
     }
     sheetFor?.let { id -> rows.firstOrNull { it.id == id } }?.let { d ->
         DomainSheet(
@@ -253,9 +268,9 @@ private fun DnsList(vm: MainViewModel, nav: NavController) {
 }
 
 @Composable
-private fun LimitNote(what: String) {
+private fun LimitNote(@PluralsRes text: Int) {
     Text(
-        "Showing the newest ${MainViewModel.ACTIVITY_LIMIT} $what. Search to find older ones.",
+        pluralStringResource(text, MainViewModel.ACTIVITY_LIMIT, MainViewModel.ACTIVITY_LIMIT),
         Modifier.fillMaxWidth().padding(16.dp),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -264,7 +279,8 @@ private fun LimitNote(what: String) {
 
 @Composable
 fun DnsRow(d: DnsEntity, appLabel: String, onClick: (() -> Unit)? = null) {
-    val clickable = if (onClick != null) Modifier.clickable(onClickLabel = "Block or allow", onClick = onClick) else Modifier
+    val clickable = if (onClick != null) Modifier.clickable(onClickLabel = stringResource(R.string.activity_block_or_allow), onClick = onClick)
+ else Modifier
     Row(Modifier.fillMaxWidth().then(clickable).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         AppIcon(d.pkg, appLabel, 32.dp)
         Spacer(Modifier.width(12.dp))

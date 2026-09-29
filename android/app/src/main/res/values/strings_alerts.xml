@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Alerts: the Alerts screen, alert titles and sentences (ui/AlertText.kt) and alert notifications.
+     The alert text stored in the database and sent to a SIEM stays English; these strings only
+     change what the app shows. -->
+<resources>
+
+    <!-- Notification channels (Android settings → Notifications) -->
+    <string name="alert_channel_alerts_name">Security alerts</string>
+    <string name="alert_channel_alerts_description">Threat hits, beaconing, unusual uploads and other suspicious behaviour</string>
+    <string name="alert_channel_service_name">Inspector status</string>
+    <string name="alert_channel_service_description">Shown while vigil is inspecting traffic</string>
+    <!-- Title of an alert notification. %1$s = app name, %2$s = alert title (one of the alert_title_* strings) -->
+    <string name="alert_notification_title">%1$s: %2$s</string>
+
+    <!-- Alert titles, one per alert kind. Written in lower case: they appear inside other text
+         (notification title, mute confirmations) and are capitalised automatically as a list title. -->
+    <string name="alert_title_threat_domain">threat domain blocked</string>
+    <string name="alert_title_threat_ip">threat IP blocked</string>
+    <string name="alert_title_threat_ja4">known malicious TLS fingerprint</string>
+    <string name="alert_title_beacon">periodic beaconing</string>
+    <string name="alert_title_exfil_volume">unusual upload volume</string>
+    <string name="alert_title_encrypted_dns">encrypted DNS in use</string>
+    <string name="alert_title_hardcoded_dns">bypasses system DNS</string>
+    <string name="alert_title_new_destination">new destination</string>
+    <!-- ASN = autonomous system number, the network an address belongs to -->
+    <string name="alert_title_new_asn">new asn</string>
+
+    <!-- Alert sentences. They repeat what the engine or the app recorded, in the user's language. -->
+    <!-- %1$s = domain name, %2$s = the feed entry that matched (e.g. "feed:urlhaus (evil.example)"), not translated -->
+    <string name="alert_msg_threat_domain_lookup">Lookup of %1$s sinkholed: listed by %2$s</string>
+    <!-- %1$s = domain name or IP address, %2$s = the feed entry that matched, not translated -->
+    <string name="alert_msg_threat_connection">Connection to %1$s blocked: listed by %2$s</string>
+    <!-- %1$s = DNS server address with port, %2$s = the feed entry that matched, not translated -->
+    <string name="alert_msg_threat_ip_dns">DNS query to %1$s refused: listed by %2$s</string>
+    <!-- Added to a threat alert whose indicator belongs to a spyware pack. %1$s = the alert sentence,
+         %2$s = spyware name (e.g. Pegasus), %3$s = pack name -->
+    <string name="alert_msg_with_spyware">%1$s. Spyware indicator: %2$s (%3$s)</string>
+    <!-- %1$s = malware or tool name from the feed, %2$s = JA4 fingerprint, %3$s = feed id, %4$s = destination -->
+    <string name="alert_msg_threat_ja4">TLS fingerprint of %1$s (JA4 %2$s, feed %3$s) in a connection to %4$s</string>
+    <string name="alert_msg_threat_ja4_blocked">TLS fingerprint of %1$s (JA4 %2$s, feed %3$s) in a connection to %4$s; blocked</string>
+    <!-- The feed gives no name for the fingerprint. %1$s = JA4 fingerprint, %2$s = feed id, %3$s = destination -->
+    <string name="alert_msg_threat_ja4_unlabeled">TLS fingerprint of a listed client (JA4 %1$s, feed %2$s) in a connection to %3$s</string>
+    <string name="alert_msg_threat_ja4_unlabeled_blocked">TLS fingerprint of a listed client (JA4 %1$s, feed %2$s) in a connection to %3$s; blocked</string>
+    <!-- %1$s = destination, %2$.0f = interval in seconds, %3$.0f = jitter in percent -->
+    <string name="alert_msg_beacon_connections">Periodic connections to %1$s every %2$.0fs (jitter %3$.0f%%)</string>
+    <!-- %1$d = average burst size in bytes, %2$.0f = interval in seconds, %3$.0f = jitter in percent, %4$s = destination -->
+    <plurals name="alert_msg_beacon_intra_flow">
+        <item quantity="one">Small bursts of data (about %1$d byte) every %2$.0fs (jitter %3$.0f%%) inside one open connection to %4$s</item>
+        <item quantity="other">Small bursts of data (about %1$d bytes) every %2$.0fs (jitter %3$.0f%%) inside one open connection to %4$s</item>
+    </plurals>
+    <!-- %1$s = DoH/DoT server name or address -->
+    <string name="alert_msg_encrypted_dns">App uses encrypted DNS (%1$s); its lookups are invisible to vigil</string>
+    <!-- %1$s = DNS server address with port -->
+    <string name="alert_msg_hardcoded_dns">App bypasses the system resolver and queries %1$s directly</string>
+    <!-- %1$s = app name, %2$s = domain name -->
+    <string name="alert_msg_new_destination">%1$s contacted a destination it has never used before: %2$s</string>
+    <!-- %1$s = app name, %2$s = network number (e.g. AS13335), %3$s = network name, %4$s = domain or IP address -->
+    <string name="alert_msg_new_asn_named">%1$s contacted a network it has never used before: %2$s (%3$s), reached as %4$s</string>
+    <!-- %1$s = app name, %2$s = network number (e.g. AS13335), %3$s = domain or IP address -->
+    <string name="alert_msg_new_asn">%1$s contacted a network it has never used before: %2$s, reached as %3$s</string>
+    <!-- Upload volume. %1$s = app name, %2$s = amount uploaded (e.g. 60 MB), %3$s = destination,
+         %4$s = amount sent to that destination, %5$s = amount received from it -->
+    <string name="alert_msg_exfil_hour_background">%1$s uploaded %2$s in the last hour while in the background, mostly to %3$s (%4$s sent, %5$s received).</string>
+    <string name="alert_msg_exfil_5min_background">%1$s uploaded %2$s in the last 5 minutes while in the background, mostly to %3$s (%4$s sent, %5$s received).</string>
+    <string name="alert_msg_exfil_hour_unknown">%1$s uploaded %2$s in the last hour (vigil cannot tell whether it was on screen: usage access is not granted), mostly to %3$s (%4$s sent, %5$s received).</string>
+    <string name="alert_msg_exfil_5min_unknown">%1$s uploaded %2$s in the last 5 minutes (vigil cannot tell whether it was on screen: usage access is not granted), mostly to %3$s (%4$s sent, %5$s received).</string>
+    <!-- %1$s = the upload sentence above, %2$s = amount (e.g. 4 MB) -->
+    <string name="alert_msg_exfil_with_baseline">%1$s Its usual busiest hour is %2$s.</string>
+    <!-- %1$s = the upload sentence above -->
+    <string name="alert_msg_exfil_no_baseline">%1$s There is no upload history for it yet.</string>
+
+    <!-- Alerts screen -->
+    <string name="alert_screen_title">Alerts</string>
+    <!-- Top bar button, keep short -->
+    <string name="alert_mark_all_read">Mark all read</string>
+    <string name="alert_empty_title">No alerts</string>
+    <string name="alert_empty_body">vigil raises alerts for threat-feed hits, periodic beaconing, unusual background uploads, apps bypassing the system resolver and encrypted DNS use.</string>
+    <!-- Severity filter chips and tags -->
+    <string name="alert_severity_high">High</string>
+    <string name="alert_severity_medium">Medium</string>
+    <string name="alert_severity_low">Low</string>
+    <string name="alert_severity_info">Info</string>
+    <!-- Filter chip that opens the list of alert kinds, keep short -->
+    <string name="alert_filter_kind">Kind</string>
+    <!-- Filter chip. %1$d = number of muted alerts -->
+    <string name="alert_filter_muted">Muted (%1$d)</string>
+    <string name="alert_empty_muted_title">No muted alerts</string>
+    <string name="alert_empty_muted_body">Alerts you mute or mark as expected are listed here.</string>
+    <string name="alert_empty_filtered_title">No matching alerts</string>
+    <string name="alert_empty_filtered_body">Nothing matches the current filters.</string>
+    <!-- Follows alert_empty_filtered_body -->
+    <plurals name="alert_empty_filtered_hidden">
+        <item quantity="one">%1$d muted alert is hidden.</item>
+        <item quantity="other">%1$d muted alerts are hidden.</item>
+    </plurals>
+    <!-- Accessibility: actions on an alert row -->
+    <string name="alert_action_collapse">Collapse</string>
+    <string name="alert_action_show_details">Show details</string>
+    <!-- Accessibility: state of an alert not yet opened -->
+    <string name="alert_state_unread">Unread</string>
+    <!-- Tag on a muted alert, short, upper case -->
+    <string name="alert_tag_muted">MUTED</string>
+    <string name="alert_what_does_this_mean">What does this mean?</string>
+    <!-- %1$s = IP address -->
+    <string name="alert_ip_on_threat_feed">%1$s is on a threat feed, so vigil already blocks connections to it.</string>
+    <!-- %1$s = IP address -->
+    <string name="alert_ip_cannot_block">vigil\'s rules match names, so a single IP address like %1$s cannot be blocked. You can cut off the app instead.</string>
+    <string name="alert_view_connection">View connection</string>
+    <string name="alert_connection_gone">That connection is no longer in the history.</string>
+    <string name="alert_open_app">Open app</string>
+    <string name="alert_unmute">Unmute</string>
+    <string name="alert_mark_expected">Mark as expected</string>
+    <string name="alert_mute_kind">Mute this kind for this app</string>
+    <string name="alert_mute_note">Muted alerts are still recorded and exported, but hidden here and not notified.</string>
+    <!-- Confirmation. %1$s = alert title (lower case), %2$s = domain or address, %3$s = app name -->
+    <string name="alert_marked_expected">Marked as expected: %1$s alerts about %2$s from %3$s are hidden</string>
+    <!-- Confirmation. %1$s = alert title (lower case), %2$s = app name -->
+    <string name="alert_muted_kind">Muted all “%1$s” alerts from %2$s</string>
+
+    <!-- Explanations behind "What does this mean?" (title of the dialog, then its text) -->
+    <string name="alert_help_beacon_in_connection">Beaconing inside a connection</string>
+    <string name="alert_help_beacon">Beaconing</string>
+    <string name="alert_help_exfil">Exfiltration</string>
+    <string name="alert_help_threat">Threat feed hit</string>
+    <!-- %1$s = an explanation of C2 (command and control) -->
+    <string name="alert_help_threat_text">The destination is listed in an enabled threat-intelligence feed (malware, phishing or C2). %1$s</string>
+    <string name="alert_help_new_asn">New network for this app</string>
+    <!-- %1$s = an explanation of SNI -->
+    <string name="alert_help_encrypted_dns_text">The app resolves names over DNS-over-HTTPS/TLS/QUIC, so vigil cannot see which names it looks up. Connections are still named from TLS/QUIC SNI. %1$s</string>
+    <string name="alert_help_hardcoded_dns">Bypassing system DNS</string>
+    <string name="alert_help_hardcoded_dns_text">The app sent DNS queries straight to its own resolver instead of the one Android configured.</string>
+
+    <!-- The numbers behind a beaconing alert. %1$s = interval, %2$s = its variation (e.g. "30.0 s ± 1.5 s") -->
+    <string name="alert_numbers_rhythm">every %1$s ± %2$s</string>
+    <!-- %1$s = average burst size (e.g. 512 B), %2$s = interval, %3$s = variation -->
+    <string name="alert_numbers_rhythm_burst">a burst of about %1$s every %2$s ± %3$s</string>
+    <!-- %1$s = domain or address, %2$s = alert_numbers_rhythm or alert_numbers_rhythm_burst -->
+    <string name="alert_numbers_intra_to">Inside one open connection to %1$s: %2$s</string>
+    <!-- %1$s = domain or address, %2$s = rhythm, %3$d = number of bursts -->
+    <plurals name="alert_numbers_intra_to_samples">
+        <item quantity="one">Inside one open connection to %1$s: %2$s (%3$d burst)</item>
+        <item quantity="other">Inside one open connection to %1$s: %2$s (%3$d bursts)</item>
+    </plurals>
+    <!-- %1$s = rhythm -->
+    <string name="alert_numbers_intra">Inside one open connection: %1$s</string>
+    <!-- %1$s = rhythm, %2$d = number of bursts -->
+    <plurals name="alert_numbers_intra_samples">
+        <item quantity="one">Inside one open connection: %1$s (%2$d burst)</item>
+        <item quantity="other">Inside one open connection: %1$s (%2$d bursts)</item>
+    </plurals>
+    <!-- %1$s = rhythm -->
+    <string name="alert_numbers_connections">A new connection %1$s</string>
+    <!-- %1$s = rhythm, %2$d = number of connections -->
+    <plurals name="alert_numbers_connections_samples">
+        <item quantity="one">A new connection %1$s (%2$d connection)</item>
+        <item quantity="other">A new connection %1$s (%2$d connections)</item>
+    </plurals>
+    <!-- The numbers behind an upload volume alert. %1$s = amount, %2$s = window (e.g. "5 min", "1 h"),
+         %3$s = alert_numbers_exfil_baseline or alert_numbers_exfil_no_baseline, %4$s = minimum amount that alerts -->
+    <string name="alert_numbers_exfil">Uploaded %1$s in %2$s; %3$s; floor %4$s</string>
+    <!-- Used for %2$s above when the window is unknown -->
+    <string name="alert_numbers_exfil_window_unknown">the window</string>
+    <!-- %1$s = amount, %2$.0f = multiplier (e.g. 3) -->
+    <string name="alert_numbers_exfil_baseline">usual busiest hour %1$s (alerts above %2$.0f× that)</string>
+    <string name="alert_numbers_exfil_no_baseline">no upload history yet</string>
+    <!-- %1$s = alert_numbers_exfil, %2$s = destination, %3$s = amount sent, %4$s = amount received -->
+    <string name="alert_numbers_exfil_destination">%1$s\nTo %2$s: %3$s sent, %4$s received</string>
+</resources>
