@@ -71,9 +71,9 @@ backlog item 1 is still to do.
 
 | Area | State | Verified by |
 |---|---|---|
-| Rust engine (`core/vigil-core`) | done | 181 unit tests (1 ignored: `wg_bench`), 209 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / apprules / capture / edns / socks5 / wireguard) |
+| Rust engine (`core/vigil-core`) | done | 190 unit tests (1 ignored: `wg_bench`), 209 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / apprules / capture / edns / socks5 / wireguard) |
 | JNI layer (`core/vigil-jni`) | done | 38 checks from a real JVM (`scripts/jni-smoke.sh`) |
-| Android app (`android/`) | done | 212 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
+| Android app (`android/`) | done | 237 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
 | Release APK (R8-minified) | builds, runs | reproducible (signed and unsigned builds from two clean clones in different paths, identical apart from signatures; no build paths in `libvigil.so`); installed over the published v0.4.0 on Android 16: schema 4 and rows kept, traffic flows, every screen opens, no JNI/serialization errors or crashes in logcat |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.5.0 | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
@@ -224,6 +224,16 @@ the merged tree. CHANGELOG.md (0.5.0) lists everything; the highlights:
   about 30 built-in downloads now, a run stopped early must have fetched the
   protective ones first; found by the Android 16 e2e run).
 
+## Third review fixes (2026-09-29, after 0.5.0, unreleased)
+
+A third review (engine, upstream/DNS/capture, service/data, UI/export,
+competitors) by five parallel reviewers; the nine most important findings
+were fixed by three agents in worktrees and merged. CHANGELOG.md
+("Unreleased") lists them. Verified: every host suite, and every emulator
+suite on Android 15 and 16. On Android 16, by hand: a PCAP-over-IP client
+running as the shell (UID 2000) receives the stream, one running as an app
+UID (10123) is refused ("an app on this device").
+
 ## Feature inventory
 
 **Engine:** TUN dispatch; user-space TCP (smoltcp via `netstack-smoltcp`)
@@ -340,6 +350,26 @@ Health check); retention and clear history.
       dynamic colour; both were left out of the review fixes.
     - Persist unsent SIEM alerts across process death (the retry queue is
       in memory).
+11. **Open findings of the 2026-09-29 review** (lower priority, not fixed):
+    no size cap on the history database (age-based pruning only; the
+    health-check queries load every group); `block_encrypted_dns` misses DoH
+    to IP literals (1.1.1.1, 8.8.8.8); fire-and-forget UDP from a blocked
+    app can pass unattributed when the UID lookup finds no socket (not
+    verified on a device); the HTTP Host sniffer ignores absolute-form
+    targets and stalls 3 s on bare-LF requests; answers from app-chosen
+    resolvers poison the IP-to-name cache for every app; per-app cut races
+    (`open_cuttable_flow` re-checks before inserting; the UDP watch
+    subscribes after the decision); `udp_idle_timeout_s` has no upper bound
+    (overflow panic); QUIC varint `as usize` truncation on 32-bit; unknown
+    feed categories silently become `tracking`; health check misses
+    non-canonical IPv6 and IPv6 CIDR indicators; capture ring resize/export
+    doubles memory under the lock; SOCKS5 UDP relay address not validated;
+    `send_domain` lets the proxy reach a name whose IPs were never checked
+    against IP feeds; UI nits (unread badge counts muted alerts, Undo of a
+    mute restores the whole list, export after the SAF picker can fail
+    silently, stale PCAP temp files); CI (actions not pinned by SHA, no
+    `permissions:`, no `cargo audit`); README performance numbers
+    outdated.
 
 ## Known limitations (by design or platform)
 

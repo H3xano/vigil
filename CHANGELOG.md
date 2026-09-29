@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+Fixes from the third review (2026-09-29):
+
+- **PCAP-over-IP:** only the shell (`adb forward`) or root may connect from
+  the phone itself; other apps are refused, whether they use loopback or the
+  phone's own Wi-Fi address. Streaming on a network (Wi-Fi or all networks)
+  needs a non-empty client allowlist. Stalled clients time out after 10 s and
+  turning the stream off disconnects clients at once. The notification shows
+  connected Wireshark clients.
+- **WireGuard:** with fail-closed on, an address family AllowedIPs does not
+  cover at all (typically IPv6 with a `0.0.0.0/0`-only config) is refused
+  instead of going out directly; the wg-quick import warns about it.
+- **SOCKS5:** encrypted-DNS connections opened directly while the proxy was
+  down (fail-open) are no longer reused after it recovers.
+- **Alerts:** high-severity alerts have their own budget, and
+  `hardcoded_dns` is limited per app (new `detail.suppressed`), so one app
+  can no longer crowd out threat alerts.
+- **TLS:** ClientHellos up to the parser's 64 KiB limit are inspected (was
+  32 KiB); the sniff buffer is freed once forwarded.
+- **TAXII:** URL indicators on shared platforms (GitHub, Google Drive,
+  Discord, Dropbox, shorteners…) no longer block the whole platform; the
+  shared-platform check is now suffix-aware for spyware packs too.
+- **Feed downloads:** built-in feeds, spyware packs, the ASN table and
+  tracker data trust system CAs only; a spyware pack that loses more than
+  half its indicators is refused and the previous copy kept.
+- **Service:** an `Error` (not only an `Exception`) during a session gives up
+  cleanly instead of leaving the VPN up with no engine; the TUN is closed if
+  session setup fails after `establish()`; out-of-memory while converting a
+  feed fails that feed only.
+- **SIEM export:** redirects are a configuration error instead of silent
+  loss; a collector that refuses every request keeps the records queued
+  (config error) instead of discarding them after ~400 requests; syslog over
+  TCP/TLS reconnects after an idle close; alerts have their own queue that
+  flows and DNS cannot evict; `new_destination` and `new_asn` alerts are
+  exported; Elastic `_bulk` URLs must name the index.
+
 ## 0.5.0 (2026-09-28): GitHub pre-release
 
 New features:
