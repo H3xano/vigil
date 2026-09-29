@@ -98,7 +98,8 @@ data class StixItem(
  * - `[domain-name:value = 'evil.example']` → domain (an IP address there → IP)
  * - `[ipv4-addr:value = '198.51.100.7']`, `'198.51.100.0/24'`, `[ipv6-addr:value = '…']` → IP / range
  * - `[url:value = 'https://evil.example/x']` → the URL's host (domain or IP), unless `urlHosts` is off
- *   (spyware packs list repositories such as `https://github.com/…/AndroRAT`, whose host must not be blocked)
+ *   (spyware packs list repositories such as `https://github.com/…/AndroRAT`) or the host is a shared
+ *   platform ([SharedPlatforms]: `https://raw.githubusercontent.com/x/y/a.apk` must not block GitHub)
  * - `[app:id = 'com.example']` → app package; `[app:cert.sha1 = '…']`, `[app:cert.sha256 = '…']` → certificate
  * - `[network-traffic:dst_ref.value = '…']` → IP or domain
  * - `[domain-name:resolves_to_refs[*].value = '…']` → IP (MISP `domain|ip`)
@@ -142,7 +143,9 @@ object StixPattern {
                     type == "domain-name" && path.startsWith("resolves_to_refs") -> Indicators.ipOrCidr(value)?.let { ips += it }
                     (type == "ipv4-addr" || type == "ipv6-addr") && path == "value" -> Indicators.ipOrCidr(value)?.let { ips += it }
                     type == "url" && path == "value" && urlHosts ->
-                        Indicators.urlHost(value)?.let { if (Indicators.ipOrCidr(it) != null) ips += it else domains += it }
+                        Indicators.urlHost(value)?.let {
+                            if (Indicators.ipOrCidr(it) != null) ips += it else if (!SharedPlatforms.isShared(it)) domains += it
+                        }
                     type == "network-traffic" && path.endsWith("_ref.value") ->
                         Indicators.ipOrCidr(value)?.let { ips += it } ?: Indicators.domain(value)?.let { domains += it }
                     // MVT's Android extensions: package name and signing certificate of an app.

@@ -81,20 +81,6 @@ object SpywareConverters {
     /** At most this many indicators per pack (the largest source has about 10 k). */
     const val MAX_INDICATORS = 200_000
 
-    /**
-     * Apex domains of shared platforms. An indicator equal to one of these
-     * (not a subdomain of it) would block or flag a whole platform, so it is
-     * dropped whatever the source says.
-     */
-    val SHARED_PLATFORMS = setOf(
-        "google.com", "googleapis.com", "gstatic.com", "youtube.com", "github.com", "githubusercontent.com", "github.io",
-        "gitlab.com", "amazonaws.com", "cloudfront.net", "appspot.com", "firebaseio.com", "firebaseapp.com", "web.app",
-        "apple.com", "icloud.com", "microsoft.com", "azurewebsites.net", "windows.net", "facebook.com", "whatsapp.net",
-        "instagram.com", "telegram.org", "t.me", "dropbox.com", "cloudflare.com", "pages.dev", "workers.dev",
-        "herokuapp.com", "netlify.app", "vercel.app", "blogspot.com", "wordpress.com", "000webhostapp.com", "bit.ly",
-        "play.google.com", "drive.google.com", "docs.google.com",
-    )
-
     fun convert(format: String, input: File, defaultLabel: String): List<SpywareGroup> = when (format) {
         FORMAT_STIX2 -> input.bufferedReader().use { stix(it, defaultLabel) }
         FORMAT_ECHAP_NETWORK_CSV -> echapNetworkCsv(input.readText(), defaultLabel)
@@ -207,7 +193,8 @@ object SpywareConverters {
                 // Some sources put addresses in domain fields.
                 val dom = Indicators.domain(d)
                 if (dom != null) {
-                    if (dom !in SHARED_PLATFORMS) put(g.domains, dom)
+                    // A shared platform (github.com, drive.google.com…) is never an indicator.
+                    if (!SharedPlatforms.isShared(dom)) put(g.domains, dom)
                 } else {
                     put(g.ips, Indicators.ipOrCidr(d))
                 }
