@@ -86,7 +86,7 @@ object ConfigFactory {
      * interface or on loopback only. Invalid allowlist entries and ports
      * (the settings screen does not save them) are dropped, because the
      * engine would reject the whole config. A listener on the network is
-     * never emitted without an allowlist ([CaptureSettings.streamRefusal]):
+     * never emitted without an allowlist ([CaptureSettings.streamRefused]):
      * the stream stays off and the settings screen says why.
      */
     fun captureConfig(c: CaptureSettings, wifiAddress: String?): CaptureConfig {
@@ -99,7 +99,7 @@ object ConfigFactory {
         return CaptureConfig(
             enabled = true,
             bufferBytes = c.bufferMb.coerceIn(1, 128) * 1024L * 1024L,
-            stream = if (c.streamEnabled && c.streamRefusal() == null) {
+            stream = if (c.streamEnabled && !c.streamRefused()) {
                 CaptureStreamConfig(
                     enabled = true,
                     port = c.streamPort.takeIf { CaptureSettings.isValidPort(it) } ?: CaptureSettings.DEFAULT_STREAM_PORT,

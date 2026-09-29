@@ -78,7 +78,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 }
             }
             SectionTitle(stringResource(R.string.flow_verdict))
-            Field(stringResource(R.string.flow_verdict), stringResource(if (f.isBlocked) R.string.state_blocked else R.string.state_allowed))
+            Field(stringResource(R.string.flow_verdict), stringResource(if (f.isBlocked) R.string.common_blocked else R.string.common_allowed))
             Field(stringResource(R.string.flow_reason), f.reason)
             Field(stringResource(R.string.flow_error), f.error)
             SectionTitle(stringResource(R.string.flow_destination))
@@ -180,9 +180,10 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                     vm, nav, stringResource(R.string.flow_export_packets),
                     PcapRequest(PcapFilter(flowIds = listOf(f.engineId)), CaptureExport.fileName("flow-${f.engineId}-${f.domain ?: f.dstIp}"), session = f.session),
                 )
+                val clipLabel = stringResource(R.string.flow_clip_indicators)
                 OutlinedButton(onClick = {
                     val text = listOfNotNull(f.domain, "${f.dstIp}:${f.dstPort}", f.ja4).joinToString("\n")
-                    scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("indicators", text))) }
+                    scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(clipLabel, text))) }
                 }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.flow_copy_indicators)) }
             }
             Spacer(Modifier.height(32.dp))

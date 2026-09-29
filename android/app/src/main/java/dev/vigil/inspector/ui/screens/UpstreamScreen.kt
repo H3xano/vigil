@@ -195,7 +195,7 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
                         s.sendDomain, onChecked = { v -> edit { it.copy(sendDomain = v) } },
                     )
                     Text(stringResource(R.string.upstream_udp_label), Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
-                    Segmented(listOf("auto" to stringResource(R.string.upstream_udp_relay), "block" to stringResource(R.string.action_block)), s.udp, { v -> edit { it.copy(udp = v) } })
+                    Segmented(listOf("auto" to stringResource(R.string.upstream_udp_relay), "block" to stringResource(R.string.common_block)), s.udp, { v -> edit { it.copy(udp = v) } })
                     Text(
                         stringResource(R.string.upstream_udp_note),
                         Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -229,13 +229,13 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
                 if (error != null) Text(error.asString(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 else if (dirty) Text(stringResource(R.string.upstream_unsaved), style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = dirty && error == null, onClick = { vm.updateSettings { it.copy(upstream = candidate) } }) { Text(stringResource(R.string.action_save)) }
+                    Button(enabled = dirty && error == null, onClick = { vm.updateSettings { it.copy(upstream = candidate) } }) { Text(stringResource(R.string.common_save)) }
                     OutlinedButton(enabled = dirty, onClick = {
                         draft = saved
                         portText = saved.socks5.port.toString()
                         warnings = emptyList()
                         importError = null
-                    }) { Text(stringResource(R.string.action_discard)) }
+                    }) { Text(stringResource(R.string.common_discard)) }
                 }
             }
             Column(Modifier.padding(24.dp)) {}
@@ -268,7 +268,7 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
                     Text(stringResource(R.string.upstream_import))
                 }
             },
-            dismissButton = { TextButton(onClick = closePaste) { Text(stringResource(R.string.action_cancel)) } },
+            dismissButton = { TextButton(onClick = closePaste) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
     if (pickingApp) {
@@ -352,7 +352,7 @@ private fun ProxyAppPicker(onPick: (String?) -> Unit, onDismiss: () -> Unit) {
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 

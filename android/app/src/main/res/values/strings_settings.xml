@@ -101,6 +101,10 @@
     <string name="settings_encrypted_dns_off">Off: lookups go to the resolver above unencrypted. Use DNS over TLS or HTTPS instead.</string>
     <!-- Shown instead of a server name when a custom encrypted DNS server has none. -->
     <string name="settings_encrypted_dns_custom_server">custom</string>
+    <!-- Summary of the encrypted DNS setting. %1$s: the provider (e.g. "Quad9"), the custom server's name, or settings_encrypted_dns_custom_server. -->
+    <string name="settings_dns_summary_doh">DNS over HTTPS · %1$s</string>
+    <!-- Summary of the encrypted DNS setting. %1$s: as in settings_dns_summary_doh. -->
+    <string name="settings_dns_summary_dot">DNS over TLS · %1$s</string>
 
     <string name="settings_beacon_title">Beaconing detection</string>
     <string name="settings_beacon_summary">Alert when an app contacts the same destination at a near-constant interval, or sends small bursts through one open connection at a near-constant interval: malware checking in with its command-and-control (C2) server, but also telemetry heartbeats. Push services are skipped.</string>
@@ -156,6 +160,12 @@
     <!-- %1$s: the engine's version number. -->
     <string name="settings_engine_version">Engine %1$s · Apache-2.0</string>
     <string name="settings_source_code">Source code &amp; documentation</string>
+
+    <!-- Shown on the overview (under dashboard_settings_unreadable_title) and as the start error when the stored
+         settings could not be read and routed traffic through a WireGuard tunnel, a SOCKS5 proxy, or either. -->
+    <string name="settings_unreadable_wireguard">vigil\'s saved settings could not be read, and they route traffic through a WireGuard tunnel. Inspection will not start, so traffic does not go out directly. Set up the upstream again in Settings.</string>
+    <string name="settings_unreadable_socks5">vigil\'s saved settings could not be read, and they route traffic through a SOCKS5 proxy. Inspection will not start, so traffic does not go out directly. Set up the upstream again in Settings.</string>
+    <string name="settings_unreadable_upstream">vigil\'s saved settings could not be read, and they route traffic through a tunnel or proxy. Inspection will not start, so traffic does not go out directly. Set up the upstream again in Settings.</string>
 
     <!-- Encrypted DNS settings validation. -->
     <string name="settings_dns_choose_provider">Choose a provider.</string>
@@ -439,6 +449,15 @@
     <string name="export_error_elastic_validation">Elasticsearch refuses the request (%1$s). The URL must name the index: https://host:9200/&lt;index&gt;/_bulk.</string>
     <!-- %1$d: HTTP status code. -->
     <string name="export_error_refused_everything">the collector refused every record with HTTP %1$d, even one at a time, so the fault is likely the endpoint URL or the collector\'s settings (for Elasticsearch: https://host:9200/&lt;index&gt;/_bulk).</string>
+    <string name="export_error_elastic_unreadable">unreadable Elasticsearch response</string>
+    <!-- %1$s: the first error Elasticsearch reported for a record (English, from the server). -->
+    <string name="export_error_elastic_item">Elasticsearch: %1$s</string>
+    <string name="export_error_test_not_accepted">the collector did not accept the test event</string>
+    <!-- Syslog over UDP: records that do not fit in one datagram are not sent. -->
+    <plurals name="export_error_udp_too_large">
+        <item quantity="one">%d record too large for a UDP datagram, skipped</item>
+        <item quantity="other">%d records too large for a UDP datagram, skipped</item>
+    </plurals>
     <string name="export_error_waiting_network">waiting for a network connection</string>
     <plurals name="export_error_held_rejected">
         <item quantity="one">%d record refused by the collector (rejected)</item>

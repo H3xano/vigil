@@ -7,9 +7,11 @@ import android.os.Build
 import android.security.KeyChain
 import android.util.Log
 import dev.vigil.inspector.BuildConfig
+import dev.vigil.inspector.R
 import dev.vigil.inspector.data.ExportSettings
 import dev.vigil.inspector.data.SettingsStore
 import dev.vigil.inspector.data.TrackerMatch
+import dev.vigil.inspector.ui.UiText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -110,7 +112,7 @@ class SiemExporter(
         )
         runCatching {
             val out = send(cfg, listOf(record))
-            if (out.delivered == 0) throw IOException(out.detail ?: "the collector did not accept the test event")
+            if (out.delivered == 0) throw ExportTestRefused(out.detail ?: UiText.of(R.string.export_error_test_not_accepted))
         }.onFailure { closeSinkQuietly() }.map { }
     }
 
@@ -142,7 +144,7 @@ class SiemExporter(
             SendOutcome(
                 delivered = messages.size - tooLarge,
                 rejected = tooLarge,
-                detail = if (tooLarge > 0) "$tooLarge record(s) too large for a UDP datagram, skipped" else null,
+                detail = if (tooLarge > 0) UiText.plural(R.plurals.export_error_udp_too_large, tooLarge, tooLarge) else null,
             )
         }
     }

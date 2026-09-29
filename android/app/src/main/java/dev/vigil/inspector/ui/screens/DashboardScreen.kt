@@ -46,6 +46,8 @@ import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.UiText
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.EmptyState
 import dev.vigil.inspector.ui.components.ErrorCard
@@ -104,7 +106,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         }
         loadProblem?.let { msg ->
             item { Warning(
-                    stringResource(R.string.dashboard_settings_unreadable_title), msg, stringResource(R.string.dashboard_settings_unreadable_action),
+                    stringResource(R.string.dashboard_settings_unreadable_title), msg.asString(), stringResource(R.string.dashboard_settings_unreadable_action),
                 ) { vm.app.settings.acknowledgeLoadProblem() } }
         }
         upstreamWarning?.let { msg ->
@@ -118,7 +120,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                     listOfNotNull(
                         stringResource(R.string.dashboard_private_dns_body),
                         if (settings.encryptedDns.enabled) {
-                            stringResource(R.string.dashboard_private_dns_encrypted, settings.encryptedDns.summary())
+                            stringResource(R.string.dashboard_private_dns_encrypted, settings.encryptedDns.summary().asString())
                         } else {
                             stringResource(R.string.dashboard_private_dns_plain)
                         },
@@ -139,7 +141,6 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
         }
         if (missing.isNotEmpty()) {
             item {
-                val updating = stringResource(R.string.dashboard_feeds_updating)
                 Warning(
                     pluralStringResource(R.plurals.dashboard_feeds_missing_title, missing.size, missing.size),
                     when (feedWork) {
@@ -152,7 +153,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                     busy = feedWork != FeedWork.IDLE,
                 ) {
                     vm.refreshFeeds()
-                    vm.showMessage(updating)
+                    vm.showMessage(UiText.of(R.string.dashboard_feeds_updating))
                 }
             }
         }

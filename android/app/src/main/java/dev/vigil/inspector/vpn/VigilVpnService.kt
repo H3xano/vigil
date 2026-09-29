@@ -347,7 +347,7 @@ class VigilVpnService : android.net.VpnService() {
     private suspend fun createSession(previousId: Long?): Result<Session> {
         if (prepare(this) != null) return Result.failure(IllegalStateException(getString(R.string.vpn_error_permission)))
         // Unreadable settings that configured a tunnel or proxy: fail closed.
-        app.settings.loadProblem.value?.let { return Result.failure(IllegalStateException(it)) }
+        app.settings.loadProblem.value?.let { return Result.failure(IllegalStateException(it.resolve(this))) }
         val settings = app.settings.value
         val net = refreshNetworkInfo()
         // Read before establish(), so a slow database cannot delay the interface.

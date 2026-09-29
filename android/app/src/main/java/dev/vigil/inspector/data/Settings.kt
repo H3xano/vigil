@@ -2,8 +2,10 @@ package dev.vigil.inspector.data
 
 import android.content.Context
 import androidx.core.content.edit
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.EngineJson
 import dev.vigil.inspector.processing.ExfilSettings
+import dev.vigil.inspector.ui.UiText
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -88,7 +90,7 @@ data class Settings(
  */
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("vigil", Context.MODE_PRIVATE)
-    private val problem = MutableStateFlow<String?>(null)
+    private val problem = MutableStateFlow<UiText?>(null)
     private val state = MutableStateFlow(load())
     val flow: StateFlow<Settings> = state.asStateFlow()
     val value: Settings get() = state.value
@@ -101,7 +103,7 @@ class SettingsStore(context: Context) {
      * changed, or by [acknowledgeLoadProblem]. The unreadable document is
      * kept under a backup key.
      */
-    val loadProblem: StateFlow<String?> = problem.asStateFlow()
+    val loadProblem: StateFlow<UiText?> = problem.asStateFlow()
 
     private fun load(): Settings {
         val raw = prefs.getString(KEY, null)
@@ -154,7 +156,7 @@ object SettingsCodec {
      * the VPN must not start (see [SettingsStore.loadProblem]); [errorType]:
      * the exception class, safe to log.
      */
-    class Loaded(val settings: Settings, val unreadable: Boolean = false, val problem: String? = null, val errorType: String? = null)
+    class Loaded(val settings: Settings, val unreadable: Boolean = false, val problem: UiText? = null, val errorType: String? = null)
 
     fun encode(s: Settings): String = EngineJson.json.encodeToString(Settings.serializer(), s)
 
@@ -184,9 +186,13 @@ object SettingsCodec {
             onboarded = true,
         )
         val problem = if (lost) {
-            "vigil's saved settings could not be read, and they route traffic through a " +
-                (if (mode == UpstreamSettings.MODE_WIREGUARD) "WireGuard tunnel" else if (mode == UpstreamSettings.MODE_SOCKS5) "SOCKS5 proxy" else "tunnel or proxy") +
-                ". Inspection will not start, so traffic does not go out directly. Set up the upstream again in Settings."
+            UiText.of(
+                when (mode) {
+                    UpstreamSettings.MODE_WIREGUARD -> R.string.settings_unreadable_wireguard
+                    UpstreamSettings.MODE_SOCKS5 -> R.string.settings_unreadable_socks5
+                    else -> R.string.settings_unreadable_upstream
+                },
+            )
         } else {
             null
         }

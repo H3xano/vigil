@@ -78,12 +78,12 @@ internal object HttpSender {
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             // Unreadable response: retry everything; document ids make that idempotent.
             val result = ElasticBulk.parse(body, records.size)
-                ?: return SendOutcome(delivered = 0, retry = originals, detail = "unreadable Elasticsearch response")
+                ?: return SendOutcome(delivered = 0, retry = originals, detail = UiText.of(R.string.export_error_elastic_unreadable))
             return SendOutcome(
                 delivered = result.delivered,
                 rejected = result.rejected,
                 retry = result.retry.map { originals[it] },
-                detail = result.firstError?.let { "Elasticsearch: $it" },
+                detail = result.firstError?.let { UiText.of(R.string.export_error_elastic_item, it) },
             )
         } finally {
             conn.disconnect()

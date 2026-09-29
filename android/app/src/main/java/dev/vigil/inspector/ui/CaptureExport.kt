@@ -85,19 +85,19 @@ object CaptureExport {
      * path), copies it to [target] (a Storage Access Framework document) and
      * deletes the temporary file. Returns the message to show.
      */
-    fun exportTo(context: Context, active: ActiveEngine, request: PcapRequest, target: Uri): String {
+    fun exportTo(context: Context, active: ActiveEngine, request: PcapRequest, target: Uri): UiText {
         val filter = request.filterAt(System.currentTimeMillis())
         val dir = File(context.cacheDir, "capture").apply { mkdirs() }
         val tmp = File.createTempFile("export-", ".pcapng", dir)
         return try {
             val summary = active.handle.exportPcap(filter, tmp.absolutePath)
-                ?: return context.getString(R.string.capture_export_failed_stopped)
+                ?: return UiText.of(R.string.capture_export_failed_stopped)
             val out = context.contentResolver.openOutputStream(target, "wt")
-                ?: return context.getString(R.string.capture_export_failed_open)
+                ?: return UiText.of(R.string.capture_export_failed_open)
             out.use { o -> tmp.inputStream().use { it.copyTo(o, 256 * 1024) } }
-            resultMessage(summary).resolve(context)
+            resultMessage(summary)
         } catch (e: Exception) {
-            context.getString(R.string.capture_export_failed, e.message ?: e.javaClass.simpleName)
+            UiText.of(R.string.capture_export_failed, e.message ?: e.javaClass.simpleName)
         } finally {
             tmp.delete()
         }

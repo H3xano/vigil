@@ -1,8 +1,9 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,8 +71,7 @@ class SettingsCodecTest {
             .replace("\"privateKey\"", "\"privateKey\":1,\"x\"")
         val a = SettingsCodec.decode(broken)
         assertTrue(a.unreadable)
-        assertNotNull(a.problem)
-        assertTrue(a.problem!!, a.problem!!.contains("WireGuard"))
+        assertEquals(UiText.of(R.string.settings_unreadable_wireguard), a.problem)
         // Shown as WireGuard without a configuration: never silently direct.
         assertEquals("wireguard", a.settings.upstream.mode)
         assertNull(a.settings.upstream.wireguard)
@@ -81,7 +81,7 @@ class SettingsCodecTest {
             .let { it.substring(0, it.indexOf("\"password\"")) }
         val b = SettingsCodec.decode(truncated)
         assertTrue(b.unreadable)
-        assertTrue(b.problem!!, b.problem!!.contains("SOCKS5"))
+        assertEquals(UiText.of(R.string.settings_unreadable_socks5), b.problem)
         assertEquals("socks5", b.settings.upstream.mode)
     }
 

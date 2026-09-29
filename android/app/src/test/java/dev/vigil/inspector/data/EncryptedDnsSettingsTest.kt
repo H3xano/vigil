@@ -25,7 +25,7 @@ class EncryptedDnsSettingsTest {
         assertFalse(s.enabled)
         assertNull(s.problemText())
         assertEquals(EncryptedDnsConfig(), s.toEngine())
-        assertEquals("Off", s.summary())
+        assertEquals(UiText.of(R.string.common_off), s.summary())
     }
 
     @Test
@@ -50,10 +50,16 @@ class EncryptedDnsSettingsTest {
                 }
             }
         }
-        assertEquals("DNS over HTTPS · Quad9", EncryptedDnsSettings(mode = "doh").summary())
+        assertEquals(UiText.of(R.string.settings_dns_summary_doh, UiText.Raw("Quad9")), EncryptedDnsSettings(mode = "doh").summary())
+        assertEquals(
+            UiText.of(R.string.settings_dns_summary_dot, UiText.of(R.string.settings_encrypted_dns_custom_server)),
+            custom("dot").summary(),
+        )
+        assertEquals(
+            UiText.of(R.string.settings_dns_summary_doh, UiText.Raw("dns.example")),
+            custom("doh", url = "https://dns.example/dns-query").summary(),
+        )
         assertEquals(UiText.of(R.string.settings_dns_choose_provider), EncryptedDnsSettings(mode = "dot", provider = "nope").problemText())
-        // The English form DnsScreen still shows.
-        assertEquals("Choose a provider.", EncryptedDnsSettings(mode = "dot", provider = "nope").problem())
     }
 
     @Test

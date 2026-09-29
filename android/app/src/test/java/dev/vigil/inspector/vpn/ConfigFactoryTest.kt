@@ -272,7 +272,7 @@ class ConfigFactoryTest {
         for (bind in listOf(CaptureSettings.BIND_WIFI, CaptureSettings.BIND_ALL)) {
             for (allow in listOf(emptyList(), listOf("bogus", "10.0.0.0/33"))) {
                 val open = on.capture.copy(streamBind = bind, streamAllow = allow)
-                assertEquals(CaptureSettings.NEEDS_ALLOWLIST, open.streamRefusal())
+                assertTrue(open.streamRefused())
                 val cfg = ConfigFactory.captureConfig(open, wifi)
                 assertTrue(cfg.enabled)
                 assertFalse(bind, cfg.stream.enabled)
@@ -280,9 +280,9 @@ class ConfigFactoryTest {
         }
         // Loopback (adb forward) needs none.
         val local = on.capture.copy(streamBind = CaptureSettings.BIND_LOOPBACK, streamAllow = emptyList())
-        assertEquals(null, local.streamRefusal())
+        assertFalse(local.streamRefused())
         assertTrue(ConfigFactory.captureConfig(local, wifi).stream.enabled)
-        assertEquals(null, on.capture.copy(streamEnabled = false, streamAllow = emptyList()).streamRefusal())
+        assertFalse(on.capture.copy(streamEnabled = false, streamAllow = emptyList()).streamRefused())
         assertTrue(CaptureSettings.isValidAllowEntry("2001:db8::/32"))
         assertFalse(CaptureSettings.isValidAllowEntry("192.168.1.0/"))
         assertFalse(CaptureSettings.isValidAllowEntry("host.example"))

@@ -1,8 +1,10 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.AppDomainRuleConfig
 import dev.vigil.inspector.engine.AppRuleConfig
 import dev.vigil.inspector.engine.DeviceState
+import dev.vigil.inspector.ui.UiText
 import kotlinx.serialization.Serializable
 
 /**
@@ -20,13 +22,17 @@ data class AppRule(
 ) {
     val isEmpty: Boolean get() = !blockWifi && !blockCellular && !blockBackground && !blockScreenOff
 
-    /** Short description of the conditions, e.g. "on Wi-Fi, in the background". */
-    fun describe(): String = listOfNotNull(
-        "on Wi-Fi".takeIf { blockWifi },
-        "on mobile data".takeIf { blockCellular },
-        "in the background".takeIf { blockBackground },
-        "with the screen off".takeIf { blockScreenOff },
-    ).joinToString(", ")
+    /**
+     * Short description of the conditions, e.g. "on Wi-Fi, in the
+     * background" (one string per condition, joined with the translatable
+     * `rules_condition_list`); null for an empty rule.
+     */
+    fun describe(): UiText? = listOfNotNull(
+        R.string.rules_condition_wifi.takeIf { blockWifi },
+        R.string.rules_condition_cellular.takeIf { blockCellular },
+        R.string.rules_condition_background.takeIf { blockBackground },
+        R.string.rules_condition_screen_off.takeIf { blockScreenOff },
+    ).map { UiText.of(it) }.reduceOrNull { list, next -> UiText.of(R.string.rules_condition_list, list, next) }
 
     fun merge(o: AppRule) = AppRule(
         blockWifi = blockWifi || o.blockWifi,

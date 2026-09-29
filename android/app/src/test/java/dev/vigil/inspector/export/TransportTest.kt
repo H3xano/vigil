@@ -88,6 +88,17 @@ class TransportTest {
     }
 
     @Test
+    fun unreadableElasticResponseIsRetried() {
+        // The test server answers "ok", which is not a _bulk response.
+        withServer({ _, _ -> 200 to emptyMap() }) { base, _ ->
+            val out = HttpSender.send(http("$base/vigil/_bulk", "elastic_bulk"), listOf(record), listOf(record)) { null }
+            assertEquals(0, out.delivered)
+            assertEquals(listOf(record), out.retry)
+            assertEquals(UiText.of(R.string.export_error_elastic_unreadable), out.detail)
+        }
+    }
+
+    @Test
     fun elasticBulkUrlMustNameTheIndex() {
         assertNull(HttpSender.elasticBulkUrlProblem("https://es:9200/vigil/_bulk"))
         assertNull(HttpSender.elasticBulkUrlProblem("https://proxy/es/vigil-events/_bulk/"))

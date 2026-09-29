@@ -332,7 +332,7 @@ class ExportPipelineTest {
     @Test
     fun retriesOnlyTheItemsTheCollectorAskedFor() = runTest {
         val h = harness { attempt, batch ->
-            if (attempt == 1) SendOutcome(delivered = 1, rejected = 1, retry = listOf(batch[2]), detail = "throttled") else SendOutcome(batch.size)
+            if (attempt == 1) SendOutcome(delivered = 1, rejected = 1, retry = listOf(batch[2]), detail = UiText.Raw("throttled")) else SendOutcome(batch.size)
         }
         repeat(3) { h.pipeline.offer(rec(it)) }
         backgroundScope.launch { h.pipeline.run() }

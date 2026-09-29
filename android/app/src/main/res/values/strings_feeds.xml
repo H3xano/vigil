@@ -290,8 +290,15 @@
     <string name="rules_empty_per_app_title">No per-app rules</string>
     <string name="rules_empty_per_app_text">Open an app in the Apps tab to block it always, on Wi-Fi, on mobile data, in the background or with the screen off, or to allow or block a domain for that app only.</string>
     <string name="rules_app_no_network">No network access</string>
-    <!-- %1$s describes the conditions, e.g. "on Wi-Fi, in the background". -->
+    <!-- %1$s describes the conditions, e.g. "on Wi-Fi, in the background" (rules_condition_* joined with rules_condition_list). -->
     <string name="rules_app_blocked_when">Blocked %1$s</string>
+    <!-- Conditions under which an app's network access is blocked; they complete rules_app_blocked_when ("Blocked on Wi-Fi"). -->
+    <string name="rules_condition_wifi">on Wi-Fi</string>
+    <string name="rules_condition_cellular">on mobile data</string>
+    <string name="rules_condition_background">in the background</string>
+    <string name="rules_condition_screen_off">with the screen off</string>
+    <!-- Joins conditions into a list, applied repeatedly: %1$s = the conditions so far, %2$s = the next rules_condition_* string. -->
+    <string name="rules_condition_list">%1$s, %2$s</string>
     <!-- %1$s is the app name. -->
     <string name="rules_app_domain_blocked">Blocked for %1$s only</string>
     <string name="rules_app_domain_allowed">Allowed for %1$s only</string>

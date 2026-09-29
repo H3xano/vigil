@@ -252,11 +252,10 @@ private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: 
                 }
             }
             if (flowId != null) {
-                val gone = stringResource(R.string.alert_connection_gone)
                 OutlinedButton(onClick = {
                     scope.launch {
                         val id = vm.flowIdForAlert(flowId, a.ts)
-                        if (id != null) nav.navigate("flow/$id") else vm.showMessage(gone)
+                        if (id != null) nav.navigate("flow/$id") else vm.showMessage(UiText.of(R.string.alert_connection_gone))
                     }
                 }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.alert_view_connection)) }
             }
@@ -267,9 +266,9 @@ private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: 
             if (muted) {
                 TextButton(onClick = { vm.unmuteAlerts(a.kind, a.pkg, a.target) }) { Text(stringResource(R.string.alert_unmute)) }
             } else {
-                val title = AlertText.title(a.kind).asString()
-                val expected = stringResource(R.string.alert_marked_expected, title, a.target, label)
-                val mutedKind = stringResource(R.string.alert_muted_kind, title, label)
+                val title = AlertText.title(a.kind)
+                val expected = UiText.of(R.string.alert_marked_expected, title, a.target, label)
+                val mutedKind = UiText.of(R.string.alert_muted_kind, title, label)
                 TextButton(onClick = { vm.muteAlerts(a.kind, a.pkg, a.target, expected) }) { Text(stringResource(R.string.alert_mark_expected)) }
                 TextButton(onClick = { vm.muteAlerts(a.kind, a.pkg, null, mutedKind) }) { Text(stringResource(R.string.alert_mute_kind)) }
                 Text(

@@ -4,6 +4,12 @@
 
     <!-- Relative times, used on many screens ("5m ago"). Keep them short. -->
     <string name="activity_time_now">now</string>
+    <!-- Tag on a connection: the path it took (through the WireGuard tunnel, the SOCKS5 proxy, or directly). -->
+    <string name="activity_via_wireguard">via WireGuard</string>
+    <string name="activity_via_socks5">via SOCKS5</string>
+    <string name="activity_via_direct">direct</string>
+    <!-- %1$s: the engine's name for another path. -->
+    <string name="activity_via_other">via %1$s</string>
     <plurals name="activity_time_seconds_ago">
         <item quantity="one">%1$ds ago</item>
         <item quantity="other">%1$ds ago</item>
@@ -209,6 +215,8 @@
     <string name="flow_open_app">Open %1$s</string>
     <string name="flow_export_packets">Export packets (PCAPng)</string>
     <string name="flow_copy_indicators">Copy indicators</string>
+    <!-- Label of the copied text on the clipboard (the domain, address and JA4 fingerprint of a connection). -->
+    <string name="flow_clip_indicators">indicators</string>
 
     <!-- Apps -->
     <!-- %1$s = time window (apps_window) -->
@@ -322,6 +330,13 @@
     <string name="dns_doh_description">DNS over HTTPS (RFC 8484), port 443. Looks like ordinary HTTPS; HTTP/2 when the server offers it.</string>
     <string name="dns_off_description">Lookups leave in cleartext to the resolvers chosen under Settings → Upstream DNS resolver.</string>
     <string name="dns_provider">Provider</string>
+    <!-- Descriptions of the preset encrypted DNS providers (Quad9, Cloudflare, Google, Mullvad). -->
+    <string name="dns_provider_quad9">Non-profit, Switzerland. Blocks known malicious domains.</string>
+    <string name="dns_provider_cloudflare">1.1.1.1. No filtering.</string>
+    <string name="dns_provider_google">Google Public DNS. No filtering.</string>
+    <string name="dns_provider_mullvad">No filtering, no logging.</string>
+    <!-- Line under a provider's name. %1$s: one of the dns_provider_* descriptions, %2$s: the server's URL or host name. -->
+    <string name="dns_provider_summary">%1$s %2$s</string>
     <string name="dns_custom">Custom</string>
     <string name="dns_custom_summary">Your own server</string>
     <string name="dns_url">URL</string>

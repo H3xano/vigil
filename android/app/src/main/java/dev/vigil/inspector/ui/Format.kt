@@ -51,6 +51,3 @@ fun formatDuration(ms: Long): String = when {
     ms < 3_600_000 -> "${ms / 60_000} min ${(ms / 1000) % 60} s"
     else -> "${ms / 3_600_000} h ${(ms / 60_000) % 60} min"
 }
-
-/** "1 connection", "3 connections". */
-fun plural(n: Long, one: String, many: String = one + "s") = "$n ${if (n == 1L) one else many}"

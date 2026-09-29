@@ -59,7 +59,7 @@ class InspectorTileService : TileService() {
             is VpnStatus.Running -> getString(R.string.vpn_tile_inspecting)
             VpnStatus.Starting -> getString(R.string.vpn_tile_starting)
             is VpnStatus.Failed -> getString(R.string.vpn_tile_error)
-            VpnStatus.Stopped -> getString(R.string.state_off)
+            VpnStatus.Stopped -> getString(R.string.common_off)
         }
         tile.updateTile()
     }

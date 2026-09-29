@@ -78,7 +78,7 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
         customAddrs = EncryptedDnsSettings.splitAddrs(addrsText),
         customPort = portText.toIntOrNull() ?: 0,
     )
-    val problem = candidate.problem()
+    val problem = candidate.problemText()?.asString()
     val dirty = candidate != saved
 
     Column(Modifier.fillMaxSize()) {
@@ -100,7 +100,7 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
 
             SectionTitle(stringResource(R.string.dns_protocol))
             Segmented(
-                listOf("off" to stringResource(R.string.state_off), "dot" to "DoT", "doh" to "DoH"),
+                listOf("off" to stringResource(R.string.common_off), "dot" to "DoT", "doh" to "DoH"),
                 draft.mode, { v -> draft = draft.copy(mode = v) },
             )
             Text(
@@ -120,7 +120,7 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
                 for (p in DnsProviders.ALL) {
                     ProviderRow(
                         p.name,
-                        "${p.description} ${if (draft.mode == "doh") p.dohUrl else p.dotHost}",
+                        stringResource(R.string.dns_provider_summary, stringResource(p.description), if (draft.mode == "doh") p.dohUrl else p.dotHost),
                         draft.provider == p.id,
                     ) { draft = draft.copy(provider = p.id) }
                 }
@@ -171,12 +171,12 @@ fun DnsScreen(vm: MainViewModel, nav: NavController) {
                     Button(enabled = dirty && problem == null, onClick = {
                         vm.updateSettings { it.copy(encryptedDns = candidate) }
                         draft = candidate
-                    }) { Text(stringResource(R.string.action_save)) }
+                    }) { Text(stringResource(R.string.common_save)) }
                     OutlinedButton(enabled = dirty, onClick = {
                         draft = saved
                         addrsText = saved.customAddrs.joinToString(", ")
                         portText = saved.customPort.toString()
-                    }) { Text(stringResource(R.string.action_discard)) }
+                    }) { Text(stringResource(R.string.common_discard)) }
                 }
             }
         }

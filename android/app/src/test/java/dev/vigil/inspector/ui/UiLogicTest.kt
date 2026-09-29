@@ -59,9 +59,6 @@ class UiLogicTest {
         assertEquals("1.5 s", formatDuration(1_500))
         assertEquals("2 min 5 s", formatDuration(125_000))
         assertEquals("1 h 1 min", formatDuration(3_660_000))
-        assertEquals("1 connection", plural(1, "connection"))
-        assertEquals("0 connections", plural(0, "connection"))
-        assertEquals("2 entries", plural(2, "entry", "entries"))
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)

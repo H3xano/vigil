@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.R
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.EmptyState
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.theme.VigilColors
@@ -56,7 +57,7 @@ fun RulesScreen(vm: MainViewModel, nav: NavController) {
                 isError = input.isNotBlank() && !valid)
         }
         Row(Modifier.padding(horizontal = 16.dp)) {
-            Button(enabled = valid, onClick = { vm.denyDomain(candidate); input = "" }) { Text(stringResource(R.string.action_block)) }
+            Button(enabled = valid, onClick = { vm.denyDomain(candidate); input = "" }) { Text(stringResource(R.string.common_block)) }
             Spacer(Modifier.width(8.dp))
             OutlinedButton(enabled = valid, onClick = { vm.allowDomain(candidate); input = "" }) { Text(stringResource(R.string.rules_allow)) }
         }
@@ -79,7 +80,7 @@ fun RulesScreen(vm: MainViewModel, nav: NavController) {
                 AppRuleRow(label(app), stringResource(R.string.rules_app_no_network), VigilColors.Block) { nav.openApp(app) }
             }
             items(conditional.entries.toList(), key = { "pc-${it.key}" }) { (app, rule) ->
-                AppRuleRow(label(app), stringResource(R.string.rules_app_blocked_when, rule.describe()), VigilColors.Medium) { nav.openApp(app) }
+                AppRuleRow(label(app), stringResource(R.string.rules_app_blocked_when, rule.describe()?.asString().orEmpty()), VigilColors.Medium) { nav.openApp(app) }
             }
             items(perApp, key = { "pd-${it.app}|${it.domain}" }) { r ->
                 Row(Modifier.fillMaxWidth().clickable { nav.openApp(r.app) }.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {

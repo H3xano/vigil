@@ -53,6 +53,7 @@ import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.ui.HealthCheckViewModel
 import dev.vigil.inspector.ui.HealthState
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.Tag
@@ -78,7 +79,7 @@ fun HealthCheckScreen(vm: MainViewModel, nav: NavController) {
     val report = (state as? HealthState.Done)?.report
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null && report != null) {
-            hc.saveJson(uri, report) { ok -> vm.showMessage(resources.getString(if (ok) R.string.health_saved else R.string.health_save_failed)) }
+            hc.saveJson(uri, report) { ok -> vm.showMessage(UiText.of(if (ok) R.string.health_saved else R.string.health_save_failed)) }
         }
     }
 
@@ -95,7 +96,7 @@ fun HealthCheckScreen(vm: MainViewModel, nav: NavController) {
             item { Heading(stringResource(R.string.health_heading_before)) }
             item { Readiness(packs, status is VpnStatus.Running, work, onEnableAll = hc::enableAllPacks, onUpdate = {
                 hc.updatePacks()
-                vm.showMessage(resources.getString(R.string.health_packs_updating))
+                vm.showMessage(UiText.of(R.string.health_packs_updating))
             }) }
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -145,14 +146,14 @@ fun HealthCheckScreen(vm: MainViewModel, nav: NavController) {
                             try {
                                 context.startActivity(Intent.createChooser(send, resources.getString(R.string.health_share_report)))
                             } catch (e: ActivityNotFoundException) {
-                                vm.showMessage(resources.getString(R.string.health_share_none))
+                                vm.showMessage(UiText.of(R.string.health_share_none))
                             }
                         }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.health_share_text)) }
                         OutlinedButton(onClick = {
                             try {
                                 save.launch("vigil-health-check-${HealthCheck.formatTime(report.generatedAt).take(10)}.json")
                             } catch (e: ActivityNotFoundException) {
-                                vm.showMessage(resources.getString(R.string.health_save_no_picker))
+                                vm.showMessage(UiText.of(R.string.health_save_no_picker))
                             }
                         }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.health_save_json)) }
                     }

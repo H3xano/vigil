@@ -5,13 +5,13 @@
     <string name="app_name" translatable="false">vigil</string>
     <string name="tile_label">vigil inspector</string>
 
-    <string name="action_cancel">Cancel</string>
-    <string name="action_undo">Undo</string>
-    <string name="action_save">Save</string>
-    <string name="action_discard">Discard</string>
-    <string name="action_block">Block</string>
-    <string name="state_blocked">Blocked</string>
-    <string name="state_allowed">Allowed</string>
-    <string name="state_off">Off</string>
-    <string name="empty_nothing_yet">Nothing yet</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_undo">Undo</string>
+    <string name="common_save">Save</string>
+    <string name="common_discard">Discard</string>
+    <string name="common_block">Block</string>
+    <string name="common_blocked">Blocked</string>
+    <string name="common_allowed">Allowed</string>
+    <string name="common_off">Off</string>
+    <string name="common_nothing_yet">Nothing yet</string>
 </resources>

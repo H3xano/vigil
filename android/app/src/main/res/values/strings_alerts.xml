@@ -22,8 +22,8 @@
     <string name="alert_title_encrypted_dns">encrypted DNS in use</string>
     <string name="alert_title_hardcoded_dns">bypasses system DNS</string>
     <string name="alert_title_new_destination">new destination</string>
-    <!-- ASN = autonomous system number, the network an address belongs to -->
-    <string name="alert_title_new_asn">new asn</string>
+    <!-- A network (autonomous system: the provider an address belongs to) the app has never contacted before -->
+    <string name="alert_title_new_asn">new network</string>
 
     <!-- Alert sentences. They repeat what the engine or the app recorded, in the user's language. -->
     <!-- %1$s = domain name, %2$s = the feed entry that matched (e.g. "feed:urlhaus (evil.example)"), not translated -->

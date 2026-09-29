@@ -1,8 +1,10 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.AppDomainRuleConfig
 import dev.vigil.inspector.engine.AppRuleConfig
 import dev.vigil.inspector.engine.DeviceState
+import dev.vigil.inspector.ui.UiText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -79,7 +81,12 @@ class AppRulesTest {
         )
         assertTrue(AppRules.needsForeground(s))
         assertFalse(AppRules.needsForeground(Settings()))
-        assertEquals("on Wi-Fi, with the screen off", AppRule(blockWifi = true, blockScreenOff = true).describe())
+        assertEquals(
+            UiText.of(R.string.rules_condition_list, UiText.of(R.string.rules_condition_wifi), UiText.of(R.string.rules_condition_screen_off)),
+            AppRule(blockWifi = true, blockScreenOff = true).describe(),
+        )
+        assertEquals(UiText.of(R.string.rules_condition_background), AppRule(blockBackground = true).describe())
+        assertNull(AppRule().describe())
     }
 
     @Test

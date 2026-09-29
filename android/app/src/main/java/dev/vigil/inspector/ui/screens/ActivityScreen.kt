@@ -56,6 +56,7 @@ import dev.vigil.inspector.data.FlowEntity
 import dev.vigil.inspector.data.PathFilter
 import dev.vigil.inspector.data.PathLabels
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.AppIcon
 import dev.vigil.inspector.ui.components.BlockedTag
 import dev.vigil.inspector.ui.components.EmptyState
@@ -140,7 +141,7 @@ private fun SearchBar(query: String, onQuery: (String) -> Unit, blockedOnly: Boo
             leadingIcon = { Icon(Icons.Default.Search, null) },
         )
         Spacer(Modifier.width(8.dp))
-        FilterChip(selected = blockedOnly, onClick = { onBlockedOnly(!blockedOnly) }, label = { Text(stringResource(R.string.state_blocked)) })
+        FilterChip(selected = blockedOnly, onClick = { onBlockedOnly(!blockedOnly) }, label = { Text(stringResource(R.string.common_blocked)) })
     }
 }
 
@@ -214,7 +215,7 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
                 TrackerTag(f.domain)
                 Tag((f.appProto ?: f.proto).uppercase())
                 if (f.dstPort != 443 && f.dstPort != 80) Tag(":${f.dstPort}")
-                if (PathLabels.isTunnelled(f.via)) PathLabels.via(f.via)?.let { Tag(it, VigilColors.Info, filled = true) }
+                if (PathLabels.isTunnelled(f.via)) PathLabels.via(f.via)?.let { Tag(it.asString(), VigilColors.Info, filled = true) }
                 if (f.background == true) Tag(stringResource(R.string.activity_tag_background), VigilColors.Low, filled = true)
                 f.tagList.forEach { t ->
                     when (t) {

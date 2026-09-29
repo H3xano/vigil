@@ -31,6 +31,7 @@ import androidx.navigation.NavController
 import dev.vigil.inspector.R
 import dev.vigil.inspector.data.ExportSettings
 import dev.vigil.inspector.export.ExportConfigException
+import dev.vigil.inspector.export.ExportTestRefused
 import dev.vigil.inspector.export.HttpSender
 import dev.vigil.inspector.export.WireFormats
 import dev.vigil.inspector.ui.Glossary
@@ -156,12 +157,12 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
                 if (error != null) Text(error.asString(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 else if (dirty) Text(stringResource(R.string.export_unsaved), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = dirty && error == null, onClick = { vm.saveExport(candidate.copy(enabled = saved.enabled, level = saved.level)) }) { Text(stringResource(R.string.action_save)) }
+                    Button(enabled = dirty && error == null, onClick = { vm.saveExport(candidate.copy(enabled = saved.enabled, level = saved.level)) }) { Text(stringResource(R.string.common_save)) }
                     OutlinedButton(enabled = dirty, onClick = {
                         draft = saved
                         portText = saved.port.toString()
                         testResult = null
-                    }) { Text(stringResource(R.string.action_discard)) }
+                    }) { Text(stringResource(R.string.common_discard)) }
                 }
             }
 
@@ -191,7 +192,8 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
                             { UiText.of(if (udp) R.string.export_test_sent_udp else R.string.export_test_delivered) },
                             {
                                 // The collector's own error text is shown as it is.
-                                val why = (it as? ExportConfigException)?.problem ?: UiText.Raw(it.message ?: it.javaClass.simpleName)
+                                val why = (it as? ExportConfigException)?.problem ?: (it as? ExportTestRefused)?.problem
+                                    ?: UiText.Raw(it.message ?: it.javaClass.simpleName)
                                 UiText.of(R.string.export_test_failed, why)
                             },
                         )

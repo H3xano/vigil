@@ -215,7 +215,7 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                 0 -> {
                     if (destinationsOrNull?.isEmpty() == true) {
                         item {
-                            EmptyState(stringResource(R.string.empty_nothing_yet), pluralStringResource(R.plurals.apps_no_destinations, days, days))
+                            EmptyState(stringResource(R.string.common_nothing_yet), pluralStringResource(R.plurals.apps_no_destinations, days, days))
                         }
                     }
                     items(destinations, key = { "d-" + it.destination }) { d ->
@@ -250,11 +250,11 @@ fun AppDetailScreen(vm: MainViewModel, nav: NavController, pkg: String) {
                     }
                 }
                 1 -> {
-                    if (flowsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.empty_nothing_yet), stringResource(R.string.apps_no_connections)) }
+                    if (flowsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.common_nothing_yet), stringResource(R.string.apps_no_connections)) }
                     items(flows, key = { "f-" + it.id }) { f -> FlowRow(f, info.label) { nav.navigate("flow/${f.id}") } }
                 }
                 2 -> {
-                    if (dnsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.empty_nothing_yet), stringResource(R.string.apps_no_lookups)) }
+                    if (dnsOrNull?.isEmpty() == true) item { EmptyState(stringResource(R.string.common_nothing_yet), stringResource(R.string.apps_no_lookups)) }
                     items(dns, key = { "q-" + it.id }) { d -> DnsRow(d, info.label) { dnsSheet = d.id } }
                 }
                 else -> {
@@ -370,7 +370,7 @@ private fun AppDomainRulesCard(vm: MainViewModel, pkg: String, label: String, ru
                 isError = input.isNotBlank() && !valid, leadingIcon = { Icon(Icons.Default.Add, null) },
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.BLOCK); input = "" }) { Text(stringResource(R.string.action_block)) }
+                OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.BLOCK); input = "" }) { Text(stringResource(R.string.common_block)) }
                 OutlinedButton(enabled = valid, onClick = { vm.setAppDomainRule(pkg, label, candidate, AppDomainRule.ALLOW); input = "" }) { Text(stringResource(R.string.apps_action_allow)) }
             }
         }

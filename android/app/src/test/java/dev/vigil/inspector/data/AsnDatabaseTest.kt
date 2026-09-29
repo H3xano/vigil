@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -126,9 +128,10 @@ class AsnDatabaseTest {
 
     @Test
     fun pathLabels() {
-        assertEquals("via WireGuard", PathLabels.via("wireguard"))
-        assertEquals("via SOCKS5", PathLabels.via("socks5"))
-        assertEquals("direct", PathLabels.via("direct"))
+        assertEquals(UiText.of(R.string.activity_via_wireguard), PathLabels.via("wireguard"))
+        assertEquals(UiText.of(R.string.activity_via_socks5), PathLabels.via("socks5"))
+        assertEquals(UiText.of(R.string.activity_via_direct), PathLabels.via("direct"))
+        assertEquals(UiText.of(R.string.activity_via_other, "tor"), PathLabels.via("tor"))
         assertNull(PathLabels.via(null))
         assertTrue(PathLabels.isTunnelled("wireguard") && PathLabels.isTunnelled("socks5"))
         assertTrue(!PathLabels.isTunnelled("direct") && !PathLabels.isTunnelled(null))

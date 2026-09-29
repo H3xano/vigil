@@ -39,6 +39,7 @@ import dev.vigil.inspector.engine.PcapFilter
 import dev.vigil.inspector.ui.CaptureExport
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.PcapRequest
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.theme.VigilColors
@@ -59,7 +60,6 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
     fun update(t: (CaptureSettings) -> CaptureSettings) = vm.updateSettings { it.copy(capture = t(it.capture)) }
     val running = status is VpnStatus.Running
     val cap = stats?.capture?.takeIf { running }
-    val needsAllowlist = stringResource(R.string.capture_needs_allowlist)
 
     Column(Modifier.fillMaxSize()) {
         VigilTopBar(stringResource(R.string.capture_title), nav)
@@ -109,8 +109,7 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
                 c.streamEnabled,
                 onChecked = { v ->
                     // Never on the network without an allowlist: anyone there would get the packets.
-                    val refusal = c.copy(streamEnabled = v).streamRefusal()
-                    if (v && refusal != null) vm.showMessage(needsAllowlist) else update { it.copy(streamEnabled = v) }
+                    if (v && c.copy(streamEnabled = v).streamRefused()) vm.showMessage(UiText.of(R.string.capture_needs_allowlist)) else update { it.copy(streamEnabled = v) }
                 },
                 enabled = c.enabled || c.streamEnabled,
             )
@@ -126,8 +125,7 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
                     ),
                     c.streamBind,
                     { v ->
-                        val refusal = c.copy(streamBind = v).streamRefusal()
-                        if (refusal != null) vm.showMessage(needsAllowlist) else update { it.copy(streamBind = v) }
+                        if (c.copy(streamBind = v).streamRefused()) vm.showMessage(UiText.of(R.string.capture_needs_allowlist)) else update { it.copy(streamBind = v) }
                     },
                 )
                 StreamFields(c) { t -> update(t) }
@@ -141,7 +139,7 @@ fun CaptureSettingsScreen(vm: MainViewModel, nav: NavController) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         when {
-                            c.streamRefusal() != null -> stringResource(R.string.capture_not_listening_no_allowlist)
+                            c.streamRefused() -> stringResource(R.string.capture_not_listening_no_allowlist)
                             !running || !c.enabled -> stringResource(R.string.capture_not_listening_not_running)
                             st?.listening != null -> listOfNotNull(
                                 stringResource(R.string.capture_listening, st.listening, st.clients),
@@ -199,7 +197,7 @@ private fun StreamFields(c: CaptureSettings, update: ((CaptureSettings) -> Captu
                 allowText = v
                 val entries = v.split(',', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
                 // Not saved when invalid, nor when it would leave network streaming without an allowlist.
-                val refused = c.copy(streamAllow = entries).streamRefusal() != null
+                val refused = c.copy(streamAllow = entries).streamRefused()
                 if (entries.all { CaptureSettings.isValidAllowEntry(it) } && entries.size <= CaptureSettings.MAX_ALLOW && !refused) {
                     update { it.copy(streamAllow = entries.distinct()) }
                 }
@@ -264,7 +262,7 @@ fun ExportPacketsButton(vm: MainViewModel, nav: NavController, label: String, re
                 }
             },
             dismissButton = if (!settings.capture.enabled) {
-                { TextButton(onClick = { explain = null }) { Text(stringResource(R.string.action_cancel)) } }
+                { TextButton(onClick = { explain = null }) { Text(stringResource(R.string.common_cancel)) } }
             } else {
                 null
             },
@@ -297,7 +295,7 @@ fun ExportAppPacketsButton(vm: MainViewModel, nav: NavController, uid: Int?, lab
             vm, nav, stringResource(R.string.capture_export),
             PcapRequest(PcapFilter(uids = listOf(uid)), CaptureExport.fileName("app-$label"), lastMs = window),
         )
-        TextButton(onClick = { choose = false }) { Text(stringResource(R.string.action_cancel)) }
+        TextButton(onClick = { choose = false }) { Text(stringResource(R.string.common_cancel)) }
     }
 }
 

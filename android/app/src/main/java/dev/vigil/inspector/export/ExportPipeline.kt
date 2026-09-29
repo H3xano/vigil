@@ -48,13 +48,17 @@ data class ExportStatus(
 class HttpStatusException(val code: Int, val body: String? = null) :
     IOException("HTTP $code" + (body?.takeIf { it.isNotBlank() }?.let { ": ${it.take(200)}" } ?: ""))
 
+/** The collector did not accept the test event ([SiemExporter.sendTest]); [problem] is shown on the Export screen. */
+class ExportTestRefused(val problem: UiText) : IOException("test event not accepted: $problem")
+
 /** Result of one delivery attempt that reached the collector. */
 data class SendOutcome(
     val delivered: Int,
     val rejected: Int = 0,
     /** Records to send again (throttled or failed server-side). */
     val retry: List<JsonObject> = emptyList(),
-    val detail: String? = null,
+    /** Shown on the Export screen; the collector's own text is [UiText.Raw]. */
+    val detail: UiText? = null,
 )
 
 /** How a failed delivery attempt is handled. */
@@ -274,7 +278,7 @@ class ExportPipeline(
                             sent = s.sent + out.delivered,
                             rejected = s.rejected + out.rejected + heldRejected,
                             lastSuccess = if (out.delivered > 0) clock() else s.lastSuccess,
-                            lastError = out.detail?.let(UiText::Raw)
+                            lastError = out.detail
                                 ?: if (heldRejected > 0) UiText.plural(R.plurals.export_error_held_rejected, heldRejected, heldRejected) else null,
                             retrying = out.retry.isNotEmpty(),
                             configProblem = if (out.delivered > 0) null else s.configProblem,

@@ -233,12 +233,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _messages.update { (it + m).takeLast(MAX_PENDING_MESSAGES) }
     }
 
-    /** A message whose text is already resolved (or not translated). */
-    fun showMessage(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) =
-        showMessage(UiText.Raw(text), actionLabel?.let(UiText::Raw), action)
-
     /** A message with an Undo action that runs [undo]. */
-    private fun showUndo(text: UiText, undo: () -> Unit) = showMessage(text, UiText.of(R.string.action_undo), undo)
+    private fun showUndo(text: UiText, undo: () -> Unit) = showMessage(text, UiText.of(R.string.common_undo), undo)
 
     fun messageShown(id: Long) = _messages.update { list -> list.filterNot { it.id == id } }
 
@@ -384,10 +380,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         updateSettings { it.copy(alertMutes = AlertMutes.add(it.alertMutes, AlertMute(kind, pkg, target, System.currentTimeMillis()))) }
         showUndo(confirmation) { updateSettings { it.copy(alertMutes = before) } }
     }
-
-    /** [muteAlerts] with an already resolved confirmation. */
-    fun muteAlerts(kind: String, pkg: String, target: String?, confirmation: String) =
-        muteAlerts(kind, pkg, target, UiText.Raw(confirmation))
 
     fun unmuteAlerts(kind: String, pkg: String, target: String) =
         updateSettings { it.copy(alertMutes = AlertMutes.remove(it.alertMutes, kind, pkg, target)) }

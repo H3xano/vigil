@@ -43,6 +43,7 @@ import dev.vigil.inspector.data.UpstreamSettings
 import dev.vigil.inspector.engine.VigilNative
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.vpn.ConfigFactory
@@ -175,7 +176,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SettingRow(
                 stringResource(R.string.settings_encrypted_dns_title),
                 if (s.encryptedDns.enabled) {
-                    val summary = s.encryptedDns.summary(stringResource(R.string.settings_encrypted_dns_custom_server))
+                    val summary = s.encryptedDns.summary().asString()
                     if (s.encryptedDns.fallbackPlain) stringResource(R.string.settings_encrypted_dns_falls_back, summary) else summary
                 } else {
                     stringResource(R.string.settings_encrypted_dns_off)
@@ -232,7 +233,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 stringResource(R.string.capture_title),
                 when {
                     !s.capture.enabled -> stringResource(R.string.settings_capture_off)
-                    s.capture.streamRefusal() != null -> stringResource(R.string.settings_capture_not_streaming, s.capture.bufferMb)
+                    s.capture.streamRefused() -> stringResource(R.string.settings_capture_not_streaming, s.capture.bufferMb)
                     s.capture.streamEnabled -> stringResource(R.string.settings_capture_streaming, s.capture.bufferMb, s.capture.streamPort.toString())
                     else -> stringResource(R.string.settings_capture_recording, s.capture.bufferMb)
                 },
@@ -252,7 +253,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                     // Protocol names: not translated.
                     stringResource(R.string.settings_siem_streaming, level, if (s.export.mode == "http") "HTTP" else "syslog/${s.export.transport}")
                 } else {
-                    stringResource(R.string.state_off)
+                    stringResource(R.string.common_off)
                 },
                 onClick = { nav.navigate("export") },
             )
@@ -293,7 +294,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             title = { Text(stringResource(R.string.settings_clear_history_confirm_title)) },
             text = { Text(stringResource(R.string.settings_clear_history_confirm_text)) },
             confirmButton = { TextButton(onClick = { vm.clearHistory(); confirmClear = false }) { Text(stringResource(R.string.settings_clear_history_confirm)) } },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.action_cancel)) } },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
     if (editUpstreams) {
@@ -314,9 +315,9 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 TextButton(enabled = invalid.isEmpty() && parsed.isNotEmpty(), onClick = {
                     vm.updateSettings { it.copy(customUpstreams = parsed) }
                     editUpstreams = false
-                }) { Text(stringResource(R.string.action_save)) }
+                }) { Text(stringResource(R.string.common_save)) }
             },
-            dismissButton = { TextButton(onClick = { editUpstreams = false }) { Text(stringResource(R.string.action_cancel)) } },
+            dismissButton = { TextButton(onClick = { editUpstreams = false }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
 }

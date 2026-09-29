@@ -1,5 +1,7 @@
 package dev.vigil.inspector.data
 
+import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.vpn.IpLiteral
 import java.io.BufferedInputStream
 import java.io.File
@@ -175,12 +177,12 @@ object AsnDatabase {
 
 /** Labels for the upstream path (`via`) of a flow and the DNS upstream transport. */
 object PathLabels {
-    fun via(via: String?): String? = when (via) {
-        "wireguard" -> "via WireGuard"
-        "socks5" -> "via SOCKS5"
-        "direct" -> "direct"
+    fun via(via: String?): UiText? = when (via) {
+        "wireguard" -> UiText.of(R.string.activity_via_wireguard)
+        "socks5" -> UiText.of(R.string.activity_via_socks5)
+        "direct" -> UiText.of(R.string.activity_via_direct)
         null -> null
-        else -> "via $via"
+        else -> UiText.of(R.string.activity_via_other, via)
     }
 
     /** True when the flow's connection went through a tunnel or proxy. */

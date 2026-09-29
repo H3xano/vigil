@@ -1,5 +1,6 @@
 package dev.vigil.inspector.data
 
+import androidx.annotation.StringRes
 import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.EncryptedDnsConfig
 import dev.vigil.inspector.engine.EncryptedDnsServer
@@ -46,29 +47,12 @@ data class EncryptedDnsSettings(
         }
     }
 
-    /**
-     * English form of [problemText], for DnsScreen until it resolves
-     * [problemText] itself; remove then.
-     */
-    fun problem(): String? = when (val t = problemText()) {
-        null -> null
-        is UiText.Res -> when (t.id) {
-            R.string.settings_dns_choose_provider -> "Choose a provider."
-            R.string.settings_dns_not_ip -> "“${t.args[0]}” is not an IP address."
-            R.string.settings_dns_need_https_url -> "Enter an https:// URL, e.g. https://dns.example/dns-query."
-            R.string.settings_dns_need_server_name -> "Enter the server's name (as in its certificate) or IP address."
-            R.string.settings_port_range -> "The port must be between 1 and 65535."
-            else -> "Enter the server's IP addresses, or allow plain DNS to look its name up."
-        }
-        else -> "At most $MAX_ADDRS addresses."
-    }
-
     private fun hostIsIp(): Boolean {
         val host = if (mode == "doh") parseDohUrl(customUrl)?.host else customHost.trim()
         return host != null && (IpLiteral.isV4(host) || IpLiteral.isV6(host))
     }
 
-    /** The engine configuration; `off` when disabled or invalid (see [problem]). */
+    /** The engine configuration; `off` when disabled or invalid (see [problemText]). */
     fun toEngine(): EncryptedDnsConfig {
         if (!enabled || problemText() != null) return EncryptedDnsConfig()
         val server = if (provider == CUSTOM) {
@@ -86,18 +70,18 @@ data class EncryptedDnsSettings(
 
     /**
      * Short description, e.g. "DNS over HTTPS · Quad9" (protocol and
-     * provider names are not translated). [customLabel] names a custom
-     * server whose name is unknown.
+     * provider names are not translated); a custom server whose name is
+     * unknown is called "custom".
      */
-    fun summary(customLabel: String = "custom"): String {
-        if (!enabled) return "Off"
-        val transport = if (mode == "doh") "DNS over HTTPS" else "DNS over TLS"
-        val who = if (provider == CUSTOM) {
-            if (mode == "doh") parseDohUrl(customUrl)?.host ?: customLabel else customHost.ifBlank { customLabel }
+    fun summary(): UiText {
+        if (!enabled) return UiText.of(R.string.common_off)
+        val who: UiText = if (provider == CUSTOM) {
+            val name = if (mode == "doh") parseDohUrl(customUrl)?.host else customHost.ifBlank { null }
+            name?.let(UiText::Raw) ?: UiText.of(R.string.settings_encrypted_dns_custom_server)
         } else {
-            DnsProviders.byId(provider)?.name ?: provider
+            UiText.Raw(DnsProviders.byId(provider)?.name ?: provider)
         }
-        return "$transport · $who"
+        return UiText.of(if (mode == "doh") R.string.settings_dns_summary_doh else R.string.settings_dns_summary_dot, who)
     }
 
     companion object {
@@ -166,7 +150,8 @@ data class EncryptedDnsSettings(
 data class DnsProvider(
     val id: String,
     val name: String,
-    val description: String,
+    /** Shown under the name in the provider list. */
+    @param:StringRes val description: Int,
     val dotHost: String,
     val dohUrl: String,
     /** IPv4 first: an address that cannot be reached is skipped for a while. */
@@ -177,22 +162,22 @@ data class DnsProvider(
 object DnsProviders {
     val ALL = listOf(
         DnsProvider(
-            "quad9", "Quad9", "Non-profit, Switzerland. Blocks known malicious domains.",
+            "quad9", "Quad9", R.string.dns_provider_quad9,
             "dns.quad9.net", "https://dns.quad9.net/dns-query",
             listOf("9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"),
         ),
         DnsProvider(
-            "cloudflare", "Cloudflare", "1.1.1.1. No filtering.",
+            "cloudflare", "Cloudflare", R.string.dns_provider_cloudflare,
             "one.one.one.one", "https://cloudflare-dns.com/dns-query",
             listOf("1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"),
         ),
         DnsProvider(
-            "google", "Google", "Google Public DNS. No filtering.",
+            "google", "Google", R.string.dns_provider_google,
             "dns.google", "https://dns.google/dns-query",
             listOf("8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"),
         ),
         DnsProvider(
-            "mullvad", "Mullvad", "No filtering, no logging.",
+            "mullvad", "Mullvad", R.string.dns_provider_mullvad,
             "dns.mullvad.net", "https://dns.mullvad.net/dns-query",
             listOf("194.242.2.2", "2a07:e340::2"),
         ),

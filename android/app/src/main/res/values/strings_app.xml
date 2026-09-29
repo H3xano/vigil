@@ -82,6 +82,8 @@
     <string name="common_tag_blocked">BLOCKED</string>
     <string name="common_dismiss">Dismiss</string>
     <string name="common_ok">OK</string>
+    <!-- Accessibility label of the back arrow in the top bar. -->
+    <string name="common_back">Back</string>
     <!-- Accessibility label of the info button next to a technical term. %1$s: the term, e.g. SNI. -->
     <string name="common_help_what_is">What is %1$s?</string>
 

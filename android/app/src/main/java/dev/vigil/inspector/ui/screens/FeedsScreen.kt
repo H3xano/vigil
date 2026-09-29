@@ -61,6 +61,7 @@ import dev.vigil.inspector.data.TaxiiCollection
 import dev.vigil.inspector.ui.FeedWork
 import dev.vigil.inspector.ui.Glossary
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.rememberRetained
 import dev.vigil.inspector.ui.components.HelpIcon
@@ -91,7 +92,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             wasBusy = true
         } else if (wasBusy) {
             wasBusy = false
-            vm.showMessage(resources.getString(R.string.feeds_update_finished))
+            vm.showMessage(UiText.of(R.string.feeds_update_finished))
         }
     }
 
@@ -99,7 +100,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
         VigilTopBar(stringResource(R.string.feeds_title), nav) {
             IconButton(onClick = {
                 vm.refreshFeeds()
-                vm.showMessage(resources.getString(R.string.feeds_updating))
+                vm.showMessage(UiText.of(R.string.feeds_updating))
             }, enabled = work != FeedWork.RUNNING) { Icon(Icons.Default.Refresh, stringResource(R.string.feeds_update_all)) }
             IconButton(onClick = { adding.value = FeedDraft() }) { Icon(Icons.Default.Add, stringResource(R.string.feeds_add_feed)) }
         }
@@ -185,11 +186,11 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
             confirmButton = {
                 TextButton(onClick = {
                     vm.deleteFeed(f.id)
-                    vm.showMessage(resources.getString(R.string.feeds_deleted, f.name))
+                    vm.showMessage(UiText.of(R.string.feeds_deleted, f.name))
                     confirmDeleteId = null
                 }) { Text(stringResource(R.string.feeds_delete)) }
             },
-            dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text(stringResource(R.string.action_cancel)) } },
+            dismissButton = { TextButton(onClick = { confirmDeleteId = null }) { Text(stringResource(R.string.common_cancel)) } },
         )
     }
 
@@ -386,11 +387,11 @@ private fun AddFeedDialog(vm: MainViewModel, state: MutableState<FeedDraft?>, on
                 } else {
                     vm.addFeed(d.name.trim(), trimmedUrl, d.category, d.auth, d.kind)
                 }
-                vm.showMessage(resources.getString(R.string.feeds_added, d.name.trim()))
+                vm.showMessage(UiText.of(R.string.feeds_added, d.name.trim()))
                 onDismiss()
             }) { Text(stringResource(R.string.feeds_add)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }
 
