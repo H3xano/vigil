@@ -783,7 +783,9 @@ names a destination, it is in `destination.domain`, `destination.ip` and
 `destination.port` (from the alert `detail`, or the `target` when it is a
 domain or an address; not for AS numbers or JA4 fingerprints). The alert
 `detail` is in `vigil.detail`, including `detail.spyware` for spyware pack
-hits (see "Spyware labels"). Muted alerts are exported like any other:
+hits (see "Spyware labels"). App-side alerts (`new_destination`,
+`new_asn`, `exfil_volume`) are exported in the same shape as engine
+alerts. Muted alerts are exported like any other:
 muting only hides them in the app and stops their notifications. For example:
 
 ```json
@@ -820,24 +822,38 @@ Transports:
   use RFC 6587 octet counting. TLS sends SNI, verifies the server hostname
   and can present a KeyChain client certificate. Over UDP a message is capped
   at 8 KB: long string values of larger records are shortened (and
-  `vigil.truncated` is set) so the JSON stays valid.
+  `vigil.truncated` is set) so the JSON stays valid. A TCP or TLS
+  connection idle for over 30 s, or closed by the collector (checked with a
+  1 ms read before each batch), is reopened before sending, so a batch is
+  not written into a dead connection.
 - **HTTP:** `ndjson` (one record per line, e.g. for Logstash/Vector/Fluent Bit
   HTTP inputs), `splunk_hec` (`{"time","sourcetype":"vigil:json","source":"vigil","event":…}`),
   or `elastic_bulk` (`{"create":{"_id":<event.id>}}` action lines; point the
-  URL at `…/<index>/_bulk`). An optional `Authorization` header is sent. For
+  URL at `…/<index>/_bulk`; a URL without the index is refused as a
+  configuration problem before sending). An optional `Authorization` header is sent.
+  Redirects are not followed (a redirected POST would turn into a GET):
+  a 3xx answer is a configuration problem naming the `Location`. For
   `_bulk`, only items that failed with 429/5xx are retried; 409 (already
   indexed) counts as delivered and other item errors as rejected.
 
-Delivery: records wait in a bounded queue (10,000; the oldest are dropped and
-counted when it overflows). The head batch is retried with backoff up to one
+Delivery: records wait in bounded queues (the oldest are dropped and
+counted when one overflows): 2,000 for alerts, sent first, and 10,000 for
+flow and DNS records, which cannot push alerts out. The head batch is retried with backoff up to one
 minute until it is delivered or export is turned off (queued records are then
 counted as dropped). While the device is offline the exporter waits for a
 network. Authentication errors (401/403) are retried once a minute until the
 settings change. A batch refused as a whole (400, 413 or 422) is split in
-halves, and the halves sent at once, until the refused records are isolated;
-only a single record the collector still refuses is counted as rejected. For
+halves, at most one attempt a second, until the refused records are
+isolated; a single record the collector still refuses is counted as
+rejected once another part of the batch got through. After a single record
+is refused (400/422) with nothing accepted yet, the rest of the batch is
+sent at once; if two single records and the rest are all refused with the
+same status, the collector refuses everything (e.g. a wrong URL) and the
+batch stays queued as a configuration problem. For
 Splunk HEC, error codes 7 (incorrect index), 10 (data channel missing) and 11
-(invalid data channel) are configuration problems of the token, not of the
+(invalid data channel), Elasticsearch request validation errors
+(`action_request_validation_exception`, e.g. no index in the URL) and
+redirects are configuration problems, not of the
 data: the records stay queued, are retried once a minute (at once when the
 settings change) and the Export screen explains the problem. The Export
 screen shows the queue depth (queued and in-flight records) next to the
