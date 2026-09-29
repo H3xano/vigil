@@ -43,8 +43,9 @@ other encrypted contents stay encrypted.
   connect to the port (57012 by default). Anyone on the network who can reach
   that port receives them. vigil listens on the Wi-Fi address only by default
   (never on the cellular network; "all networks" and "this device" are
-  options) and accepts an allowlist of client addresses, which you should
-  set to your computer's. Connections from the phone itself (loopback, or
+  options). The Wi-Fi and "all networks" options need an allowlist of client
+  addresses (set it to your computer's): the app does not listen on a
+  network without one. Connections from the phone itself (loopback, or
   one of the phone's own addresses) are accepted only from the shell
   (`adb forward`) or root, never from other apps. Use it on a trusted
   network and turn it off when done.

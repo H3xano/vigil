@@ -484,7 +484,7 @@ capture"), for `nativeExportPcap`; optionally streams them live.
 | `stream.enabled` | bool | `false` | PCAP-over-IP server (needs `enabled`). Each client receives a classic PCAP header (µs timestamps, link type 101, raw IP) and then every packet recorded from then on; nothing it sends is read. At most 2 clients; each has a bounded queue (8192 packets, 8 MiB), and a client that reads too slowly loses packets. |
 | `stream.port` | integer | 57012 | TCP port (must be positive while `stream.enabled`). |
 | `stream.bind` | IP address string | `""` | Address to listen on; empty: not listening. The app sends the Wi-Fi (or Ethernet) IPv4 address by default, `0.0.0.0` for "all networks", `127.0.0.1` for "this device", and `""` while there is no Wi-Fi. A bind that fails is retried every 5 s. |
-| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any. IPv4-mapped IPv6 peers are matched as IPv4. Clients on the device itself (loopback or one of its addresses) must in addition be owned by UID 2000 (shell, `adb forward`) or 0 (root). |
+| `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any (the app never sends an empty list with a non-loopback `bind`: it does not stream on a network without an allowlist). IPv4-mapped IPv6 peers are matched as IPv4. Clients on the device itself (loopback or one of its addresses) must in addition be owned by UID 2000 (shell, `adb forward`) or 0 (root). |
 
 Changes apply at once through `nativeUpdateConfig`: enabling allocates the
 ring (flows already open are attributed from then on), a changed `stream`
