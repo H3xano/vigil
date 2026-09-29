@@ -18,6 +18,9 @@ check() { # name, command...
   if out="$("$@" 2>&1)"; then echo "PASS $name" | tee -a "$results";
   else echo "FAIL $name :: $(echo "$out" | tail -n 3 | tr '\n' ' ')" | tee -a "$results"; fi
 }
+retry() { # command...: up to 3 attempts, for checks that need a real internet host
+  local i; for i in 1 2 3; do "$@" && return 0; [ $i -lt 3 ] && sleep 2; done; return 1
+}
 neg() { ! "$@"; }
 set_state() {
   echo "$1" > "$state"
@@ -47,7 +50,7 @@ export port
 # On mobile data: nothing is blocked but the app's own domain rule.
 check "apprules-dns-app-domain-rule" bash -c '[ "$(dig +short +time=3 +tries=1 perapp.vigil-test.example A @10.111.222.2)" = "0.0.0.0" ]'
 check "apprules-dns-ttl-zero"        bash -c 'dig +noall +answer +time=3 +tries=1 perapp.vigil-test.example A @10.111.222.2 | awk "{print \$2}" | grep -qx 0'
-check "apprules-dns-resolves"        bash -c 'dig +short +time=3 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
+check "apprules-dns-resolves"        retry bash -c 'dig +short +time=3 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
 check "apprules-connect-allowed"     bash -c "[ \"\$(hold 1)\" = open ]"
 
 # An open TCP connection and a UDP flow, then the device joins Wi-Fi.
@@ -64,4 +67,4 @@ check "apprules-dns-sinkholed-on-wifi"  bash -c '[ "$(dig +short +time=3 +tries=
 # Back on mobile data: allowed again, at once.
 set_state '{"network":"cellular","screen_on":true,"foreground_uids":null}'
 check "apprules-allowed-again"       bash -c "[ \"\$(hold 1)\" = open ]"
-check "apprules-dns-resolves-again"  bash -c 'dig +short +time=3 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
+check "apprules-dns-resolves-again"  retry bash -c 'dig +short +time=3 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'

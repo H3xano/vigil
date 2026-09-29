@@ -19,21 +19,24 @@ check() { # name, command...
   if out="$("$@" 2>&1)"; then echo "PASS $name" | tee -a "$results"
   else echo "FAIL $name :: $(echo "$out" | tail -n 3 | tr '\n' ' ')" | tee -a "$results"; fi
 }
+retry() { # command...: up to 3 attempts, for checks that need a real internet host
+  local i; for i in 1 2 3; do "$@" && return 0; [ $i -lt 3 ] && sleep 2; done; return 1
+}
 neg() { ! "$@"; }
 wait_for() { for _ in $(seq 1200); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
 
 # Phase 1: everything through the proxy.
 ip=$(dig +short +time=5 +tries=2 example.com A @10.111.222.2 | grep -E "^[0-9.]+$" | head -n1)
-check "dns-resolves"       bash -c 'dig +short +time=5 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
-check "https"              curl -sS -o /dev/null --max-time 20 https://example.com/
-check "http"               curl -sS -o /dev/null --max-time 20 http://example.com/
-check "hardcoded-dns"      bash -c 'dig +short +time=5 +tries=2 example.org A @9.9.9.9 | grep -Eq "^[0-9.]+$"'
-check "quic-over-udp-associate" bash -c '"$0" quic-probe 1.1.1.1:443 www.cloudflare.com | grep -q "^reply"' "$cli"
+check "dns-resolves"       retry bash -c 'dig +short +time=5 +tries=2 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
+check "https"              retry curl -sS -o /dev/null --max-time 20 https://example.com/
+check "http"               retry curl -sS -o /dev/null --max-time 20 http://example.com/
+check "hardcoded-dns"      retry bash -c 'dig +short +time=5 +tries=2 example.org A @9.9.9.9 | grep -Eq "^[0-9.]+$"'
+check "quic-over-udp-associate" retry bash -c '"$0" quic-probe 1.1.1.1:443 www.cloudflare.com | grep -q "^reply"' "$cli"
 touch "$work/phase1.done"
 
 # Phase 2: send_domain.
 wait_for "$work/phase2.go"
-check "https-send-domain"  curl -sS -o /dev/null --max-time 20 https://example.com/
+check "https-send-domain"  retry curl -sS -o /dev/null --max-time 20 https://example.com/
 touch "$work/phase2.done"
 
 # Phase 3: the proxy is gone; nothing may leak around it.

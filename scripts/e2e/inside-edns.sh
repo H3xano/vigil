@@ -17,6 +17,9 @@ check() { # name, command...
   if out="$("$@" 2>&1)"; then echo "PASS $phase:$name" | tee -a "$results";
   else echo "FAIL $phase:$name :: $(echo "$out" | tail -n 3 | tr '\n' ' ')" | tee -a "$results"; fi
 }
+retry() { # command...: up to 3 attempts, for checks that need a real internet host
+  local i; for i in 1 2 3; do "$@" && return 0; [ $i -lt 3 ] && sleep 2; done; return 1
+}
 dig1() { dig +time=4 +tries=1 "$@" @10.111.222.2; }
 
 case "$phase" in
@@ -42,14 +45,14 @@ case "$phase" in
     check "tcp-answer"      bash -c '[ "$(dig +tcp +short +time=4 +tries=1 b.vigil.test A @10.111.222.2)" = 192.0.2.53 ]'
     check "sinkhole-intact" bash -c '[ "$(dig +short +time=4 +tries=1 ads.vigil-test.example A @10.111.222.2)" = 0.0.0.0 ]'
     # Hard-coded resolver: plain DNS, over TCP through the proxy.
-    check "hardcoded-dns"   bash -c 'dig +short +time=5 +tries=2 example.org A @9.9.9.9 | grep -Eq "^[0-9.]+$"'
+    check "hardcoded-dns"   retry bash -c 'dig +short +time=5 +tries=2 example.org A @9.9.9.9 | grep -Eq "^[0-9.]+$"'
     # JA4 of curl --tls-max 1.2 is on the feed: reset before any proxy contact.
     check "ja4-blocked"     bash -c '! curl -s -o /dev/null --max-time 10 --tls-max 1.2 --resolve ja4-blocked.vigil-test.example:443:1.1.1.1 https://ja4-blocked.vigil-test.example/'
     # Another fingerprint gets through, connected by name.
-    check "https-by-name"   curl -sS -o /dev/null --max-time 20 --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/
+    check "https-by-name"   retry curl -sS -o /dev/null --max-time 20 --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/
     ;;
   live-dot|live-doh)
-    check "resolves"        bash -c 'dig +short +time=5 +tries=1 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
-    check "resolves-aaaa"   bash -c 'dig +short +time=5 +tries=1 example.com AAAA @10.111.222.2 | grep -q ":"'
+    check "resolves"        retry bash -c 'dig +short +time=5 +tries=1 example.com A @10.111.222.2 | grep -Eq "^[0-9.]+$"'
+    check "resolves-aaaa"   retry bash -c 'dig +short +time=5 +tries=1 example.com AAAA @10.111.222.2 | grep -q ":"'
     ;;
 esac
