@@ -284,14 +284,14 @@ private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: 
 /** The term and explanation behind "What does this mean?", or null for kinds without one. */
 private fun alertHelp(kind: String, detail: String): Pair<UiText, UiText>? = when (kind) {
     "beacon" -> if (detailObject(detail)?.str("kind") == "intra_flow") {
-        UiText.of(R.string.alert_help_beacon_in_connection) to UiText.Raw(Glossary.BEACONING_IN_CONNECTION)
+        UiText.of(R.string.alert_help_beacon_in_connection) to Glossary.BEACONING_IN_CONNECTION
     } else {
-        UiText.of(R.string.alert_help_beacon) to UiText.Raw(Glossary.BEACONING)
+        UiText.of(R.string.alert_help_beacon) to Glossary.BEACONING
     }
-    "exfil_volume" -> UiText.of(R.string.alert_help_exfil) to UiText.Raw(Glossary.EXFILTRATION)
+    "exfil_volume" -> UiText.of(R.string.alert_help_exfil) to Glossary.EXFILTRATION
     "threat_domain", "threat_ip" -> UiText.of(R.string.alert_help_threat) to UiText.of(R.string.alert_help_threat_text, Glossary.C2)
-    "threat_ja4" -> UiText.of(R.string.flow_ja4_match) to UiText.Raw(Glossary.JA4_MATCH)
-    "new_asn" -> UiText.of(R.string.alert_help_new_asn) to UiText.Raw(Glossary.NEW_ASN)
+    "threat_ja4" -> UiText.of(R.string.flow_ja4_match) to Glossary.JA4_MATCH
+    "new_asn" -> UiText.of(R.string.alert_help_new_asn) to Glossary.NEW_ASN
     "encrypted_dns" -> UiText.of(R.string.dns_title) to UiText.of(R.string.alert_help_encrypted_dns_text, Glossary.SNI)
     "hardcoded_dns" -> UiText.of(R.string.alert_help_hardcoded_dns) to UiText.of(R.string.alert_help_hardcoded_dns_text)
     else -> null

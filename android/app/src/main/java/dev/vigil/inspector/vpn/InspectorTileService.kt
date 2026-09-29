@@ -7,6 +7,7 @@ import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import dev.vigil.inspector.R
 import dev.vigil.inspector.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,10 +56,10 @@ class InspectorTileService : TileService() {
         val tile = qsTile ?: return
         tile.state = if (status is VpnStatus.Running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.subtitle = when (status) {
-            is VpnStatus.Running -> "Inspecting"
-            VpnStatus.Starting -> "Starting"
-            is VpnStatus.Failed -> "Error"
-            VpnStatus.Stopped -> "Off"
+            is VpnStatus.Running -> getString(R.string.vpn_tile_inspecting)
+            VpnStatus.Starting -> getString(R.string.vpn_tile_starting)
+            is VpnStatus.Failed -> getString(R.string.vpn_tile_error)
+            VpnStatus.Stopped -> getString(R.string.state_off)
         }
         tile.updateTile()
     }

@@ -89,7 +89,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 "http" -> stringResource(R.string.flow_source_http)
                 "dns" -> stringResource(R.string.flow_source_dns)
                 else -> null
-            }, help = Glossary.NAME_SOURCE + "\n\n" + Glossary.SNI)
+            }, help = Glossary.NAME_SOURCE_AND_SNI)
             Field(stringResource(R.string.flow_address), "${f.dstIp}:${f.dstPort}", mono = true)
             val network = AsnDatabase.label(f.asn, f.asnName)
             val country = f.asnCountry

@@ -179,9 +179,6 @@ private fun hitsText(flows: Long, lookups: Long, blocked: Long): String = listOf
     blocked.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.trackers_hits_blocked, quantity(it), formatCount(it)) },
 ).joinToString(" · ")
 
-/** A count as the quantity that selects a plural form. */
-private fun quantity(n: Long): Int = n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-
 @Composable
 private fun CompanyRow(c: CompanyHits, expanded: Boolean, onClick: () -> Unit) {
     Column(

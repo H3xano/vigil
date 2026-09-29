@@ -1,6 +1,8 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.StatsEvent
+import dev.vigil.inspector.ui.UiText
 
 /** Pure decisions of [VigilVpnService], kept here so they are unit-testable. */
 object ServicePolicy {
@@ -19,17 +21,15 @@ object ServicePolicy {
      * (e.g. Orbot) cannot reach its upstream and every relayed connection
      * fails. Null when not affected.
      */
-    fun lockdownWarning(excludedPackage: String?, lockdown: Boolean, proxyLabel: String? = null): String? {
+    fun lockdownWarning(excludedPackage: String?, lockdown: Boolean, proxyLabel: String? = null): UiText? {
         if (excludedPackage == null || !lockdown) return null
         val name = proxyLabel?.takeIf { it.isNotBlank() } ?: excludedPackage
-        return "$name has no network: Android's “Block connections without VPN” (always-on lockdown) is on, " +
-            "and $name runs outside vigil's VPN as the SOCKS5 proxy, so every connection through the proxy fails. " +
-            "Turn off “Block connections without VPN” for vigil in Android's VPN settings, or use a proxy on another device."
+        return UiText.of(R.string.vpn_lockdown_warning, name)
     }
 
     /** One line for the ongoing notification. */
-    fun lockdownShort(excludedPackage: String, proxyLabel: String? = null): String =
-        "${proxyLabel?.takeIf { it.isNotBlank() } ?: excludedPackage} has no network (always-on lockdown); connections fail"
+    fun lockdownShort(excludedPackage: String, proxyLabel: String? = null): UiText =
+        UiText.of(R.string.vpn_lockdown_short, proxyLabel?.takeIf { it.isNotBlank() } ?: excludedPackage)
 
     /** Wireshark clients connected to the PCAP-over-IP stream (0 when none or off). */
     fun streamClients(stats: StatsEvent?): Long = stats?.capture?.stream?.clients ?: 0
@@ -38,10 +38,15 @@ object ServicePolicy {
      * The ongoing notification's note while someone receives the packet
      * stream, so a connected client is never invisible. Null when none is.
      */
-    fun streamingNotice(stats: StatsEvent?): String? {
+    fun streamingNotice(stats: StatsEvent?): UiText? {
         val n = streamClients(stats)
         if (n <= 0) return null
-        val where = stats?.capture?.stream?.listening?.let { " on $it" }.orEmpty()
-        return "Streaming packets to $n Wireshark client${if (n == 1L) "" else "s"}$where"
+        val count = n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val where = stats?.capture?.stream?.listening
+        return if (where == null) {
+            UiText.plural(R.plurals.vpn_streaming_clients, count, n)
+        } else {
+            UiText.plural(R.plurals.vpn_streaming_clients_on, count, n, where)
+        }
     }
 }

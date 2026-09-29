@@ -3,6 +3,7 @@ package dev.vigil.inspector.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.vigil.inspector.R
 import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.data.AlertEntity
 import dev.vigil.inspector.data.AlertMute
@@ -61,8 +62,8 @@ import java.util.concurrent.atomic.AtomicLong
 
 data class Throughput(val downBps: Long = 0, val upBps: Long = 0)
 
-/** A snackbar message, optionally with an action such as Undo. */
-class UiMessage(val id: Long, val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null)
+/** A snackbar message, optionally with an action such as Undo. The UI resolves the texts. */
+class UiMessage(val id: Long, val text: UiText, val actionLabel: UiText? = null, val action: (() -> Unit)? = null)
 
 /** Per-app lists of the app detail screen; null until the first query result. */
 class AppDetailData(
@@ -227,10 +228,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val messages: StateFlow<List<UiMessage>> = _messages
     private val messageIds = AtomicLong()
 
-    fun showMessage(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
+    fun showMessage(text: UiText, actionLabel: UiText? = null, action: (() -> Unit)? = null) {
         val m = UiMessage(messageIds.incrementAndGet(), text, actionLabel, action)
         _messages.update { (it + m).takeLast(MAX_PENDING_MESSAGES) }
     }
+
+    /** A message whose text is already resolved (or not translated). */
+    fun showMessage(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) =
+        showMessage(UiText.Raw(text), actionLabel?.let(UiText::Raw), action)
+
+    /** A message with an Undo action that runs [undo]. */
+    private fun showUndo(text: UiText, undo: () -> Unit) = showMessage(text, UiText.of(R.string.action_undo), undo)
 
     fun messageShown(id: Long) = _messages.update { list -> list.filterNot { it.id == id } }
 
@@ -251,11 +259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Label for display while the real one is being resolved. */
-    fun fallbackLabel(key: String): String = when {
-        key == "unknown" -> "Unknown app"
-        key.startsWith("uid:") -> "UID " + key.removePrefix("uid:")
-        else -> key
-    }
+    fun fallbackLabel(key: String): String = fallbackLabelText(key).resolve(app)
 
     val feedWork: StateFlow<FeedWork> = WorkManager.getInstance(application).getWorkInfosForUniqueWorkFlow(FEEDS_NOW_WORK)
         .map { infos ->
@@ -303,7 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun blockApp(pkg: String, label: String) {
         val wasBlocked = pkg in settings.value.blockedPackages
         setAppBlocked(pkg, true)
-        if (!wasBlocked) showMessage("Blocked all network access of $label", "Undo") { setAppBlocked(pkg, false) }
+        if (!wasBlocked) showUndo(UiText.of(R.string.app_msg_app_blocked, label)) { setAppBlocked(pkg, false) }
     }
 
     fun denyDomain(domain: String) = updateSettings { it.copy(denyDomains = it.denyDomains + domain.lowercase(), allowDomains = it.allowDomains - domain.lowercase()) }
@@ -323,7 +327,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val name = domain.lowercase()
         val before = settings.value
         denyDomain(name)
-        showMessage("Blocked $name (and subdomains)", "Undo") { restoreRule(name, before) }
+        showUndo(UiText.of(R.string.app_msg_domain_blocked, name)) { restoreRule(name, before) }
     }
 
     /** Adds an allow rule for [domain] (and its subdomains) and offers Undo. */
@@ -331,14 +335,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val name = domain.lowercase()
         val before = settings.value
         allowDomain(name)
-        showMessage("Always allowing $name (and subdomains)", "Undo") { restoreRule(name, before) }
+        showUndo(UiText.of(R.string.app_msg_domain_allowed, name)) { restoreRule(name, before) }
     }
 
     /** Removes the rule for [domain] and offers Undo. */
     fun removeRuleWithUndo(domain: String) {
         val before = settings.value
         removeRule(domain)
-        showMessage("Removed the rule for $domain", "Undo") { restoreRule(domain, before) }
+        showUndo(UiText.of(R.string.app_msg_rule_removed, domain)) { restoreRule(domain, before) }
     }
 
     /** Sets the conditions under which [pkg] is blocked (Wi-Fi, mobile data, background, screen off). */
@@ -358,14 +362,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val name = AppRules.normalize(domain)
         val before = settings.value
         updateSettings { AppRules.setDomainRule(it, pkg, name, action) }
-        val verb = if (action == AppDomainRule.BLOCK) "Blocked" else "Allowed"
-        showMessage("$verb $name for $label only", "Undo") { restoreAppDomainRule(pkg, name, before) }
+        val text = if (action == AppDomainRule.BLOCK) R.string.app_msg_app_domain_blocked else R.string.app_msg_app_domain_allowed
+        showUndo(UiText.of(text, name, label)) { restoreAppDomainRule(pkg, name, before) }
     }
 
     fun removeAppDomainRule(pkg: String, domain: String) {
         val before = settings.value
         updateSettings { AppRules.removeDomainRule(it, pkg, domain) }
-        showMessage("Removed the rule for $domain", "Undo") { restoreAppDomainRule(pkg, domain, before) }
+        showUndo(UiText.of(R.string.app_msg_rule_removed, domain)) { restoreAppDomainRule(pkg, domain, before) }
     }
 
     /** The recorded block reason (engine `reason`) of the newest blocked lookup of [qname], or null. */
@@ -375,11 +379,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun flowIdForAlert(engineFlowId: Long, alertTs: Long): Long? = db.flows().byEngineId(engineFlowId, alertTs)?.id
 
     /** Mutes alerts of [kind] for [pkg] (only those about [target], if given: "mark as expected"), with Undo. */
-    fun muteAlerts(kind: String, pkg: String, target: String?, confirmation: String) {
+    fun muteAlerts(kind: String, pkg: String, target: String?, confirmation: UiText) {
         val before = settings.value.alertMutes
         updateSettings { it.copy(alertMutes = AlertMutes.add(it.alertMutes, AlertMute(kind, pkg, target, System.currentTimeMillis()))) }
-        showMessage(confirmation, "Undo") { updateSettings { it.copy(alertMutes = before) } }
+        showUndo(confirmation) { updateSettings { it.copy(alertMutes = before) } }
     }
+
+    /** [muteAlerts] with an already resolved confirmation. */
+    fun muteAlerts(kind: String, pkg: String, target: String?, confirmation: String) =
+        muteAlerts(kind, pkg, target, UiText.Raw(confirmation))
 
     fun unmuteAlerts(kind: String, pkg: String, target: String) =
         updateSettings { it.copy(alertMutes = AlertMutes.remove(it.alertMutes, kind, pkg, target)) }
@@ -439,6 +447,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val FEEDS_NOW_WORK = "feeds-now"
         private const val MAX_PENDING_MESSAGES = 8
         private const val APP_DETAIL_CACHE = 6
+
+        /** Label for display while the real one is being resolved (see [fallbackLabel]). */
+        fun fallbackLabelText(key: String): UiText = when {
+            key == "unknown" -> UiText.of(R.string.app_label_unknown)
+            key.startsWith("uid:") -> UiText.of(R.string.app_label_uid, key.removePrefix("uid:"))
+            else -> UiText.Raw(key)
+        }
 
         /** Days shown on the Apps screens: a week, or less when history is kept for less. */
         fun appWindowDays(retentionDays: Int): Int = retentionDays.coerceIn(1, 7)

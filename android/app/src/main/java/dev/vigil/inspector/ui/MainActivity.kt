@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBox
@@ -36,6 +37,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -45,6 +48,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import dev.vigil.inspector.R
 import dev.vigil.inspector.ui.screens.ActivityScreen
 import dev.vigil.inspector.ui.screens.AlertsScreen
 import dev.vigil.inspector.ui.screens.AppDetailScreen
@@ -72,7 +76,7 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == RESULT_OK) {
             VigilVpnService.start(this)
         } else {
-            vm.showMessage("VPN permission was not granted, so inspection did not start.")
+            vm.showMessage(UiText.of(R.string.app_vpn_permission_denied))
         }
     }
 
@@ -166,16 +170,16 @@ class MainActivity : ComponentActivity() {
 
     fun stopInspection() = VigilVpnService.stop(this)
 
-    private data class Tab(val route: String, val label: String, val icon: ImageVector)
+    private data class Tab(val route: String, @param:StringRes val label: Int, val icon: ImageVector)
 
     @Composable
     private fun VigilScaffold(nav: NavHostController) {
         val tabs = listOf(
-            Tab("dashboard", "Overview", Icons.Default.Home),
-            Tab("activity", "Activity", Icons.AutoMirrored.Filled.List),
-            Tab("apps", "Apps", Icons.Default.AccountBox),
-            Tab("alerts", "Alerts", Icons.Default.Warning),
-            Tab("settings", "Settings", Icons.Default.Settings),
+            Tab("dashboard", R.string.nav_overview, Icons.Default.Home),
+            Tab("activity", R.string.nav_activity, Icons.AutoMirrored.Filled.List),
+            Tab("apps", R.string.nav_apps, Icons.Default.AccountBox),
+            Tab("alerts", R.string.nav_alerts, Icons.Default.Warning),
+            Tab("settings", R.string.nav_settings, Icons.Default.Settings),
         )
         val backStack by nav.currentBackStackEntryAsState()
         val route = backStack?.destination?.route
@@ -186,11 +190,12 @@ class MainActivity : ComponentActivity() {
         // is recreated mid-display, the same message is shown again.
         val pending by vm.messages.collectAsStateWithLifecycle()
         val head = pending.firstOrNull()
+        val context = LocalContext.current
         LaunchedEffect(head?.id) {
             if (head == null) return@LaunchedEffect
             val result = snackbar.showSnackbar(
-                head.text,
-                actionLabel = head.actionLabel,
+                head.text.resolve(context),
+                actionLabel = head.actionLabel?.resolve(context),
                 withDismissAction = head.actionLabel != null,
                 duration = if (head.actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short,
             )
@@ -216,12 +221,12 @@ class MainActivity : ComponentActivity() {
                                 },
                                 icon = {
                                     if (tab.route == "alerts" && unseen > 0) {
-                                        BadgedBox(badge = { Badge { Text(if (unseen > 99) "99+" else unseen.toString()) } }) { Icon(tab.icon, null) }
+                                        BadgedBox(badge = { Badge { Text(if (unseen > 99) stringResource(R.string.nav_alerts_badge_overflow) else unseen.toString()) } }) { Icon(tab.icon, null) }
                                     } else {
                                         Icon(tab.icon, null)
                                     }
                                 },
-                                label = { Text(tab.label) },
+                                label = { Text(stringResource(tab.label)) },
                             )
                         }
                     }

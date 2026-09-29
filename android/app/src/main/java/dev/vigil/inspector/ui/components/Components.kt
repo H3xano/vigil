@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -46,7 +47,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
+import dev.vigil.inspector.R
 import dev.vigil.inspector.VigilApp
+import dev.vigil.inspector.ui.UiText
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.theme.VigilColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -99,7 +103,7 @@ fun Tag(text: String, color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 }
 
 @Composable
-fun BlockedTag() = Tag("BLOCKED", VigilColors.Block, filled = true)
+fun BlockedTag() = Tag(stringResource(R.string.common_tag_blocked), VigilColors.Block, filled = true)
 
 @Composable
 fun SeverityDot(severity: String, size: Dp = 10.dp) {
@@ -147,24 +151,28 @@ fun ErrorCard(title: String, message: String, onDismiss: () -> Unit, modifier: M
         Column(Modifier.padding(start = 16.dp, top = 16.dp, end = 8.dp, bottom = 4.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp, end = 8.dp))
-            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Dismiss") }
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.common_dismiss)) }
         }
     }
 }
+
+/** An info button that explains a technical term ([explanation], e.g. a [dev.vigil.inspector.ui.Glossary] entry) in a dialog. */
+@Composable
+fun HelpIcon(term: String, explanation: UiText, modifier: Modifier = Modifier) = HelpIcon(term, explanation.asString(), modifier)
 
 /** An info button that explains a technical term in a dialog. */
 @Composable
 fun HelpIcon(term: String, explanation: String, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }, modifier = modifier.size(32.dp)) {
-        Icon(Icons.Outlined.Info, contentDescription = "What is $term?", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(Icons.Outlined.Info, contentDescription = stringResource(R.string.common_help_what_is, term), Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (open) {
         AlertDialog(
             onDismissRequest = { open = false },
             title = { Text(term) },
             text = { Text(explanation) },
-            confirmButton = { TextButton(onClick = { open = false }) { Text("OK") } },
+            confirmButton = { TextButton(onClick = { open = false }) { Text(stringResource(R.string.common_ok)) } },
         )
     }
 }
@@ -188,6 +196,10 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
         Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
     }
 }
+
+/** A [Field] whose help text is a [UiText], e.g. a [dev.vigil.inspector.ui.Glossary] entry. */
+@Composable
+fun Field(label: String, value: String?, mono: Boolean = false, help: UiText) = Field(label, value, mono, help.asString())
 
 /** A label/value row for detail screens. Values are monospace and selectable-looking. */
 @Composable

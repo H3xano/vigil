@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App shell: navigation, onboarding, glossary, shared components, app
+     labels and the VPN service's notifications and status messages. -->
+<resources>
+    <!-- ===== Navigation bar (bottom tabs). Keep each label short: about 10 characters. ===== -->
+    <string name="nav_overview">Overview</string>
+    <string name="nav_activity">Activity</string>
+    <string name="nav_apps">Apps</string>
+    <string name="nav_alerts">Alerts</string>
+    <string name="nav_settings">Settings</string>
+    <!-- Badge on the Alerts tab when more than 99 alerts are unseen. At most 3 characters. -->
+    <string name="nav_alerts_badge_overflow">99+</string>
+
+    <!-- ===== Snackbar messages of the main screen ===== -->
+    <string name="app_vpn_permission_denied">VPN permission was not granted, so inspection did not start.</string>
+    <!-- %1$s: app name. -->
+    <string name="app_msg_app_blocked">Blocked all network access of %1$s</string>
+    <!-- %1$s: domain name, e.g. example.com. -->
+    <string name="app_msg_domain_blocked">Blocked %1$s (and subdomains)</string>
+    <!-- %1$s: domain name, e.g. example.com. -->
+    <string name="app_msg_domain_allowed">Always allowing %1$s (and subdomains)</string>
+    <!-- %1$s: domain name, e.g. example.com. -->
+    <string name="app_msg_rule_removed">Removed the rule for %1$s</string>
+    <!-- A per-app block rule was added. %1$s: domain name; %2$s: app name. -->
+    <string name="app_msg_app_domain_blocked">Blocked %1$s for %2$s only</string>
+    <!-- A per-app allow rule was added. %1$s: domain name; %2$s: app name. -->
+    <string name="app_msg_app_domain_allowed">Allowed %1$s for %2$s only</string>
+
+    <!-- ===== App labels for traffic that has no installed app ===== -->
+    <!-- Shown while the real app name is being looked up, for traffic without an app. -->
+    <string name="app_label_unknown">Unknown app</string>
+    <!-- Traffic the system could not attribute to any app. -->
+    <string name="app_label_unattributed">Unattributed</string>
+    <!-- A Linux user id without a name. %1$s: the number, e.g. 1057. -->
+    <string name="app_label_uid">UID %1$s</string>
+    <!-- Several apps sharing one Linux user id. %1$s: name of the main app; %2$d: number of other apps. -->
+    <plurals name="app_label_shared_uid">
+        <item quantity="one">%1$s (+%2$d shared)</item>
+        <item quantity="other">%1$s (+%2$d shared)</item>
+    </plurals>
+    <!-- Names of Android system users (Linux user ids) shown in place of an app name. -->
+    <string name="app_uid_root">Root</string>
+    <string name="app_uid_android_system">Android system</string>
+    <string name="app_uid_telephony">Telephony</string>
+    <string name="app_uid_media_server">Media server</string>
+    <string name="app_uid_dns_resolver">DNS resolver</string>
+    <string name="app_uid_dns_tethering">DNS (tethering)</string>
+    <string name="app_uid_network_stack">Network stack</string>
+    <string name="app_uid_nobody">Nobody</string>
+
+    <!-- ===== Onboarding (first start) ===== -->
+    <string name="onboarding_skip">Skip</string>
+    <string name="onboarding_back">Back</string>
+    <string name="onboarding_next">Next</string>
+    <string name="onboarding_not_now">Not now</string>
+    <!-- Button on the last step: starts inspection. -->
+    <string name="onboarding_start_button">Start inspecting</string>
+    <string name="onboarding_welcome_title">Welcome to vigil</string>
+    <string name="onboarding_welcome_body">vigil shows which apps on this phone connect where: every connection and DNS lookup, per app, with threat-feed alerts and optional blocking.\n\nEncrypted traffic is never decrypted. vigil reads destination names from DNS lookups and the unencrypted parts of TLS and QUIC handshakes.</string>
+    <!-- The key icon Android shows in the status bar while a VPN runs. -->
+    <string name="onboarding_vpn_title">About the VPN key icon</string>
+    <!-- "can monitor network traffic" quotes Android's own consent dialog; use the wording of Android's translation if you know it. -->
+    <string name="onboarding_vpn_body">vigil uses Android\'s VPN interface as a local loop on this device: nothing is sent to a VPN server.\n\nWhen you start inspection, Android asks for permission and warns that vigil \"can monitor network traffic\". That is exactly what it does, and all of it stays on this device unless you set up SIEM export. While it runs, a key icon appears in the status bar.</string>
+    <string name="onboarding_feeds_title">Threat feeds are downloaded</string>
+    <!-- "Settings → Threat intelligence feeds" names a screen of the app: use the translated screen names. -->
+    <string name="onboarding_feeds_body">To recognise malware, phishing and command-and-control servers, vigil downloads threat lists once a day directly from their publishers (GitHub, abuse.ch and others). Those servers see your IP address and a vigil user agent, nothing about your traffic.\n\nYou can turn each feed off in Settings → Threat intelligence feeds.</string>
+    <!-- "Usage access" is Android's name for the permission (Settings → Apps → Special app access). -->
+    <string name="onboarding_usage_title">Optional: usage access</string>
+    <string name="onboarding_usage_body">With usage access, vigil can tell traffic from the app you are using apart from background traffic. It only reads which app is in the foreground. You can grant it later in Settings.</string>
+    <string name="onboarding_usage_granted">Usage access is granted.</string>
+    <string name="onboarding_usage_grant">Grant usage access</string>
+    <string name="onboarding_notifications_title">Optional: notifications</string>
+    <string name="onboarding_notifications_body">vigil shows a notification while inspection runs, and can alert you about threat-feed hits and other medium and high severity findings.</string>
+    <string name="onboarding_notifications_allowed">Notifications are allowed.</string>
+    <string name="onboarding_notifications_allow">Allow notifications</string>
+    <string name="onboarding_start_title">Start inspecting</string>
+    <!-- "Overview" is the first tab of the app (nav_overview). -->
+    <string name="onboarding_start_body">Android now asks for permission to show notifications (if not granted yet), then for permission to run vigil\'s local VPN. Once both are answered, connections and DNS lookups start appearing on the Overview.\n\nYou can also start and stop inspection later with the switch on the Overview or the quick settings tile.</string>
+
+    <!-- ===== Shared components ===== -->
+    <!-- Small tag on blocked connections and lookups, in capitals. Keep it short: about 8 characters. -->
+    <string name="common_tag_blocked">BLOCKED</string>
+    <string name="common_dismiss">Dismiss</string>
+    <string name="common_ok">OK</string>
+    <!-- Accessibility label of the info button next to a technical term. %1$s: the term, e.g. SNI. -->
+    <string name="common_help_what_is">What is %1$s?</string>
+
+    <!-- ===== Glossary: explanations of technical terms, shown in a dialog from an info button ===== -->
+    <string name="glossary_sni">Server Name Indication: the site name an app sends in clear text at the start of a TLS or QUIC connection. vigil reads it to name encrypted connections without decrypting them.</string>
+    <!-- "Earlier DNS answer" is a value shown on the connection details screen. -->
+    <string name="glossary_name_source">Where vigil learned the destination name. SNI and the HTTP Host header come from the connection itself. \"Earlier DNS answer\" is only a hint: the app looked this name up and got this IP, but other sites may share it.</string>
+    <string name="glossary_alpn">Application-Layer Protocol Negotiation: the protocols the app offers inside TLS, such as h2 (HTTP/2), h3 (HTTP/3) or http/1.1.</string>
+    <string name="glossary_ja4">A fingerprint of how the app\'s TLS library opens connections (versions, cipher suites, extensions). The same app usually produces the same JA4, and malware families are often recognisable by theirs.</string>
+    <string name="glossary_ja4_match">The app\'s TLS or QUIC handshake has a JA4 fingerprint that a threat feed lists, for example as a malware family or attack framework (Sliver, Cobalt Strike…). vigil compares the fingerprint of every connection\'s ClientHello with the enabled JA4 feeds, without decrypting anything.\n\nA match is a lead, not proof. JA4 describes the TLS library and its settings, not the program: legitimate software built on the same library can produce exactly the same fingerprint (Sliver\'s, for instance, is also Go\'s default TLS client). Check which app made the connection and where it went. That is why matches only raise an alert unless you turn on blocking; allowlisted domains are never blocked for their fingerprint.</string>
+    <string name="glossary_taxii">TAXII 2.1 is the standard API for sharing threat intelligence as STIX 2.1 objects; MISP, OpenCTI and many commercial platforms serve it. vigil polls the chosen collection with the feed updates, only fetching objects added since the last poll (and a full copy weekly). It uses indicators whose patterns compare a domain, IP address or range, URL (its host) or JA4 fingerprint, plus domain and IP objects; revoked and expired indicators are dropped. Other pattern types (file hashes, email…) are ignored.</string>
+    <string name="glossary_ech">Encrypted Client Hello hides the real site name from the network. Only the provider\'s public name is visible.</string>
+    <string name="glossary_sinkhole">How vigil answers DNS lookups of blocked names. 0.0.0.0 / :: returns an address that goes nowhere, so apps fail fast and rarely retry. NXDOMAIN says the name does not exist; some apps then retry or fall back to other resolvers.</string>
+    <!-- “Most blocked domains” is a section of the Overview. %1$s: the text of glossary_sinkhole, appended as a second paragraph. -->
+    <string name="glossary_sinkholed">A sinkholed lookup is a DNS query for a blocked name (listed by a feed or one of your block rules) that vigil answered itself, with an address that goes nowhere (or NXDOMAIN, see Settings), instead of forwarding it. The app never learns the real address, so it cannot connect. Tap a name under “Most blocked domains” to see why it was blocked, allow it, or show its lookups.\n\n%1$s</string>
+    <string name="glossary_beaconing">Connections to the same destination at a near-constant interval. Malware checks in with its command-and-control (C2) server this way, but so do many legitimate telemetry and sync services.</string>
+    <string name="glossary_beaconing_in_connection">Beaconing inside a connection: the app keeps one connection open and sends a small burst of data through it at a near-constant interval, instead of reconnecting each time. Malware does this to check in with its command-and-control (C2) server while hiding among long-lived connections. Push services (Firebase Cloud Messaging, Apple push) and chat apps also keep connections alive, but their keep-alive pings are tiny; vigil skips known push services and bursts too small to carry a request.</string>
+    <string name="glossary_exfiltration">Exfiltration: sending data off the device without the user asking for it, for example stolen photos, contacts or messages. vigil alerts when an app uploads far more than usual while it is in the background: more than the absolute floor, several times its own busiest hour of the past week, and mostly one-way (much more sent than received). Backups and photo sync can look like this; apps whose job is uploading are skipped, and the baseline learns an app\'s regular uploads.</string>
+    <string name="glossary_c2">Command and control: servers that malware contacts to receive instructions or send stolen data.</string>
+    <string name="glossary_asn">An autonomous system (AS) is one network on the internet: a provider, cloud, company or university that announces its own blocks of IP addresses, identified by a number (ASN), e.g. AS13335 is Cloudflare and AS15169 Google. vigil looks up each connection\'s address in an offline copy of the routing table (iptoasn.com, public domain), so no lookup leaves the device. The country is where the network is registered, not where the server stands. A cloud or CDN network hosts many unrelated sites, so the AS says who carries the traffic, not who runs the site.</string>
+    <!-- %1$s: the text of glossary_asn, appended after this one. -->
+    <string name="glossary_new_asn">The app connected to a network (autonomous system) it had never used since vigil started watching it. Most apps talk to a small, stable set of networks: their own servers, a cloud provider, a CDN, analytics. A new one can be an update, a new ad or CDN partner, or a user visiting a new site in a browser, but it can also be data going somewhere unexpected. Alerts start after a learning period (7 days by default) and are medium severity for apps that used only a few networks so far. %1$s</string>
+    <!-- AllowedIPs is a WireGuard configuration field; keep it as is. -->
+    <string name="glossary_via">The path vigil used for this connection: direct over the phone\'s network, through your WireGuard tunnel, or through the SOCKS5 proxy (e.g. Tor). Destinations outside the WireGuard peer\'s AllowedIPs go direct.</string>
+    <string name="glossary_dns_upstream">How vigil forwarded the lookup to the resolver: UDP or TCP (plain DNS, readable by the network), DoT (DNS over TLS) or DoH (DNS over HTTPS).</string>
+    <string name="glossary_spyware_packs">Indicators of mercenary spyware (such as Pegasus or Predator) and stalkerware published by Amnesty International, Citizen Lab, Echap and others for the Mobile Verification Toolkit. Their servers are blocked and raise alerts naming the spyware; app names and signing certificates are compared with the installed apps by the health check. Each pack is downloaded from its publisher, under its own licence.</string>
+    <!-- Field names (event.*, source.* …) are literal and must stay as they are. -->
+    <string name="glossary_ecs">Elastic Common Schema: standard field names (event.*, source.*, destination.*, dns.*) that Elastic, Splunk and Sentinel map without custom parsing.</string>
+    <!-- Joins two glossary paragraphs. -->
+    <string name="glossary_paragraphs" translatable="false">%1$s\n\n%2$s</string>
+    <!-- Joins an introduction and a glossary text into one paragraph. -->
+    <string name="glossary_sentences" translatable="false">%1$s %2$s</string>
+
+    <!-- ===== VPN service: ongoing notification ===== -->
+    <string name="vpn_notification_title">vigil is inspecting traffic</string>
+    <!-- Shown before the first statistics arrive. -->
+    <string name="vpn_notification_starting_text">Inspecting device traffic on-device</string>
+    <!-- Notification action button; keep it short. -->
+    <string name="vpn_notification_stop">Stop</string>
+    <!-- One line of counters in the notification. %1$s, %2$s, %3$s: the texts of vpn_count_connections, vpn_count_blocked and vpn_count_lookups. -->
+    <string name="vpn_notification_counts">%1$s · %2$s · %3$s</string>
+    <!-- %s: the count, already formatted (e.g. 42, 1.2k, 3.4M). -->
+    <plurals name="vpn_count_connections">
+        <item quantity="one">%s connection</item>
+        <item quantity="other">%s connections</item>
+    </plurals>
+    <!-- Connections blocked. %s: the count, already formatted (e.g. 42, 1.2k). -->
+    <plurals name="vpn_count_blocked">
+        <item quantity="one">%s blocked</item>
+        <item quantity="other">%s blocked</item>
+    </plurals>
+    <!-- DNS lookups. %s: the count, already formatted (e.g. 42, 1.2k). -->
+    <plurals name="vpn_count_lookups">
+        <item quantity="one">%s lookup</item>
+        <item quantity="other">%s lookups</item>
+    </plurals>
+    <!-- Wireshark is a program name. %1$d: number of connected clients. -->
+    <plurals name="vpn_streaming_clients">
+        <item quantity="one">Streaming packets to %1$d Wireshark client</item>
+        <item quantity="other">Streaming packets to %1$d Wireshark clients</item>
+    </plurals>
+    <!-- Wireshark is a program name. %1$d: number of connected clients; %2$s: address and port, e.g. 127.0.0.1:57012. -->
+    <plurals name="vpn_streaming_clients_on">
+        <item quantity="one">Streaming packets to %1$d Wireshark client on %2$s</item>
+        <item quantity="other">Streaming packets to %1$d Wireshark clients on %2$s</item>
+    </plurals>
+    <!-- Warning when the SOCKS5 proxy app is cut off by Android's always-on VPN lockdown. %1$s: the proxy app's name (e.g. Orbot), used twice. “Block connections without VPN” is Android's own setting name: use Android's translation. -->
+    <string name="vpn_lockdown_warning">%1$s has no network: Android\'s “Block connections without VPN” (always-on lockdown) is on, and %1$s runs outside vigil\'s VPN as the SOCKS5 proxy, so every connection through the proxy fails. Turn off “Block connections without VPN” for vigil in Android\'s VPN settings, or use a proxy on another device.</string>
+    <!-- One-line version of vpn_lockdown_warning for the notification. %1$s: the proxy app's name. -->
+    <string name="vpn_lockdown_short">%1$s has no network (always-on lockdown); connections fail</string>
+
+    <!-- ===== VPN service: problems (notifications and the status line on the Overview) ===== -->
+    <string name="vpn_problem_stopped_title">vigil stopped inspecting</string>
+    <string name="vpn_problem_settings_title">Settings not applied</string>
+    <string name="vpn_problem_settings_rejected">The engine rejected the new settings; the previous settings stay active.</string>
+    <string name="vpn_error_background_start">Android did not allow vigil to start in the background. Open vigil to start it.</string>
+    <!-- %1$s: the engine's technical error message (English). -->
+    <string name="vpn_error_engine_repeated">The inspection engine failed repeatedly (%1$s). Inspection was stopped; open vigil to start it again.</string>
+    <!-- %1$s: the technical error message (English). -->
+    <string name="vpn_error_internal">vigil hit an internal error (%1$s). Inspection was stopped; open vigil to start it again.</string>
+    <string name="vpn_error_start">Could not start inspection.</string>
+    <string name="vpn_error_restart">Could not restart inspection.</string>
+    <string name="vpn_error_permission">VPN permission required. Open vigil to grant it.</string>
+    <string name="vpn_error_interface">Could not create the VPN interface.</string>
+    <string name="vpn_error_engine_start">The inspection engine failed to start (configuration rejected?).</string>
+
+    <!-- ===== Quick Settings tile: state shown under the tile label. Keep it short: about 12 characters. ===== -->
+    <string name="vpn_tile_inspecting">Inspecting</string>
+    <string name="vpn_tile_starting">Starting</string>
+    <string name="vpn_tile_error">Error</string>
+</resources>

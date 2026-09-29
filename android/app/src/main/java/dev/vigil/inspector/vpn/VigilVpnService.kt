@@ -19,6 +19,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.annotation.PluralsRes
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dev.vigil.inspector.BuildConfig
@@ -170,7 +171,7 @@ class VigilVpnService : android.net.VpnService() {
         }
         // ACTION_START, or null / SERVICE_INTERFACE when started as always-on VPN.
         if (!goForeground(buildNotification(null))) {
-            ServiceState.status.value = VpnStatus.Failed("Android did not allow vigil to start in the background. Open vigil to start it.")
+            ServiceState.status.value = VpnStatus.Failed(getString(R.string.vpn_error_background_start))
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -247,7 +248,7 @@ class VigilVpnService : android.net.VpnService() {
                 if (current?.id != cmd.sessionId) return
                 val backoff = restarts.onFailure(System.currentTimeMillis())
                 if (backoff == null) {
-                    giveUp("The inspection engine failed repeatedly (${cmd.message}). Inspection was stopped; open vigil to start it again.")
+                    giveUp(getString(R.string.vpn_error_engine_repeated, cmd.message))
                 } else {
                     Log.w(TAG, "engine error in session ${cmd.sessionId}: ${cmd.message}; restarting in $backoff ms")
                     ServiceState.status.value = VpnStatus.Starting
@@ -256,7 +257,7 @@ class VigilVpnService : android.net.VpnService() {
                 }
             }
             Command.InjectEngineError -> current?.let { handle(Command.EngineError(it.id, "injected by test")) }
-            is Command.Crash -> giveUp("vigil hit an internal error (${cmd.message}). Inspection was stopped; open vigil to start it again.")
+            is Command.Crash -> giveUp(getString(R.string.vpn_error_internal, cmd.message))
             Command.Destroy -> {
                 val s = current
                 current = null
@@ -271,7 +272,7 @@ class VigilVpnService : android.net.VpnService() {
     private suspend fun startFresh() {
         ServiceState.status.value = VpnStatus.Starting
         val new = createSession(previousId = null).getOrElse {
-            fail(it.message ?: "Could not start inspection.")
+            fail(it.message ?: getString(R.string.vpn_error_start))
             return
         }
         app.db.flows().closeStale(new.id)
@@ -290,7 +291,7 @@ class VigilVpnService : android.net.VpnService() {
         val new = createSession(previousId = old?.id).getOrElse {
             current = null
             old?.let { o -> teardown(o) }
-            fail(it.message ?: "Could not restart inspection.")
+            fail(it.message ?: getString(R.string.vpn_error_restart))
             return
         }
         old?.side?.cancelAndJoin()
@@ -331,7 +332,7 @@ class VigilVpnService : android.net.VpnService() {
     private fun refreshUpstreamWarning(s: Session, notify: Boolean = true) {
         val pkg = s.excludedPackage
         val lockdown = pkg != null && runCatching { isLockdownEnabled }.getOrDefault(false)
-        val warning = ServicePolicy.lockdownWarning(pkg, lockdown, pkg?.let(::appLabel))
+        val warning = ServicePolicy.lockdownWarning(pkg, lockdown, pkg?.let(::appLabel))?.resolve(this)
         if (warning != ServiceState.upstreamWarning.value) {
             ServiceState.upstreamWarning.value = warning
             if (warning != null) Log.w(TAG, "always-on lockdown is on and the proxy app $pkg is excluded from the VPN: it has no network")
@@ -344,7 +345,7 @@ class VigilVpnService : android.net.VpnService() {
     }.getOrNull()
 
     private suspend fun createSession(previousId: Long?): Result<Session> {
-        if (prepare(this) != null) return Result.failure(IllegalStateException("VPN permission required. Open vigil to grant it."))
+        if (prepare(this) != null) return Result.failure(IllegalStateException(getString(R.string.vpn_error_permission)))
         // Unreadable settings that configured a tunnel or proxy: fail closed.
         app.settings.loadProblem.value?.let { return Result.failure(IllegalStateException(it)) }
         val settings = app.settings.value
@@ -387,7 +388,7 @@ class VigilVpnService : android.net.VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "establish failed", e)
             null
-        } ?: return Result.failure(IllegalStateException("Could not create the VPN interface."))
+        } ?: return Result.failure(IllegalStateException(getString(R.string.vpn_error_interface)))
 
         // From here on the interface is up: anything that throws (including an Error from
         // loading the native library) must close it, or all traffic goes into a dead TUN.
@@ -403,7 +404,7 @@ class VigilVpnService : android.net.VpnService() {
             handle = VigilNative.nativeStart(pfd.fd, startConfig.toJson(), PlatformBridge(this, connectivity))
             if (handle == 0L) {
                 runCatching { pfd.close() }
-                return Result.failure(IllegalStateException("The inspection engine failed to start (configuration rejected?)."))
+                return Result.failure(IllegalStateException(getString(R.string.vpn_error_engine_start)))
             }
             val processor = EventProcessor(app.db, app.apps, app.settings, app.foreground, app.exporter, app.notifier, id, app.exfil, app.spywareLabels) { message ->
                 commands.trySend(Command.EngineError(id, message))
@@ -461,7 +462,7 @@ class VigilVpnService : android.net.VpnService() {
         ServiceState.stats.value = null
         ServiceState.loadedFeeds.value = emptyMap()
         ServiceState.upstreamWarning.value = null
-        postProblem(NOTIFICATION_FAILED_ID, "vigil stopped inspecting", message, AlertNotifier.CHANNEL_ALERTS)
+        postProblem(NOTIFICATION_FAILED_ID, getString(R.string.vpn_problem_stopped_title), message, AlertNotifier.CHANNEL_ALERTS)
         fail(message)
     }
 
@@ -627,10 +628,10 @@ class VigilVpnService : android.net.VpnService() {
                     ServiceState.configError.value = null
                     notifications.cancel(NOTIFICATION_CONFIG_ID)
                 } else {
-                    val msg = "The engine rejected the new settings; the previous settings stay active."
-                    Log.e(TAG, "$msg ${config.toLogJson()}")
+                    Log.e(TAG, "The engine rejected the new settings; the previous settings stay active. ${config.toLogJson()}")
+                    val msg = getString(R.string.vpn_problem_settings_rejected)
                     ServiceState.configError.value = msg
-                    postProblem(NOTIFICATION_CONFIG_ID, "Settings not applied", msg, AlertNotifier.CHANNEL_SERVICE)
+                    postProblem(NOTIFICATION_CONFIG_ID, getString(R.string.vpn_problem_settings_title), msg, AlertNotifier.CHANNEL_SERVICE)
                 }
             }
     }
@@ -767,25 +768,34 @@ class VigilVpnService : android.net.VpnService() {
             this, 1, Intent(this, VigilVpnService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
         val counts = stats?.let {
-            "${formatCount(it.flowsTotal)} connections · ${formatCount(it.blocked)} blocked · ${formatCount(it.dnsQueries)} lookups"
+            getString(
+                R.string.vpn_notification_counts,
+                countText(R.plurals.vpn_count_connections, it.flowsTotal),
+                countText(R.plurals.vpn_count_blocked, it.blocked),
+                countText(R.plurals.vpn_count_lookups, it.dnsQueries),
+            )
         }
         // A connected Wireshark client comes first, so it is never hidden by truncation.
-        val text = listOfNotNull(ServicePolicy.streamingNotice(stats), counts).joinToString(" · ")
-            .ifEmpty { "Inspecting device traffic on-device" }
+        val text = listOfNotNull(ServicePolicy.streamingNotice(stats)?.resolve(this), counts).joinToString(" · ")
+            .ifEmpty { getString(R.string.vpn_notification_starting_text) }
         val warning = ServiceState.upstreamWarning.value
         val excluded = current?.excludedPackage
         return NotificationCompat.Builder(this, AlertNotifier.CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_vigil)
-            .setContentTitle("vigil is inspecting traffic")
-            .setContentText(if (warning != null && excluded != null) ServicePolicy.lockdownShort(excluded, appLabel(excluded)) else text)
+            .setContentTitle(getString(R.string.vpn_notification_title))
+            .setContentText(if (warning != null && excluded != null) ServicePolicy.lockdownShort(excluded, appLabel(excluded)).resolve(this) else text)
             .apply { if (warning != null) setStyle(NotificationCompat.BigTextStyle().bigText("$warning\n\n$text")) }
             .setContentIntent(open)
-            .addAction(0, "Stop", stop)
+            .addAction(0, getString(R.string.vpn_notification_stop), stop)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
+
+    /** "[n] connections" and the like: [n] formatted with [formatCount], the plural chosen by its value. */
+    private fun countText(@PluralsRes id: Int, n: Long): String =
+        resources.getQuantityString(id, n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), formatCount(n))
 
     /** False if Android refused (e.g. ForegroundServiceStartNotAllowedException on API 31+). */
     private fun goForeground(n: Notification): Boolean = try {
