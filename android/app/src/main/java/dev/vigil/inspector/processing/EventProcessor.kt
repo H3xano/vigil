@@ -119,6 +119,8 @@ class EventProcessor(
                 }
             }
         }
+        // Alerts raised here (new_destination, new_asn) rather than by the engine.
+        val engineAlerts = alerts.size
         db.withTransaction {
             alerts += noveltyAlerts(flows)
             val s = settings.value
@@ -128,6 +130,10 @@ class EventProcessor(
             if (alerts.isNotEmpty()) db.alerts().insert(alerts)
             for (u in updates.values) db.flows().progress(session, u.id, u.tx, u.rx)
             for (e in ends) db.flows().finish(session, e.id, e.ts, e.tx, e.rx, e.durationMs, e.error)
+        }
+        // Exported like engine alerts (same record shape, same export level, mutes not applied), once stored.
+        for (a in alerts.subList(engineAlerts, alerts.size)) {
+            exporter.offer("alert", ExportRecords.alert(AppAlerts.toEvent(a), apps.byKey(a.pkg)))
         }
         val s = settings.value
         if (s.notifyAlerts) {

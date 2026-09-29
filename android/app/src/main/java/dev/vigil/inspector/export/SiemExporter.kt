@@ -23,16 +23,12 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import java.io.Closeable
 import java.io.IOException
-import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.URL
 import java.security.Principal
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
@@ -65,7 +61,7 @@ class SiemExporter(
 
     /** Guards [sink]: the export loop and [sendTest] must not interleave writes. */
     private val sinkLock = Mutex()
-    private var sink: Sink? = null
+    private var sink: SyslogSink? = null
     private var sinkConfig: ExportSettings? = null
 
     fun offer(kind: String, record: JsonObject) {
@@ -76,7 +72,7 @@ class SiemExporter(
             "alerts_dns" -> kind == "alert" || kind == "dns"
             else -> kind == "alert"
         }
-        if (wanted) pipeline.offer(ExportRecords.withTracker(record, trackerLabel))
+        if (wanted) pipeline.offer(ExportRecords.withTracker(record, trackerLabel), alert = kind == "alert")
     }
 
     fun start() {
@@ -173,73 +169,40 @@ class SiemExporter(
         init(km, null, null)
     }
 
-    private fun openSyslog(cfg: ExportSettings): Sink {
+    private fun openSyslog(cfg: ExportSettings): SyslogSink {
         require(cfg.host.isNotBlank()) { "no syslog host configured" }
         require(cfg.port in 1..65535) { "invalid syslog port" }
         return when (cfg.transport) {
             "udp" -> UdpSink(cfg.host, cfg.port)
-            "tcp" -> StreamSink(Socket().apply { connect(InetSocketAddress(cfg.host, cfg.port), 10_000); soTimeout = 15_000 })
-            else -> {
-                // Connect first (with a timeout), then layer TLS over the
-                // connected socket; passing the host name enables SNI.
-                val plain = Socket()
-                try {
-                    plain.connect(InetSocketAddress(cfg.host, cfg.port), 10_000)
-                    plain.soTimeout = 15_000
-                    val socket = sslContext(cfg.clientCertAlias).socketFactory.createSocket(plain, cfg.host, cfg.port, true) as SSLSocket
-                    socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-                    socket.startHandshake()
-                    // SSLSocket does not always verify the host name: check it explicitly.
-                    if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(cfg.host, socket.session)) {
-                        socket.close()
-                        throw SSLPeerUnverifiedException("certificate does not match ${cfg.host}")
-                    }
-                    StreamSink(socket)
-                } catch (e: Exception) {
-                    runCatching { plain.close() }
-                    throw e
-                }
-            }
+            "tcp" -> StreamSink({ Socket().apply { connect(InetSocketAddress(cfg.host, cfg.port), 10_000); soTimeout = 15_000 } })
+            else -> StreamSink({ openTls(cfg) })
         }
     }
 
-    private fun sendHttp(cfg: ExportSettings, originals: List<JsonObject>, records: List<JsonObject>): SendOutcome {
-        require(cfg.url.startsWith("https://") || cfg.url.startsWith("http://")) { "no HTTP endpoint configured" }
-        val conn = URL(cfg.url).openConnection() as HttpURLConnection
-        if (conn is HttpsURLConnection) conn.sslSocketFactory = sslContext(cfg.clientCertAlias).socketFactory
+    private fun openTls(cfg: ExportSettings): Socket {
+        // Connect first (with a timeout), then layer TLS over the
+        // connected socket; passing the host name enables SNI.
+        val plain = Socket()
         try {
-            conn.requestMethod = "POST"
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 20_000
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", WireFormats.contentType(cfg.httpFormat))
-            conn.setRequestProperty("User-Agent", "vigil/${BuildConfig.VERSION_NAME}")
-            if (cfg.authHeader.isNotBlank()) conn.setRequestProperty("Authorization", cfg.authHeader)
-            conn.outputStream.use { it.write(WireFormats.httpBody(records, cfg.httpFormat).toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                val detail = runCatching { conn.errorStream?.bufferedReader()?.use { it.readText() } }.getOrNull()
-                throw HttpStatusException(code, detail)
+            plain.connect(InetSocketAddress(cfg.host, cfg.port), 10_000)
+            plain.soTimeout = 15_000
+            val socket = sslContext(cfg.clientCertAlias).socketFactory.createSocket(plain, cfg.host, cfg.port, true) as SSLSocket
+            socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+            socket.startHandshake()
+            // SSLSocket does not always verify the host name: check it explicitly.
+            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(cfg.host, socket.session)) {
+                socket.close()
+                throw SSLPeerUnverifiedException("certificate does not match ${cfg.host}")
             }
-            if (cfg.httpFormat != "elastic_bulk") return SendOutcome(delivered = records.size)
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            // Unreadable response: retry everything; document ids make that idempotent.
-            val result = ElasticBulk.parse(body, records.size)
-                ?: return SendOutcome(delivered = 0, retry = originals, detail = "unreadable Elasticsearch response")
-            return SendOutcome(
-                delivered = result.delivered,
-                rejected = result.rejected,
-                retry = result.retry.map { originals[it] },
-                detail = result.firstError?.let { "Elasticsearch: $it" },
-            )
-        } finally {
-            conn.disconnect()
+            return socket
+        } catch (e: Exception) {
+            runCatching { plain.close() }
+            throw e
         }
     }
 
-    private interface Sink : Closeable {
-        fun write(messages: List<String>)
-    }
+    private fun sendHttp(cfg: ExportSettings, originals: List<JsonObject>, records: List<JsonObject>): SendOutcome =
+        HttpSender.send(cfg, originals, records) { sslContext(cfg.clientCertAlias).socketFactory }
 
     /**
      * UDP has no connection to notice a server move, so the collector's name
@@ -247,7 +210,7 @@ class SiemExporter(
      * lookup fails), and after any send error: the pipeline then closes the
      * sink and the next one resolves afresh.
      */
-    private class UdpSink(private val host: String, private val port: Int) : Sink {
+    private class UdpSink(private val host: String, private val port: Int) : SyslogSink {
         private val socket = DatagramSocket()
         private var addr: InetAddress = InetAddress.getByName(host)
         private var resolvedAt = System.nanoTime()
@@ -267,15 +230,6 @@ class SiemExporter(
         private companion object {
             const val RESOLVE_INTERVAL_NS = 5 * 60 * 1_000_000_000L
         }
-    }
-
-    private class StreamSink(private val socket: Socket) : Sink {
-        private val out: OutputStream = socket.getOutputStream().buffered()
-        override fun write(messages: List<String>) {
-            for (m in messages) out.write(WireFormats.octetCounted(m))
-            out.flush()
-        }
-        override fun close() = socket.close()
     }
 
     private companion object {
