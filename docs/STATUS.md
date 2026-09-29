@@ -234,6 +234,25 @@ suite on Android 15 and 16. On Android 16, by hand: a PCAP-over-IP client
 running as the shell (UID 2000) receives the stream, one running as an app
 UID (10123) is refused ("an app on this device").
 
+## Translation support (2026-09-29, unreleased)
+
+Every user-visible string moved to resources by four agents (one area each,
+one `strings_<area>.xml` each), then merged; see docs/TRANSLATING.md and the
+CHANGELOG. `StringResourcesTest` guards against new hard-coded English.
+Verified: lint clean, 252 unit tests; on the Android 16 emulator every
+screen opened in the en-XA and ar-XB pseudolocales without a crash or a
+format error (en-XA showed no untranslated English; ar-XB mirrors), and
+every emulator suite passes on the final APK on Android 15 and 16.
+
+Test-environment notes from this run: the emulator's own DNS/network can
+flake for minutes (downloads, `example.com` checks fail across suites while
+the logic checks pass; rerun). An interrupted lifecycle run could leave
+Private DNS strict (`dns.google`), which sends lookups past vigil and fails
+the sinkhole checks; the lifecycle script now restores it on any exit and
+android-e2e.sh resets a leftover strict mode. Stop Gradle daemons
+(`./gradlew --stop`) before booting an emulator: they held about 5.5 GB and
+the emulator was OOM-killed once.
+
 ## Feature inventory
 
 **Engine:** TUN dispatch; user-space TCP (smoltcp via `netstack-smoltcp`)
