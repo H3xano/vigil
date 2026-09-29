@@ -1,5 +1,6 @@
 package dev.vigil.inspector.vpn
 
+import dev.vigil.inspector.R
 import dev.vigil.inspector.engine.CaptureStats
 import dev.vigil.inspector.engine.CaptureStreamStats
 import dev.vigil.inspector.engine.StatsEvent
@@ -7,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import dev.vigil.inspector.ui.UiText
 import org.junit.Test
 
 class ServicePolicyTest {
@@ -27,12 +29,15 @@ class ServicePolicyTest {
     fun lockdownWarningOnlyWithAnExcludedProxyApp() {
         assertNull(ServicePolicy.lockdownWarning(null, lockdown = true))
         assertNull(ServicePolicy.lockdownWarning("org.torproject.android", lockdown = false))
-        val w = ServicePolicy.lockdownWarning("org.torproject.android", lockdown = true, proxyLabel = "Orbot")!!
-        assertTrue(w, w.startsWith("Orbot has no network"))
-        assertTrue(w, w.contains("Block connections without VPN"))
-        val unnamed = ServicePolicy.lockdownWarning("org.torproject.android", lockdown = true, proxyLabel = " ")!!
-        assertTrue(unnamed, unnamed.startsWith("org.torproject.android has no network"))
-        assertTrue(ServicePolicy.lockdownShort("org.torproject.android", "Orbot").startsWith("Orbot has no network"))
+        assertEquals(
+            UiText.of(R.string.vpn_lockdown_warning, "Orbot"),
+            ServicePolicy.lockdownWarning("org.torproject.android", lockdown = true, proxyLabel = "Orbot"),
+        )
+        assertEquals(
+            UiText.of(R.string.vpn_lockdown_warning, "org.torproject.android"),
+            ServicePolicy.lockdownWarning("org.torproject.android", lockdown = true, proxyLabel = " "),
+        )
+        assertEquals(UiText.of(R.string.vpn_lockdown_short, "Orbot"), ServicePolicy.lockdownShort("org.torproject.android", "Orbot"))
     }
 
     @Test
@@ -42,8 +47,8 @@ class ServicePolicyTest {
         val listening = CaptureStats(enabled = true, stream = CaptureStreamStats(listening = "127.0.0.1:57012"))
         assertNull(ServicePolicy.streamingNotice(StatsEvent(capture = listening)))
         val one = StatsEvent(capture = listening.copy(stream = listening.stream!!.copy(clients = 1)))
-        assertEquals("Streaming packets to 1 Wireshark client on 127.0.0.1:57012", ServicePolicy.streamingNotice(one))
+        assertEquals(UiText.plural(R.plurals.vpn_streaming_clients_on, 1, 1L, "127.0.0.1:57012"), ServicePolicy.streamingNotice(one))
         val two = StatsEvent(capture = CaptureStats(enabled = true, stream = CaptureStreamStats(clients = 2)))
-        assertEquals("Streaming packets to 2 Wireshark clients", ServicePolicy.streamingNotice(two))
+        assertEquals(UiText.plural(R.plurals.vpn_streaming_clients, 2, 2L), ServicePolicy.streamingNotice(two))
     }
 }

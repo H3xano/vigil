@@ -86,7 +86,7 @@ fun FlowDetailScreen(vm: MainViewModel, nav: NavController, id: Long) {
                 "http" -> "HTTP Host header"
                 "dns" -> "Earlier DNS answer (hint)"
                 else -> null
-            }, help = Glossary.NAME_SOURCE + "\n\n" + Glossary.SNI)
+            }, help = Glossary.NAME_SOURCE_AND_SNI)
             Field("Address", "${f.dstIp}:${f.dstPort}", mono = true)
             Field(
                 "Network",

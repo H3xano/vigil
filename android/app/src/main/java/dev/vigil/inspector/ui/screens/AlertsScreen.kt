@@ -47,6 +47,7 @@ import dev.vigil.inspector.export.ExportRecords
 import dev.vigil.inspector.processing.AlertNotifier
 import dev.vigil.inspector.ui.CaptureExport
 import dev.vigil.inspector.ui.Glossary
+import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.AppIcon
@@ -256,22 +257,27 @@ private fun AlertItem(a: AlertEntity, label: String, settings: Settings, muted: 
     }
 }
 
-private fun alertHelp(kind: String, detail: String): Pair<String, String>? = when (kind) {
+private fun alertHelp(kind: String, detail: String): Pair<String, UiText>? = when (kind) {
     "beacon" -> if (detailObject(detail)?.str("kind") == "intra_flow") {
         "Beaconing inside a connection" to Glossary.BEACONING_IN_CONNECTION
     } else {
         "Beaconing" to Glossary.BEACONING
     }
     "exfil_volume" -> "Exfiltration" to Glossary.EXFILTRATION
-    "threat_domain", "threat_ip" -> "Threat feed hit" to
-        "The destination is listed in an enabled threat-intelligence feed (malware, phishing or C2). ${Glossary.C2}"
+    "threat_domain", "threat_ip" -> "Threat feed hit" to Glossary.sentences(
+        UiText.Raw("The destination is listed in an enabled threat-intelligence feed (malware, phishing or C2)."), Glossary.C2,
+    )
     "threat_ja4" -> "JA4 match" to Glossary.JA4_MATCH
     "new_asn" -> "New network for this app" to Glossary.NEW_ASN
-    "encrypted_dns" -> "Encrypted DNS" to
-        "The app resolves names over DNS-over-HTTPS/TLS/QUIC, so vigil cannot see which names it looks up. " +
-        "Connections are still named from TLS/QUIC SNI. ${Glossary.SNI}"
+    "encrypted_dns" -> "Encrypted DNS" to Glossary.sentences(
+        UiText.Raw(
+            "The app resolves names over DNS-over-HTTPS/TLS/QUIC, so vigil cannot see which names it looks up. " +
+                "Connections are still named from TLS/QUIC SNI.",
+        ),
+        Glossary.SNI,
+    )
     "hardcoded_dns" -> "Bypassing system DNS" to
-        "The app sent DNS queries straight to its own resolver instead of the one Android configured."
+        UiText.Raw("The app sent DNS queries straight to its own resolver instead of the one Android configured.")
     else -> null
 }
 
