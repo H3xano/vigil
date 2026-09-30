@@ -145,8 +145,9 @@ F-Droid reads from the tagged commit: `title.txt`, `short_description.txt`
 `python3 packaging/fdroid/render_icon.py` after changing the launcher icon)
 and `images/phoneScreenshots/` (copies of `docs/screenshots/`, numbered for
 ordering). Add a changelog file for every release. The draft fdroiddata
-recipe is `packaging/fdroid/dev.vigil.inspector.yml`; it pins Rust, rustup,
-cargo-ndk and the NDK, and must be bumped with them.
+recipe is `packaging/fdroid/dev.vigil.inspector.yml`; it installs Debian's
+`rustup` package, pins Rust, cargo-ndk and the NDK, and must be bumped
+with them.
 
 **Reproducible builds.** The release APK is bit-for-bit reproducible across
 checkout directories: the `cargoBuild` task passes `--remap-path-prefix` for

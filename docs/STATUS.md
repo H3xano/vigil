@@ -37,6 +37,12 @@ table). No worktrees or feature branches are left.
    v0.5.1). The fork's CI can't run (new GitLab account not verified for
    shared runners); a note asks the maintainers to trigger it. Follow up on
    reviewer comments; update the MR branch rather than opening a new one.
+   2026-09-30: reviewer (linsui) asked to "install rustup from debian"; the
+   recipe now installs Debian's `rustup` package instead of the rustup srclib
+   (checked in a `debian:trixie` container: the three `libvigil.so`, after
+   the same strip as AGP, match the v0.5.1 release APK byte for byte;
+   `fdroid rewritemeta`/`lint` 2.4.2 clean). The owner pushes that commit to
+   the fork's `vigil` branch (no GitLab credentials on this machine).
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
@@ -463,3 +469,4 @@ Health check); retention and clear history.
 | Spyware packs from MVT's index and Echap, downloaded by the device; labels kept app-side | Source allowlist (mvt-project, AmnestyTech, AssoEchap on GitHub); the engine carries no per-entry labels for domain feeds. A small hand-written YAML reader instead of a YAML library. |
 | AdGuard companiesdb for tracker labels, not loaded by the engine | CC BY-SA 4.0 (commercial use allowed; DuckDuckGo, Ghostery and Disconnect data are non-commercial); labels are looked up at display and export time. |
 | UI strings in one resource file per area; `UiText` for text built without a Context | Smaller files for translators (one Weblate component each) and no merge conflicts between areas; data-layer and view-model messages stay testable on the JVM by comparing resource ids. Alert messages stay English in Room and the SIEM export (machine data); screens render a translated sentence from kind + detail, falling back to the stored message. |
+| F-Droid recipe uses Debian's `rustup` package, not the rustup srclib | Requested by the fdroiddata reviewer; same official toolchain binaries, so the build stays reproducible (verified on the v0.5.1 libraries). |
