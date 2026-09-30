@@ -41,8 +41,8 @@ table). No worktrees or feature branches are left.
    recipe now installs Debian's `rustup` package instead of the rustup srclib
    (checked in a `debian:trixie` container: the three `libvigil.so`, after
    the same strip as AGP, match the v0.5.1 release APK byte for byte;
-   `fdroid rewritemeta`/`lint` 2.4.2 clean). The owner pushes that commit to
-   the fork's `vigil` branch (no GitLab credentials on this machine).
+   `fdroid rewritemeta`/`lint` 2.4.2 clean). Pushed to the fork's `vigil`
+   branch as 974decbb7.
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
