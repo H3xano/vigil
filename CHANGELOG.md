@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Release APKs no longer carry the "Dependency metadata" signing block
+  (AGP `dependenciesInfo`), which F-Droid rejects.
+- F-Droid recipe: Rust comes from Debian's `rustup` package (with
+  `build-essential`), and every prebuild entry is a single command.
+
 ## 0.5.1 (2026-09-29): GitHub pre-release
 
 Translation support:

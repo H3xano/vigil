@@ -152,7 +152,10 @@ with them.
 **Reproducible builds.** The release APK is bit-for-bit reproducible across
 checkout directories: the `cargoBuild` task passes `--remap-path-prefix` for
 the checkout and `CARGO_HOME` plus `-Wl,--build-id=none`, cargo builds with
-`--locked`, and `vcsInfo` is off for release. F-Droid can therefore publish
+`--locked`, and `vcsInfo` is off for release. `dependenciesInfo` is off too:
+otherwise signing adds a "Dependency metadata" block (encrypted for Google
+Play) to the APK signing block, and F-Droid's `check apk` job rejects the
+upstream APK. F-Droid can therefore publish
 the upstream-signed APK (`Binaries` + `AllowedAPKSigningKeys` in the recipe),
 provided the release is built from a clean checkout of the tag with the same
 toolchain as the recipe (Rust, cargo-ndk, NDK; JDK 17 or 21). Pass
