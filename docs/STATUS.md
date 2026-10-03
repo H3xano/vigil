@@ -49,8 +49,13 @@ table). No worktrees or feature branches are left.
    `libc6-dev` in that image) and `cargo fetch --manifest-path` instead of
    `cd … &&`. Checked by running the CI's `fdroid build` job locally in
    `registry.gitlab.com/fdroid/fdroidserver:buildserver-trixie`: build
-   succeeded and matched the upstream v0.5.1 APK (allowed signer). Needs a
-   maintainer to trigger the pipeline again (fork CI still can't run).
+   succeeded and matched the upstream v0.5.1 APK (allowed signer).
+   2026-10-03: owner verified the GitLab account, so the fork's CI now runs.
+   Pipeline 2909257416: every job passes except `check apk`, which rejects
+   the upstream `vigil-0.5.1.apk` for its "Dependency metadata" signing
+   block (AGP `dependenciesInfo`). Fixed on `main` (60cc405); the published
+   v0.5.1 APK can't change, so the MR needs a v0.5.2 release and the recipe
+   moved to it (owner's call).
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
