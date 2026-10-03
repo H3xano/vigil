@@ -35,12 +35,12 @@ Builds:
     subdir: android/app
     sudo:
       - apt-get update
-      - apt-get install -y rustup
+      - apt-get install -y build-essential rustup
     prebuild:
       - rustup toolchain install 1.98.1 --profile minimal --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - rustup default 1.98.1
       - cargo install cargo-ndk --version 4.1.2 --locked
-      - cd ../../core && cargo fetch --locked
+      - cargo fetch --locked --manifest-path ../../core/Cargo.toml
     # The Gradle task cargoBuild (android/app/build.gradle.kts) runs
     # `cargo ndk ... build --release --locked` (the Debian rustup proxy
     # /usr/bin/cargo) and applies --remap-path-prefix and --build-id=none itself.

@@ -42,7 +42,15 @@ table). No worktrees or feature branches are left.
    (checked in a `debian:trixie` container: the three `libvigil.so`, after
    the same strip as AGP, match the v0.5.1 release APK byte for byte;
    `fdroid rewritemeta`/`lint` 2.4.2 clean). Pushed to the fork's `vigil`
-   branch as 974decbb7.
+   branch as 974decbb7. 2026-10-01: linsui triggered a pipeline: every job
+   passed except `fdroid build` (`cargo install cargo-ndk`: linker `cc` not
+   found), and asked for no `;`/`&&` in commands. Fixed in fa7851e9b:
+   `apt-get install -y build-essential rustup` (plain `gcc` lacks
+   `libc6-dev` in that image) and `cargo fetch --manifest-path` instead of
+   `cd … &&`. Checked by running the CI's `fdroid build` job locally in
+   `registry.gitlab.com/fdroid/fdroidserver:buildserver-trixie`: build
+   succeeded and matched the upstream v0.5.1 APK (allowed signer). Needs a
+   maintainer to trigger the pipeline again (fork CI still can't run).
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
@@ -469,4 +477,4 @@ Health check); retention and clear history.
 | Spyware packs from MVT's index and Echap, downloaded by the device; labels kept app-side | Source allowlist (mvt-project, AmnestyTech, AssoEchap on GitHub); the engine carries no per-entry labels for domain feeds. A small hand-written YAML reader instead of a YAML library. |
 | AdGuard companiesdb for tracker labels, not loaded by the engine | CC BY-SA 4.0 (commercial use allowed; DuckDuckGo, Ghostery and Disconnect data are non-commercial); labels are looked up at display and export time. |
 | UI strings in one resource file per area; `UiText` for text built without a Context | Smaller files for translators (one Weblate component each) and no merge conflicts between areas; data-layer and view-model messages stay testable on the JVM by comparing resource ids. Alert messages stay English in Room and the SIEM export (machine data); screens render a translated sentence from kind + detail, falling back to the stored message. |
-| F-Droid recipe uses Debian's `rustup` package, not the rustup srclib | Requested by the fdroiddata reviewer; same official toolchain binaries, so the build stays reproducible (verified on the v0.5.1 libraries). |
+| F-Droid recipe uses Debian's `rustup` (+ `build-essential`), not the rustup srclib | Requested by the fdroiddata reviewer; same official toolchain binaries, so the build stays reproducible (verified on the v0.5.1 libraries). |
