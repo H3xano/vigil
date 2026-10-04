@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 (2026-10-04): GitHub pre-release
 
 - Release APKs no longer carry the "Dependency metadata" signing block
   (AGP `dependenciesInfo`), which F-Droid rejects.

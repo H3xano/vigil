@@ -28,8 +28,8 @@ android {
         // versionCode = major * 10000 + minor * 100 + patch, kept as a literal
         // so F-Droid's update checker can read it. The APK is universal (no
         // ABI splits), so there are no per-ABI offsets. See docs/DEVELOPMENT.md.
-        versionCode = 501
-        versionName = "0.5.1"
+        versionCode = 502
+        versionName = "0.5.2"
         ndk { abiFilters += rustAbis }
     }
 

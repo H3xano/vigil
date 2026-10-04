@@ -1,0 +1,2 @@
+Fix in 0.5.2:
+• The APK no longer contains the "Dependency metadata" signing block, so F-Droid can publish the developer-signed APK. No app changes.

@@ -1,7 +1,7 @@
 # Project status and handoff
 
-Last updated: 2026-09-29, version 0.5.1 (fixes from a third review and
-translation support, no new features), GitHub pre-release.
+Last updated: 2026-10-04, version 0.5.2 (APK without the dependency
+metadata signing block, for F-Droid; no app changes), GitHub pre-release.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
@@ -241,6 +241,12 @@ the merged tree. CHANGELOG.md (0.5.0) lists everything; the highlights:
   packs, then other lists, then the tracker labels and the ASN table (with
   about 30 built-in downloads now, a run stopped early must have fetched the
   protective ones first; found by the Android 16 e2e run).
+
+## New in 0.5.2: F-Droid signing-block fix (2026-10-04)
+
+Release APKs no longer carry the "Dependency metadata" block that AGP adds
+to the APK signing block (`dependenciesInfo` off), which F-Droid's
+`check apk` job rejects. No app or engine changes.
 
 ## New in 0.5.1: third review fixes (2026-09-29)
 
