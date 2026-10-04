@@ -60,7 +60,9 @@ table). No worktrees or feature branches are left.
    block (AGP `dependenciesInfo`). Fixed on `main` (60cc405); the published
    v0.5.1 APK can't change, so v0.5.2 was released 2026-10-04 (tag commit
    ebbbad2a8e56e41260dfc6ea9fcfb6647cb8acf7) and the MR moved to it
-   (61c600cff).
+   (61c600cff). Pipeline 2910048336 on the fork: **all jobs green**,
+   including `fdroid build` (matched the upstream v0.5.2 APK, allowed
+   signer) and `check apk`. Next: reply to linsui, wait for review/merge.
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
