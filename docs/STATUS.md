@@ -10,17 +10,21 @@ to rebuild the toolchain, run the tests and cut a release.
 
 ## Resume here (handoff of 2026-09-29)
 
-State: `main` = tag `v0.5.1` plus the release docs commit, pushed; CI
-green; v0.5.1 published as a GitHub pre-release (release-signed,
-reproducible). Every host suite and every emulator suite passes (see the
+State: `main` = tag `v0.5.2` plus the release docs commit, pushed; CI
+green; v0.5.2 published as a GitHub pre-release (release-signed,
+reproducible; same app as 0.5.1, without the dependency metadata block). Every host suite and every emulator suite passes (see the
 table). No worktrees or feature branches are left.
 
 **Waiting on the owner** (ask about these first; none can be done without them):
 
-1. **Back up the release signing key to Bitwarden.** The key exists only in
+1. **Back up the release signing key to Bitwarden.** The key is in
    `~/.vigil-release/` (`vigil-release.jks` + `keystore.properties`) on the
-   owner's machine; losing it means users can never upgrade. The Bitwarden
-   CLI is installed at `~/.local/bin/bw` (v2026.9.0, logged out). The owner
+   owner's machine and on their laptop; no off-machine backup yet. On
+   2026-10-03 it had vanished from this machine (cause unknown) and was
+   copied back from the laptop on 2026-10-04 (fingerprint and key password
+   checked). Losing it means users can never upgrade. The Bitwarden CLI is
+   installed at `~/.local/bin/bw` (v2026.9.1, logged out); the owner also
+   wants an offline copy (encrypted USB). The owner
    runs, in their own terminal (never paste the master password in chat):
    `~/.local/bin/bw login` then
    `~/.local/bin/bw unlock --raw > ~/.vigil-release/.bw-session && chmod 600 ~/.vigil-release/.bw-session`
@@ -54,8 +58,9 @@ table). No worktrees or feature branches are left.
    Pipeline 2909257416: every job passes except `check apk`, which rejects
    the upstream `vigil-0.5.1.apk` for its "Dependency metadata" signing
    block (AGP `dependenciesInfo`). Fixed on `main` (60cc405); the published
-   v0.5.1 APK can't change, so the MR needs a v0.5.2 release and the recipe
-   moved to it (owner's call).
+   v0.5.1 APK can't change, so v0.5.2 was released 2026-10-04 (tag commit
+   ebbbad2a8e56e41260dfc6ea9fcfb6647cb8acf7) and the MR moved to it
+   (61c600cff).
 3. **GitHub Support purge** of the 62 pre-rewrite commits (old author email /
    attribution trailers), still reachable by SHA: the request text is in
    `~/projects/vigil-github-purge-request.md` (outside the repo). After
@@ -97,7 +102,7 @@ backlog item 1 is still to do.
 | CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.5.1 | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, HEALTH_CHECK, this file; all brought up to date after the post-0.4.0 work | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
-| Release | [v0.5.1](https://github.com/H3xano/vigil/releases/tag/v0.5.1) pre-release, **release-signed** APK (3 ABIs, 14.0 MB), certificate `dc7a34da…8db3bc`; v0.1.0 was debug-signed | checksum verified after an anonymous download |
+| Release | [v0.5.2](https://github.com/H3xano/vigil/releases/tag/v0.5.2) pre-release, **release-signed** APK (3 ABIs, 14.0 MB), certificate `dc7a34da…8db3bc`; v0.1.0 was debug-signed | checksum verified after an anonymous download |
 
 Measured numbers (see the README "Performance" section):
 
