@@ -56,7 +56,7 @@ pub fn parse_request(buf: &[u8]) -> Sniff<HttpRequest> {
     if !plausible {
         return Sniff::NotMatched;
     }
-    let Some(end) = find(buf, b"\r\n\r\n") else {
+    let Some(end) = head_end(buf) else {
         return if buf.len() > MAX_HEADER_LEN {
             Sniff::NotMatched
         } else {
@@ -66,7 +66,8 @@ pub fn parse_request(buf: &[u8]) -> Sniff<HttpRequest> {
     let Ok(head) = std::str::from_utf8(&buf[..end]) else {
         return Sniff::NotMatched;
     };
-    let mut lines = head.split("\r\n");
+    // RFC 9112 §2.2: a bare LF is accepted as a line terminator.
+    let mut lines = head.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l));
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split(' ');
     let method = parts.next().unwrap_or_default().to_string();
@@ -74,10 +75,13 @@ pub fn parse_request(buf: &[u8]) -> Sniff<HttpRequest> {
     if !parts.next().is_some_and(|v| v.starts_with("HTTP/1.")) {
         return Sniff::NotMatched;
     }
-    let mut host = lines
-        .filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.trim().eq_ignore_ascii_case("host"))
-        .map(|(_, v)| strip_port(v.trim()).to_string());
+    // RFC 9112 §3.2.2: an absolute-form target's authority overrides Host.
+    let mut host = absolute_authority(target).map(str::to_string).or_else(|| {
+        lines
+            .filter_map(|l| l.split_once(':'))
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case("host"))
+            .map(|(_, v)| strip_port(v.trim()).to_string())
+    });
     if host.is_none() && method == "CONNECT" {
         host = Some(strip_port(target).to_string());
     }
@@ -97,8 +101,40 @@ fn strip_port(hostport: &str) -> &str {
     }
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
+/// Offset of the empty line ending the header block: `\r\n\r\n`, `\n\n`
+/// or `\r\n\n` (bare LF terminators, RFC 9112 §2.2). The head is
+/// `buf[..offset]` (without the final line's terminator).
+fn head_end(buf: &[u8]) -> Option<usize> {
+    let mut from = 0;
+    while let Some(i) = buf[from..].iter().position(|&b| b == b'\n') {
+        let i = from + i;
+        let next = &buf[i + 1..];
+        if next.starts_with(b"\n") || next.starts_with(b"\r\n") {
+            return Some(if i > 0 && buf[i - 1] == b'\r' {
+                i - 1
+            } else {
+                i
+            });
+        }
+        from = i + 1;
+    }
+    None
+}
+
+/// The host of an absolute-form request target (`http://user@host:80/x`),
+/// without userinfo or port.
+fn absolute_authority(target: &str) -> Option<&str> {
+    let (scheme, rest) = target.split_once("://")?;
+    let scheme_ok = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b));
+    if !scheme_ok {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    Some(strip_port(hostport)).filter(|h| !h.is_empty())
 }
 
 #[cfg(test)]
@@ -145,6 +181,63 @@ mod tests {
         );
         assert_eq!(parse_request(b"\x16\x03\x01"), Sniff::NotMatched);
         assert_eq!(parse_request(b"GETX"), Sniff::NotMatched);
+    }
+
+    #[test]
+    fn bare_lf_terminators() {
+        let want = Sniff::Found(HttpRequest {
+            method: "GET".into(),
+            host: Some("lf.example".into()),
+        });
+        for req in [
+            &b"GET / HTTP/1.1\nHost: lf.example\n\n"[..],
+            b"GET / HTTP/1.1\r\nHost: lf.example\r\n\n",
+            b"GET / HTTP/1.1\nHost: lf.example\r\n\r\n",
+            b"GET / HTTP/1.1\r\nX: y\nHost: lf.example\r\n\r\nbody",
+        ] {
+            assert_eq!(parse_request(req), want, "{req:?}");
+        }
+        assert_eq!(
+            parse_request(b"GET / HTTP/1.1\nHost: lf.example\n"),
+            Sniff::NeedMore
+        );
+        assert_eq!(
+            parse_request(b"GET / HTTP/1.1\r\nHost: lf.example\r\n\r"),
+            Sniff::NeedMore
+        );
+    }
+
+    #[test]
+    fn absolute_form_target_wins_over_host() {
+        let host = |req: &[u8]| match parse_request(req) {
+            Sniff::Found(r) => r.host,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            host(
+                b"GET http://user:pw@Abs.Example:8080/x?y HTTP/1.1\r\nHost: other.example\r\n\r\n"
+            )
+            .as_deref(),
+            Some("abs.example")
+        );
+        assert_eq!(
+            host(b"GET http://[2001:db8::1]:80/ HTTP/1.1\r\nHost: h.example\r\n\r\n"),
+            None,
+            "an IP-literal authority still overrides Host"
+        );
+        assert_eq!(
+            host(b"GET http://q.example?a=b HTTP/1.1\r\n\r\n").as_deref(),
+            Some("q.example")
+        );
+        // Origin-form and an empty authority fall back to Host.
+        assert_eq!(
+            host(b"GET /a://b HTTP/1.1\r\nHost: h.example\r\n\r\n").as_deref(),
+            Some("h.example")
+        );
+        assert_eq!(
+            host(b"GET http:/// HTTP/1.1\r\nHost: h.example\r\n\r\n").as_deref(),
+            Some("h.example")
+        );
     }
 
     #[test]

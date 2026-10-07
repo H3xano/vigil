@@ -322,8 +322,16 @@ impl Policy {
         if let Some(state) = &cfg.device_state {
             self.set_state(state);
         }
-        self.allow = DomainSet::from_names(&cfg.allow_domains);
-        self.deny = DomainSet::from_names(&cfg.deny_domains);
+        // Same normalisation as per-app rules: `*.example.com` covers the
+        // domain and its subdomains (suffix match).
+        let norm = |v: &[String]| {
+            DomainSet::from_names(
+                v.iter()
+                    .map(|d| crate::config::app_rules::normalize_domain(d)),
+            )
+        };
+        self.allow = norm(&cfg.allow_domains);
+        self.deny = norm(&cfg.deny_domains);
         self.block_encrypted_dns = cfg.block_encrypted_dns;
         self.block_ja4 = cfg.block_ja4_matches;
         self.nat64 = cfg.nat64_prefixes();
@@ -466,20 +474,30 @@ impl Policy {
             return Decision::Block(r);
         }
         let embedded = self.nat64_v4(ip).map(IpAddr::V4);
+        // Threat feeds take precedence (as in `check_domain`), so a C2
+        // address also on an ads list still raises a threat alert.
+        let mut first: Option<BlockReason> = None;
         for (id, lf) in &self.feeds {
             let hit = embedded
                 .filter(|v4| lf.feed.ips.contains(*v4))
                 .or_else(|| lf.feed.ips.contains(ip).then_some(ip));
             if let Some(hit) = hit {
-                return Decision::Block(BlockReason {
+                let reason = BlockReason {
                     code: format!("feed:{id}"),
                     rule: Some(hit.to_string()),
                     category: Some(lf.category),
                     ip_match: true,
-                });
+                };
+                if lf.category.is_threat() {
+                    return Decision::Block(reason);
+                }
+                first.get_or_insert(reason);
             }
         }
-        Decision::Allow
+        match first {
+            Some(r) => Decision::Block(r),
+            None => Decision::Allow,
+        }
     }
 
     /// Decision for a named destination (DNS query, SNI, HTTP Host).
@@ -835,6 +853,47 @@ mod tests {
         assert!(p.recheck_open(Some(3), Some("img.cdn.example")).is_none());
         assert_eq!(p.recheck_open(Some(10500), None).unwrap().code, "app");
         assert!(p.recheck_open(None, Some("www.news.example")).is_none());
+    }
+
+    #[test]
+    fn ip_hits_prefer_threat_feeds() {
+        let mut p = policy();
+        // "aaa-ads" sorts before "urlhaus" and lists the same range.
+        p.set_feed(
+            "aaa-ads",
+            LoadedFeed {
+                category: FeedCategory::Ads,
+                feed: parse_feed("203.0.113.0/24\n198.51.100.7\n"),
+            },
+        );
+        let Decision::Block(r) = p.check_ip(Some(1), "203.0.113.9".parse().unwrap()) else {
+            panic!()
+        };
+        assert_eq!(r.code, "feed:urlhaus");
+        assert!(r.ip_match && r.is_threat());
+        // Without a threat hit, the first non-threat feed is reported.
+        let Decision::Block(r) = p.check_ip(Some(1), "198.51.100.7".parse().unwrap()) else {
+            panic!()
+        };
+        assert_eq!(r.code, "feed:aaa-ads");
+        assert!(!r.is_threat());
+    }
+
+    #[test]
+    fn global_lists_accept_wildcards() {
+        let p = Policy::new(&Config {
+            allow_domains: vec!["*.Good.Example.".into()],
+            deny_domains: vec!["*.annoying.example".into(), " Bad.Example ".into()],
+            ..Default::default()
+        });
+        assert!(p.is_allowlisted("good.example"));
+        assert!(p.is_allowlisted("cdn.good.example"));
+        for d in ["annoying.example", "x.annoying.example", "www.bad.example"] {
+            let Decision::Block(r) = p.check_domain(Some(1), d) else {
+                panic!("{d}")
+            };
+            assert_eq!(r.code, "custom");
+        }
     }
 
     #[test]
