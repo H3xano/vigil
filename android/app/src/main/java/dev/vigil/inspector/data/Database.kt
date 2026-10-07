@@ -409,6 +409,10 @@ interface AlertDao {
     @Query("UPDATE alerts SET seen = 1 WHERE id = :id AND seen = 0")
     suspend fun markSeen(id: Long)
 
+    /** Marks seen the alerts a new mute silences (matching like AlertMutes.isMuted: any target when [target] is null). */
+    @Query("UPDATE alerts SET seen = 1 WHERE seen = 0 AND kind = :kind AND pkg = :pkg AND (:target IS NULL OR target = :target)")
+    suspend fun markMutedSeen(kind: String, pkg: String, target: String?)
+
     @Query("DELETE FROM alerts WHERE id IN (SELECT id FROM alerts WHERE ts < :before LIMIT :limit)")
     suspend fun deleteBefore(before: Long, limit: Int): Int
 

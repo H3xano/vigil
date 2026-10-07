@@ -14,4 +14,6 @@
     <string name="common_allowed">Allowed</string>
     <string name="common_off">Off</string>
     <string name="common_nothing_yet">Nothing yet</string>
+    <!-- Shown when a button opens a system screen, a web page or a file picker that this device does not have. -->
+    <string name="common_no_app">No app on this device can open this.</string>
 </resources>

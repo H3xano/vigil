@@ -62,7 +62,7 @@ import dev.vigil.inspector.ui.components.BlockedTag
 import dev.vigil.inspector.ui.components.EmptyState
 import dev.vigil.inspector.ui.components.Tag
 import dev.vigil.inspector.ui.formatBytes
-import dev.vigil.inspector.ui.formatTime
+import dev.vigil.inspector.ui.formatRowTime
 import dev.vigil.inspector.ui.theme.VigilColors
 
 @Composable
@@ -204,7 +204,7 @@ fun FlowRow(f: FlowEntity, appLabel: String, onClick: () -> Unit) {
                 )
             }
             Text(
-                listOfNotNull(appLabel, formatTime(f.ts), AsnDatabase.label(f.asn, f.asnName)).joinToString(" · "),
+                listOfNotNull(appLabel, formatRowTime(f.ts), AsnDatabase.label(f.asn, f.asnName)).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -293,7 +293,7 @@ fun DnsRow(d: DnsEntity, appLabel: String, onClick: (() -> Unit)? = null) {
                 overflow = TextOverflow.Ellipsis,
                 color = if (d.isBlocked) VigilColors.Block else MaterialTheme.colorScheme.onSurface,
             )
-            Text("$appLabel · ${formatTime(d.ts)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Text("$appLabel · ${formatRowTime(d.ts)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             TrackerTag(d.qname)
             if (d.answers.isNotEmpty()) {
                 Text(d.answers, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis,

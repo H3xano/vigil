@@ -60,6 +60,7 @@ import dev.vigil.inspector.ui.formatRelative
 import dev.vigil.inspector.R
 import dev.vigil.inspector.ui.theme.VigilColors
 import dev.vigil.inspector.vpn.VpnStatus
+import dev.vigil.inspector.ui.startActivitySafely
 
 @Composable
 fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, onStop: () -> Unit) {
@@ -127,7 +128,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                         if (settings.blockEncryptedDns) stringResource(R.string.dashboard_private_dns_blocked) else null,
                     ).joinToString(" "),
                     stringResource(R.string.dashboard_open_settings),
-                ) { context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
+                ) { context.startActivitySafely(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
             }
         }
         if (!usageAccess) {
@@ -136,7 +137,7 @@ fun DashboardScreen(vm: MainViewModel, nav: NavController, onStart: () -> Unit, 
                     stringResource(R.string.dashboard_usage_access_title),
                     stringResource(R.string.dashboard_usage_access_body),
                     stringResource(R.string.dashboard_usage_access_action),
-                ) { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                ) { context.startActivitySafely(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
             }
         }
         if (missing.isNotEmpty()) {

@@ -3,8 +3,10 @@ package dev.vigil.inspector.ui
 import androidx.compose.runtime.Composable
 import dev.vigil.inspector.R
 import java.text.DateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 fun formatBytes(b: Long): String {
     if (b < 1024) return "$b B"
@@ -44,6 +46,17 @@ fun formatRelative(ts: Long, now: Long = System.currentTimeMillis()): String = r
 fun formatTime(ts: Long): String = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date(ts))
 
 fun formatDateTime(ts: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM).format(Date(ts))
+
+/** Whether [a] and [b] (ms) fall on the same calendar day in [zone]. */
+fun sameDay(a: Long, b: Long, zone: TimeZone = TimeZone.getDefault()): Boolean {
+    val ca = Calendar.getInstance(zone).apply { timeInMillis = a }
+    val cb = Calendar.getInstance(zone).apply { timeInMillis = b }
+    return ca.get(Calendar.YEAR) == cb.get(Calendar.YEAR) && ca.get(Calendar.DAY_OF_YEAR) == cb.get(Calendar.DAY_OF_YEAR)
+}
+
+/** The time of a list row: the time alone today, with a short date on other days (paused or filtered lists reach back). */
+fun formatRowTime(ts: Long, now: Long = System.currentTimeMillis()): String =
+    if (sameDay(ts, now)) formatTime(ts) else DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(ts))
 
 fun formatDuration(ms: Long): String = when {
     ms < 1000 -> "${ms} ms"

@@ -36,11 +36,18 @@ data class PcapRequest(
 
 /** Why a [PcapRequest] cannot be served now (shown instead of the file picker), or null. */
 object CaptureExport {
-    fun unavailable(captureEnabled: Boolean, active: ActiveEngine?, request: PcapRequest): UiText? = when {
+    /**
+     * [pickedSession] is the engine session when the user asked for the
+     * file (checked again once the file is chosen): flow ids are per session,
+     * so a flow filter must not be applied to a session started meanwhile.
+     */
+    fun unavailable(captureEnabled: Boolean, active: ActiveEngine?, request: PcapRequest, pickedSession: Long? = null): UiText? = when {
         !captureEnabled -> UiText.of(R.string.capture_unavailable_off)
         active == null -> UiText.of(R.string.capture_unavailable_not_running)
         (request.session != null && request.session != active.session) || (request.itemTs != null && request.itemTs < active.session) ->
             UiText.of(R.string.capture_unavailable_earlier_session)
+        pickedSession != null && pickedSession != active.session && request.filter.flowIds.isNotEmpty() ->
+            UiText.of(R.string.capture_unavailable_restarted)
         else -> null
     }
 
@@ -87,19 +94,39 @@ object CaptureExport {
      */
     fun exportTo(context: Context, active: ActiveEngine, request: PcapRequest, target: Uri): UiText {
         val filter = request.filterAt(System.currentTimeMillis())
-        val dir = File(context.cacheDir, "capture").apply { mkdirs() }
-        val tmp = File.createTempFile("export-", ".pcapng", dir)
+        val dir = tempDir(context)
+        deleteStaleTemp(dir)
+        var tmp: File? = null
+        var ok = false
         return try {
-            val summary = active.handle.exportPcap(filter, tmp.absolutePath)
+            dir.mkdirs()
+            val file = File.createTempFile("export-", ".pcapng", dir).also { tmp = it }
+            val summary = active.handle.exportPcap(filter, file.absolutePath)
                 ?: return UiText.of(R.string.capture_export_failed_stopped)
             val out = context.contentResolver.openOutputStream(target, "wt")
                 ?: return UiText.of(R.string.capture_export_failed_open)
-            out.use { o -> tmp.inputStream().use { it.copyTo(o, 256 * 1024) } }
+            out.use { o -> file.inputStream().use { it.copyTo(o, 256 * 1024) } }
+            ok = true
             resultMessage(summary)
         } catch (e: Exception) {
             UiText.of(R.string.capture_export_failed, e.message ?: e.javaClass.simpleName)
         } finally {
-            tmp.delete()
+            tmp?.delete()
+            // Do not leave an empty or partial file behind.
+            if (!ok) discardDocument(context, target)
         }
+    }
+
+    /** Where exports are written before being copied to the chosen document. */
+    private fun tempDir(context: Context) = File(context.cacheDir, "capture")
+
+    /** Temporary files older than this are left over from an export that was interrupted (process killed). */
+    const val STALE_TEMP_MS = 60 * 60_000L
+
+    /** Deletes leftover temporary export files (older than [STALE_TEMP_MS]); called at app start and before each export. */
+    fun deleteStaleTemp(context: Context) = deleteStaleTemp(tempDir(context))
+
+    fun deleteStaleTemp(dir: File, now: Long = System.currentTimeMillis()) {
+        dir.listFiles()?.forEach { f -> if (f.isFile && now - f.lastModified() > STALE_TEMP_MS) f.delete() }
     }
 }

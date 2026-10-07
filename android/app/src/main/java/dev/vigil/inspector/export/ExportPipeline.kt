@@ -268,10 +268,14 @@ class ExportPipeline(
                 result.onSuccess { out ->
                     parts.removeFirst()
                     if (out.retry.isNotEmpty()) parts.addFirst(out.retry)
-                    // The collector takes this kind of request: records it refused alone were bad.
-                    refusals.accepted = true
-                    val heldRejected = refusals.held.size
-                    refusals.held.clear()
+                    // The collector took (or individually judged) records of this request: records it
+                    // refused alone were bad. Not when it only asked for everything again (all 429).
+                    val heldRejected = if (out.delivered > 0 || out.rejected > 0) {
+                        refusals.accepted = true
+                        refusals.held.size.also { refusals.held.clear() }
+                    } else {
+                        0
+                    }
                     settle(parts, refusals)
                     _status.update { s ->
                         s.copy(

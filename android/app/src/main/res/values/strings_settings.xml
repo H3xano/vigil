@@ -372,6 +372,7 @@
     <string name="capture_unavailable_off">Packet capture is off. Turn it on in Settings → Packet capture: vigil then keeps the most recent packets in memory, and they can be exported from here. Packets from before it was on were not recorded.</string>
     <string name="capture_unavailable_not_running">Inspection is not running. Packets are only held in memory while vigil inspects traffic.</string>
     <string name="capture_unavailable_earlier_session">This is from an earlier inspection session. Packets are only held in memory for the running session, so they are gone.</string>
+    <string name="capture_unavailable_restarted">Inspection restarted while the file was being chosen. Packets are only held in memory for the running session, so they are gone.</string>
     <string name="capture_export_failed_write">Export failed: the capture could not be written.</string>
     <string name="capture_export_failed_stopped">Export failed: inspection stopped, or the capture could not be written.</string>
     <string name="capture_export_failed_open">Export failed: the chosen file could not be opened.</string>
@@ -427,6 +428,8 @@
     <string name="export_test_sending">Sending…</string>
     <string name="export_test_sent_udp">Test event sent (UDP cannot confirm delivery)</string>
     <string name="export_test_delivered">Test event delivered</string>
+    <!-- Syslog over TCP or TLS: written to an open connection, which does not prove the collector processed it. -->
+    <string name="export_test_sent_stream">Test event sent: the collector accepted the connection, but syslog over TCP cannot confirm that it processed the event</string>
     <!-- %1$s: the error, often from the collector (may be English). -->
     <string name="export_test_failed">Failed: %1$s</string>
     <string name="export_send_test">Send test event</string>

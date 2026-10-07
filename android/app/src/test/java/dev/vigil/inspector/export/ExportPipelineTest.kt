@@ -199,6 +199,37 @@ class ExportPipelineTest {
     }
 
     @Test
+    fun heldRecordIsNotRejectedWhileTheCollectorOnlyThrottles() = runTest {
+        val bad = rec(0)
+        var throttle = true
+        val h = harness { _, batch ->
+            when {
+                bad in batch -> throw HttpStatusException(400)
+                // Every item answered 429: a successful request, but nothing was taken.
+                throttle -> SendOutcome(delivered = 0, retry = batch, detail = UiText.Raw("throttled"))
+                else -> SendOutcome(batch.size)
+            }
+        }
+        h.pipeline.offer(bad)
+        backgroundScope.launch { h.pipeline.run() }
+        runCurrent()
+        repeat(3) { h.pipeline.offer(rec(it + 1)) }
+        advanceTimeBy(70_000)
+        runCurrent()
+        // The others were throttled, not accepted: the lone refused record is not known to be bad yet.
+        assertEquals(0L, h.pipeline.status.value.rejected)
+        assertEquals(0L, h.pipeline.status.value.sent)
+        assertEquals(4, h.pipeline.status.value.queued)
+        throttle = false
+        advanceTimeBy(130_000)
+        runCurrent()
+        val s = h.pipeline.status.value
+        assertEquals(3L, s.sent)
+        assertEquals(1L, s.rejected)
+        assertEquals(0, s.queued)
+    }
+
+    @Test
     fun elasticRequestValidationErrorIsAConfigProblem() = runTest {
         val es = enabled.copy(mode = "http", url = "https://es:9200/vigil/_bulk", httpFormat = "elastic_bulk")
         val body = """{"error":{"root_cause":[{"type":"action_request_validation_exception","reason":"Validation Failed: 1: index is missing;"}],""" +

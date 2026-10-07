@@ -82,7 +82,6 @@ fun BlockDomainButtons(
 @Composable
 fun AppDomainRuleButtons(host: String, settings: Settings, vm: MainViewModel, pkg: String, label: String, offerAllow: Boolean) {
     val appRule = AppRules.matchingDomainRule(settings, pkg, host)
-    val name = host.lowercase().trimEnd('.')
     if (appRule != null) {
         val text = if (appRule.isBlock) R.string.block_remove_app_block_rule else R.string.block_remove_app_allow_rule
         OutlinedButton(onClick = { vm.removeAppDomainRule(pkg, appRule.domain) }, Modifier.fillMaxWidth()) {
@@ -90,7 +89,7 @@ fun AppDomainRuleButtons(host: String, settings: Settings, vm: MainViewModel, pk
         }
         return
     }
-    if (!DomainNames.isDomainName(name)) return
+    val name = DomainNames.ruleDomain(host) ?: return
     if (offerAllow) {
         OutlinedButton(onClick = { vm.setAppDomainRule(pkg, label, name, AppDomainRule.ALLOW) }, Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.block_allow_for_app, name, label))

@@ -187,9 +187,14 @@ fun ExportScreen(vm: MainViewModel, nav: NavController) {
                     testResult = UiText.of(R.string.export_test_sending)
                     scope.launch {
                         val r = vm.sendExportTest(candidate)
-                        val udp = candidate.mode == "syslog" && candidate.transport == "udp"
+                        // Only HTTP confirms delivery; syslog is written to a socket (UDP: not even a connection).
+                        val sent = when {
+                            candidate.mode != "syslog" -> R.string.export_test_delivered
+                            candidate.transport == "udp" -> R.string.export_test_sent_udp
+                            else -> R.string.export_test_sent_stream
+                        }
                         testResult = r.fold(
-                            { UiText.of(if (udp) R.string.export_test_sent_udp else R.string.export_test_delivered) },
+                            { UiText.of(sent) },
                             {
                                 // The collector's own error text is shown as it is.
                                 val why = (it as? ExportConfigException)?.problem ?: (it as? ExportTestRefused)?.problem

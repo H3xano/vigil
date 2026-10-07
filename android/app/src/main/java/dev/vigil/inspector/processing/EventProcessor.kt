@@ -127,7 +127,7 @@ class EventProcessor(
             alerts += newAsn.process(flows, s.newAsnAlerts, NewAsnDetector.learningMs(s.asnLearningDays))
             if (flows.isNotEmpty()) db.flows().insert(flows)
             if (dns.isNotEmpty()) db.dns().insert(dns)
-            if (alerts.isNotEmpty()) db.alerts().insert(alerts)
+            if (alerts.isNotEmpty()) db.alerts().insert(alerts.map { it.copy(seen = AlertMutes.isMuted(s.alertMutes, it)) })
             for (u in updates.values) db.flows().progress(session, u.id, u.tx, u.rx)
             for (e in ends) db.flows().finish(session, e.id, e.ts, e.tx, e.rx, e.durationMs, e.error)
         }

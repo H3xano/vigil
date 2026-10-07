@@ -51,8 +51,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.update
@@ -112,11 +114,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun <T> Flow<T>.aggregate() = throttleLatest(AGGREGATE_THROTTLE_MS)
     private fun <T> Flow<T>.list() = throttleLatest(LIST_THROTTLE_MS)
 
+    /**
+     * Runs [query] once at once, then at most once per [periodMs] after writes
+     * to [tables]. Throttling a Room flow only drops results (Room still
+     * re-runs the query on every write); this throttles the trigger instead,
+     * for the heaviest aggregates.
+     */
+    private fun <T> throttledQuery(periodMs: Long, vararg tables: String, query: suspend () -> T): Flow<T> =
+        db.invalidationTracker.createFlow(*tables).throttleLatest(periodMs).mapLatest { query() }
+
+    /** Traffic per app since [since] (scans the flows table). */
+    private fun appUsage(since: Long): Flow<List<AppUsage>> =
+        throttledQuery(AGGREGATE_THROTTLE_MS, "flows") { db.flows().appUsage(since).first() }
+
+    /** Every (app, name) pair since [since], for the tracker summaries across all apps. */
+    private fun appDomains(since: Long) =
+        throttledQuery(TRACKER_THROTTLE_MS, "destinations", "dns_queries") { db.trackerUsage().appDomains(since).first() }
+
     val totals24h: StateFlow<Totals> = since(24).flatMapLatest { db.flows().totals(it).aggregate() }.state(Totals(0, 0, 0, 0))
     val dnsCount24h: StateFlow<Long> = since(24).flatMapLatest { db.dns().countSince(it).aggregate() }.state(0)
     val dnsBlocked24h: StateFlow<Long> = since(24).flatMapLatest { db.dns().blockedSince(it).aggregate() }.state(0)
     val unseenAlerts: StateFlow<Int> = db.alerts().unseenCount().state(0)
-    val topApps: StateFlow<List<AppUsage>> = since(24).flatMapLatest { db.flows().appUsage(it).aggregate() }.state(emptyList())
+    val topApps: StateFlow<List<AppUsage>> = since(24).flatMapLatest { appUsage(it) }.state(emptyList())
 
     /**
      * The one time window of the Apps list and the app details: 7 days, or
@@ -125,7 +144,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val appWindowDays: StateFlow<Int> = settings.map { appWindowDays(it.retentionDays) }.distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, appWindowDays(settings.value.retentionDays))
     private val appWindowStart: Flow<Long> = appWindowDays.flatMapLatest { days -> since(24 * days) }
-    val appsWeek: StateFlow<List<AppUsage>> = appWindowStart.flatMapLatest { db.flows().appUsage(it).aggregate() }.state(emptyList())
+    val appsWeek: StateFlow<List<AppUsage>> = appWindowStart.flatMapLatest { appUsage(it) }.state(emptyList())
 
     val topBlocked: StateFlow<List<NameCount>> = since(24).flatMapLatest { db.dns().topBlocked(it).aggregate() }.state(emptyList())
     val alerts: StateFlow<List<AlertEntity>> = db.alerts().recent().list().state(emptyList())
@@ -376,9 +395,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Mutes alerts of [kind] for [pkg] (only those about [target], if given: "mark as expected"), with Undo. */
     fun muteAlerts(kind: String, pkg: String, target: String?, confirmation: UiText) {
-        val before = settings.value.alertMutes
-        updateSettings { it.copy(alertMutes = AlertMutes.add(it.alertMutes, AlertMute(kind, pkg, target, System.currentTimeMillis()))) }
-        showUndo(confirmation) { updateSettings { it.copy(alertMutes = before) } }
+        val mute = AlertMute(kind, pkg, target, System.currentTimeMillis())
+        var change: MuteChange? = null
+        updateSettings { s ->
+            MuteChange.of(s.alertMutes, mute).also { change = it }?.let { s.copy(alertMutes = AlertMutes.add(s.alertMutes, mute)) } ?: s
+        }
+        // Muted alerts no longer count as unread (the Alerts list hides them).
+        viewModelScope.launch { db.alerts().markMutedSeen(kind, pkg, target) }
+        val done = change
+        if (done == null) {
+            showMessage(confirmation) // already muted: nothing to undo
+        } else {
+            showUndo(confirmation) { updateSettings { it.copy(alertMutes = done.undo(it.alertMutes)) } }
+        }
     }
 
     fun unmuteAlerts(kind: String, pkg: String, target: String) =
@@ -414,13 +443,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Tracking trackers contacted per app in the Apps window (the "N trackers" tag). */
     val appTrackerCounts: StateFlow<Map<String, Int>> = withTrackers(emptyMap()) { idx ->
-        appWindowStart.flatMapLatest { db.trackerUsage().appDomains(it).throttleLatest(TRACKER_THROTTLE_MS) }
+        appWindowStart.flatMapLatest { appDomains(it) }
             .map { TrackerSummaries.trackerCountsByApp(idx, it) }
     }.state(emptyMap())
 
     /** Tracking companies by number of apps in the last 24 hours (Overview). */
     val topTrackerCompanies: StateFlow<List<CompanyApps>> = withTrackers(emptyList()) { idx ->
-        since(24).flatMapLatest { db.trackerUsage().appDomains(it).throttleLatest(TRACKER_THROTTLE_MS) }
+        since(24).flatMapLatest { appDomains(it) }
             .map { TrackerSummaries.topCompanies(idx, it) }
     }.state(emptyList())
 

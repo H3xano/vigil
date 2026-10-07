@@ -20,7 +20,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -37,12 +36,13 @@ import dev.vigil.inspector.data.TrackerDatabase
 import dev.vigil.inspector.data.TrackerIndex
 import dev.vigil.inspector.data.TrackerMatch
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.Field
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.Tag
 import dev.vigil.inspector.ui.formatCount
-import dev.vigil.inspector.ui.asString
+import dev.vigil.inspector.ui.openUrlSafely
 import dev.vigil.inspector.ui.theme.VigilColors
 
 /** Explains tracker labels (help icons). */
@@ -96,7 +96,7 @@ fun TrackerFields(host: String?) {
 @Composable
 fun TrackerLabelsHeader() {
     val index = rememberTrackerIndex()
-    val uri = LocalUriHandler.current
+    val context = LocalContext.current
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionTitle(stringResource(R.string.trackers_labels))
@@ -116,8 +116,8 @@ fun TrackerLabelsHeader() {
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(Modifier.padding(horizontal = 4.dp)) {
-            TextButton(onClick = { uri.openUri(TrackerDatabase.SOURCE_URL) }) { Text("AdGuard companiesdb") }
-            TextButton(onClick = { uri.openUri(TrackerDatabase.LICENSE_URL) }) { Text("CC BY-SA 4.0") }
+            TextButton(onClick = { context.openUrlSafely(TrackerDatabase.SOURCE_URL) }) { Text("AdGuard companiesdb") }
+            TextButton(onClick = { context.openUrlSafely(TrackerDatabase.LICENSE_URL) }) { Text("CC BY-SA 4.0") }
         }
     }
 }

@@ -40,6 +40,8 @@ import dev.vigil.inspector.ui.CaptureExport
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.PcapRequest
 import dev.vigil.inspector.ui.UiText
+import dev.vigil.inspector.ui.discardDocument
+import dev.vigil.inspector.ui.launchSafely
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.formatBytes
 import dev.vigil.inspector.ui.theme.VigilColors
@@ -234,20 +236,34 @@ fun ExportPacketsButton(vm: MainViewModel, nav: NavController, label: String, re
     val active by ServiceState.engine.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var explain by rememberSaveable { mutableStateOf<String?>(null) }
+    // The engine session when the file was asked for: flow ids are per session.
+    var pickedSession by rememberSaveable { mutableStateOf<Long?>(null) }
     // application/octet-stream: document providers append the extension of
     // a known MIME type (".pcap") to a ".pcapng" name.
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-        val engine = ServiceState.engine.value
-        if (uri == null || engine == null) return@rememberLauncherForActivityResult
+        if (uri == null) return@rememberLauncherForActivityResult
         val app = context.applicationContext
+        // Inspection may have stopped or restarted while the picker was open.
+        val engine = ServiceState.engine.value
+        val why = CaptureExport.unavailable(vm.settings.value.capture.enabled, engine, request, pickedSession)
         vm.viewModelScope.launch {
-            val msg = withContext(Dispatchers.IO) { CaptureExport.exportTo(app, engine, request, uri) }
+            val msg = if (engine == null || why != null) {
+                withContext(Dispatchers.IO) { discardDocument(app, uri) }
+                why ?: UiText.of(R.string.capture_unavailable_not_running)
+            } else {
+                withContext(Dispatchers.IO) { CaptureExport.exportTo(app, engine, request, uri) }
+            }
             vm.showMessage(msg)
         }
     }
     OutlinedButton(onClick = {
         val why = CaptureExport.unavailable(settings.capture.enabled, active, request)
-        if (why != null) explain = why.resolve(context) else picker.launch(request.fileName)
+        if (why != null) {
+            explain = why.resolve(context)
+        } else {
+            pickedSession = active?.session
+            picker.launchSafely(context, request.fileName)
+        }
     }, modifier.fillMaxWidth()) { Text(label) }
     explain?.let { text ->
         AlertDialog(
