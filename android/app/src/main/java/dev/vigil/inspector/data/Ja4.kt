@@ -55,17 +55,21 @@ object Indicators {
         return d.takeIf { DOMAIN.matches(it) && !IpLiteral.isV4(it) }
     }
 
-    /** IPv4/IPv6 address or CIDR range in canonical input form, or null. */
+    /**
+     * IPv4/IPv6 address or CIDR range, or null. IPv6 is written in its
+     * canonical form (RFC 5952), so one address always has one spelling;
+     * matching still compares parsed addresses ([IpMatcher]).
+     */
     fun ipOrCidr(raw: String): String? {
         val s = raw.trim()
         val slash = s.indexOf('/')
         val addr = if (slash < 0) s else s.substring(0, slash)
         val prefix = if (slash < 0) null else s.substring(slash + 1).toIntOrNull() ?: return null
-        return when {
-            IpLiteral.isV4(addr) -> s.takeIf { prefix == null || prefix in 0..32 }
-            IpLiteral.isV6(addr) -> s.lowercase().takeIf { prefix == null || prefix in 0..128 }
-            else -> null
-        }
+        if (IpLiteral.isV4(addr)) return s.takeIf { prefix == null || prefix in 0..32 }
+        val v6 = IpLiteral.parseV6(addr) ?: return null
+        if (prefix != null && prefix !in 0..128) return null
+        val text = IpAddrs.formatV6(v6)
+        return if (prefix == null) text else "$text/$prefix"
     }
 
     private val PACKAGE = Regex("^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$")

@@ -6,16 +6,20 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.vigil.inspector.BuildConfig
+import dev.vigil.inspector.R
 import dev.vigil.inspector.VigilApp
 import dev.vigil.inspector.data.FeedEntity
 import dev.vigil.inspector.data.FeedKinds
 import dev.vigil.inspector.data.HealthCheck
 import dev.vigil.inspector.data.HealthReport
+import dev.vigil.inspector.data.HistoryScan
 import dev.vigil.inspector.data.InstalledApps
 import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.vpn.VpnStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +28,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 
 /** State of the health check screen. The report lives in memory only and is never stored. */
 sealed interface HealthState {
@@ -53,7 +58,12 @@ class HealthCheckViewModel(application: Application) : AndroidViewModel(applicat
                 HealthState.Done(withContext(Dispatchers.IO) { check() })
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: OutOfMemoryError) {
+                // The history is streamed in bounded windows, but the process (which also
+                // runs the VPN) must survive a check that still does not fit.
+                Log.w(TAG, "health check ran out of memory", e)
+                HealthState.Failed(app.getString(R.string.health_failed_memory))
+            } catch (e: Throwable) {
                 Log.w(TAG, "health check failed", e)
                 HealthState.Failed(e.message ?: e.javaClass.simpleName)
             }
@@ -62,7 +72,9 @@ class HealthCheckViewModel(application: Application) : AndroidViewModel(applicat
 
     private suspend fun check(): HealthReport {
         val db = app.db
-        val observed = db.dns().observedNames() + db.flows().observedDomains() + db.flows().observedIps() + db.destinations().observed()
+        val job = coroutineContext[Job]
+        val observed = HistoryScan.observed(db) { job?.ensureActive() }.asIterable()
+        val distinct = db.flows().countObservedNames()
         val since = listOfNotNull(db.dns().oldest(), db.flows().oldest()).minOrNull()
         val labels = HashMap<String, String>()
         return HealthCheck.run(
@@ -72,6 +84,7 @@ class HealthCheckViewModel(application: Application) : AndroidViewModel(applicat
                 packs = app.feeds.spywarePacks(),
                 apps = InstalledApps.collect(app),
                 observed = observed,
+                destinationsChecked = distinct,
                 historySince = since,
                 retentionDays = app.settings.value.retentionDays,
                 inspectionRunning = ServiceState.status.value is VpnStatus.Running,

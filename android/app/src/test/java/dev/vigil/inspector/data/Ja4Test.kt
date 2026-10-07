@@ -44,6 +44,10 @@ class Ja4Test {
         assertNull(Indicators.domain("evil example.com"))
         assertEquals("198.51.100.0/24", Indicators.ipOrCidr("198.51.100.0/24"))
         assertEquals("2001:db8::/32", Indicators.ipOrCidr("2001:DB8::/32"))
+        // IPv6 is written canonically (RFC 5952), whatever the source's spelling.
+        assertEquals("2001:db8::1", Indicators.ipOrCidr("2001:DB8:0:0::1"))
+        assertEquals("2001:db8::/48", Indicators.ipOrCidr(" 2001:0db8:0000::/48 "))
+        assertNull(Indicators.ipOrCidr("2001:db8::/129"))
         assertNull(Indicators.ipOrCidr("198.51.100.0/33"))
         assertNull(Indicators.ipOrCidr("evil.example"))
         assertEquals("evil.example", Indicators.urlHost("https://user:pw@Evil.Example:8443/a?b#c"))

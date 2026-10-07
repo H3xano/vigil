@@ -12,6 +12,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dev.vigil.inspector.data.AppResolver
 import dev.vigil.inspector.data.FeedRepository
+import dev.vigil.inspector.data.HistoryCap
 import dev.vigil.inspector.data.SettingsStore
 import dev.vigil.inspector.data.SpywareLabels
 import dev.vigil.inspector.data.TrackerLabels
@@ -22,9 +23,12 @@ import dev.vigil.inspector.processing.ExfilDetector
 import dev.vigil.inspector.processing.ForegroundTracker
 import dev.vigil.inspector.vpn.ServiceState
 import dev.vigil.inspector.vpn.VpnStatus
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
@@ -36,7 +40,14 @@ import java.util.concurrent.TimeUnit
 
 /** Application-wide singletons (a small hand-rolled service locator). */
 class VigilApp : Application() {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * A failure in one background job (e.g. a Room error on a full disk) is
+     * logged, not rethrown: with always-on VPN a crash here would bring the
+     * process down again on every start.
+     */
+    val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "background job failed", e) },
+    )
     val db by lazy { VigilDatabase.create(this) }
     val settings by lazy { SettingsStore(this) }
     val apps by lazy { AppResolver(this) }
@@ -56,14 +67,33 @@ class VigilApp : Application() {
         super.onCreate()
         notifier.createChannels()
         scope.launch {
-            feeds.seedBuiltins()
-            feeds.schedulePeriodic()
-            scheduleMaintenance()
-            pruneOldData()
+            // Each step on its own: one failing must not skip the others.
+            guarded("seeding the built-in feeds") { feeds.seedBuiltins() }
+            guarded("scheduling feed updates") { feeds.schedulePeriodic() }
+            guarded("scheduling maintenance") { scheduleMaintenance() }
+            guarded("pruning the history") { pruneOldData() }
         }
         // A shorter retention takes effect right away, not at the next daily run.
         scope.launch {
-            settings.flow.map { it.retentionDays }.distinctUntilChanged().drop(1).collect { pruneOldData() }
+            settings.flow.map { it.retentionDays }.distinctUntilChanged().drop(1).collect { guarded("pruning the history") { pruneOldData() } }
+        }
+        // The size cap also between the daily runs: a busy device can record a lot in a day.
+        scope.launch {
+            while (true) {
+                delay(SIZE_CHECK_INTERVAL_MS)
+                guarded("capping the history size") { pruneLock.withLock { enforceSizeCap() } }
+            }
+        }
+    }
+
+    /** Runs [block], logging any failure instead of crashing the process (cancellation still propagates). */
+    private suspend fun guarded(what: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.e(TAG, "$what failed", e)
         }
     }
 
@@ -85,6 +115,35 @@ class VigilApp : Application() {
         deleted += db.destinations().deleteBefore(now - maxOf(days, DESTINATION_MIN_DAYS) * DAY_MS)
         deleted += db.appAsns().deleteBefore(now - maxOf(days, DESTINATION_MIN_DAYS) * DAY_MS)
         if (deleted > 0) Log.i(TAG, "pruned $deleted rows older than $days days")
+        enforceSizeCap()
+    }
+
+    /**
+     * Applies [HistoryCap]: deletes the oldest connections and lookups in
+     * chunks while the database holds more than the cap. Call with
+     * [pruneLock] held.
+     */
+    private suspend fun enforceSizeCap() {
+        var deleted = 0
+        var steps = 0
+        while (steps < HistoryCap.MAX_STEPS) {
+            val table = HistoryCap.next(usedBytes(), trimming = steps > 0, db.flows().oldest(), db.dns().oldest()) ?: break
+            val n = when (table) {
+                HistoryCap.Table.FLOWS -> db.flows().deleteOldest(HistoryCap.CHUNK)
+                HistoryCap.Table.DNS -> db.dns().deleteOldest(HistoryCap.CHUNK)
+            }
+            if (n == 0) break
+            deleted += n
+            steps++
+        }
+        if (deleted > 0) Log.i(TAG, "history over ${HistoryCap.MAX_BYTES / (1024 * 1024)} MB: deleted the $deleted oldest rows")
+    }
+
+    /** Bytes of data in the database (pages in use; see [HistoryCap.usedBytes]). */
+    private suspend fun usedBytes(): Long = withContext(Dispatchers.IO) {
+        val sql = db.openHelper.readableDatabase
+        fun pragma(name: String): Long = sql.query("PRAGMA $name").use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
+        HistoryCap.usedBytes(pragma("page_count"), pragma("freelist_count"), pragma("page_size"))
     }
 
     private suspend fun drain(step: suspend () -> Int): Int {
@@ -141,6 +200,7 @@ class VigilApp : Application() {
         const val DAY_MS = 86_400_000L
         const val CHUNK = 5_000
         const val DESTINATION_MIN_DAYS = 90
+        const val SIZE_CHECK_INTERVAL_MS = 3_600_000L
     }
 }
 

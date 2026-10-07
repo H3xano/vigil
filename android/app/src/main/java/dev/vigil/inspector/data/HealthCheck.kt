@@ -126,8 +126,14 @@ object HealthCheck {
         /** Spyware feeds with their downloaded pack (null if off or not downloaded). */
         val packs: List<Pair<FeedEntity, SpywarePack?>>,
         val apps: List<InstalledApp>,
-        /** Names and addresses from the history (any mix of DNS, connections and learned destinations). */
-        val observed: List<ObservedName>,
+        /**
+         * Names and addresses from the history (any mix of DNS, connections and
+         * learned destinations), iterated once. The history can hold millions of
+         * rows: the caller streams them (see [HistoryScan]) and only matches are kept.
+         */
+        val observed: Iterable<ObservedName>,
+        /** Distinct names and addresses in the history, when counted by the caller (null: counted from [observed]). */
+        val destinationsChecked: Int? = null,
         val historySince: Long?,
         val retentionDays: Int,
         val inspectionRunning: Boolean,
@@ -144,17 +150,14 @@ object HealthCheck {
         val byApp = HashMap<String, MutableList<Ref>>()
         val byCert = HashMap<String, MutableList<Ref>>()
         val byDomain = HashMap<String, MutableList<Ref>>()
-        val byIp = HashMap<String, MutableList<Ref>>()
-        val cidrs = ArrayList<Pair<Cidr4, Ref>>()
+        // Addresses by value and ranges by containment, IPv4 and IPv6 alike.
+        val byIp = IpMatcher<Ref>()
         for (p in loaded) for (g in p.groups) {
             val ref = Ref(g, p)
             g.apps.forEach { byApp.getOrPut(it.lowercase()) { ArrayList() } += ref }
             g.certs.forEach { byCert.getOrPut(it) { ArrayList() } += ref }
             g.domains.forEach { byDomain.getOrPut(it) { ArrayList() } += ref }
-            for (ip in g.ips) {
-                val c = if ('/' in ip) Cidr4.parse(ip) else null
-                if (c != null) cidrs += c to ref else byIp.getOrPut(ip.lowercase()) { ArrayList() } += ref
-            }
+            for (ip in g.ips) byIp.add(ip, ref)
         }
 
         val findings = LinkedHashMap<String, HealthFinding>()
@@ -186,14 +189,14 @@ object HealthCheck {
             }
         }
 
-        val names = HashSet<String>()
+        // Only counted here when the caller did not count them (tests, small inputs).
+        val names = if (input.destinationsChecked == null) HashSet<String>() else null
         for (o in input.observed) {
             val name = o.name.trim().lowercase().removeSuffix(".")
             if (name.isEmpty()) continue
-            names += name
+            names?.add(name)
             val hits: List<Pair<String, Ref>> = if (IpLiteral.isV4(name) || IpLiteral.isV6(name)) {
-                byIp[name].orEmpty().map { name to it } +
-                    (Cidr4.address(name)?.let { a -> cidrs.filter { it.first.contains(a) }.map { it.first.text to it.second } } ?: emptyList())
+                byIp.match(name).map { it.text to it.value }
             } else {
                 suffixes(name).flatMap { s -> byDomain[s].orEmpty().map { s to it } }
             }
@@ -230,7 +233,7 @@ object HealthCheck {
         }
         return HealthReport(
             generatedAt = input.now, appVersion = input.appVersion, verdict = verdict, findings = sorted, packs = packs,
-            appsChecked = input.apps.size, destinationsChecked = names.size, historySince = input.historySince,
+            appsChecked = input.apps.size, destinationsChecked = input.destinationsChecked ?: names?.size ?: 0, historySince = input.historySince,
             retentionDays = input.retentionDays, inspectionRunning = input.inspectionRunning,
             notes = notes(input, packs, loaded.isEmpty()).map(input.text),
             guidance = GUIDANCE.map(input.text),
@@ -275,25 +278,6 @@ object HealthCheck {
     private fun minOfNullable(a: Long?, b: Long?) = if (a == null) b else if (b == null) a else minOf(a, b)
     private fun maxOfNullable(a: Long?, b: Long?) = if (a == null) b else if (b == null) a else maxOf(a, b)
     private fun sumNullable(a: Long?, b: Long?) = if (a == null) b else if (b == null) a else a + b
-
-    /** An IPv4 range for matching the rare CIDR indicators. */
-    class Cidr4(val text: String, private val base: Long, private val mask: Long) {
-        fun contains(address: Long) = (address and mask) == base
-
-        companion object {
-            fun address(s: String): Long? {
-                if (!IpLiteral.isV4(s)) return null
-                return s.split('.').fold(0L) { acc, p -> (acc shl 8) or (p.toLongOrNull() ?: return null) }
-            }
-
-            fun parse(s: String): Cidr4? {
-                val a = address(s.substringBefore('/')) ?: return null
-                val bits = s.substringAfter('/').toIntOrNull()?.takeIf { it in 0..32 } ?: return null
-                val mask = if (bits == 0) 0L else (0xFFFFFFFFL shl (32 - bits)) and 0xFFFFFFFFL
-                return Cidr4(s, a and mask, mask)
-            }
-        }
-    }
 
     // --- Report export -----------------------------------------------------------------------------
 

@@ -119,6 +119,22 @@ class EventProcessor(
                 }
             }
         }
+        // An engine error must reach the service (which restarts the engine) even
+        // if storing the batch fails, e.g. on a full disk.
+        try {
+            store(flows, dns, alerts, updates.values, ends)
+        } finally {
+            engineError?.let(onEngineError)
+        }
+    }
+
+    private suspend fun store(
+        flows: List<FlowEntity>,
+        dns: List<DnsEntity>,
+        alerts: MutableList<AlertEntity>,
+        updates: Collection<FlowUpdateEvent>,
+        ends: List<FlowEndEvent>,
+    ) {
         // Alerts raised here (new_destination, new_asn) rather than by the engine.
         val engineAlerts = alerts.size
         db.withTransaction {
@@ -128,7 +144,7 @@ class EventProcessor(
             if (flows.isNotEmpty()) db.flows().insert(flows)
             if (dns.isNotEmpty()) db.dns().insert(dns)
             if (alerts.isNotEmpty()) db.alerts().insert(alerts)
-            for (u in updates.values) db.flows().progress(session, u.id, u.tx, u.rx)
+            for (u in updates) db.flows().progress(session, u.id, u.tx, u.rx)
             for (e in ends) db.flows().finish(session, e.id, e.ts, e.tx, e.rx, e.durationMs, e.error)
         }
         // Exported like engine alerts (same record shape, same export level, mutes not applied), once stored.
@@ -140,7 +156,6 @@ class EventProcessor(
             alerts.filter { (it.severity == "high" || it.severity == "medium") && !AlertMutes.isMuted(s.alertMutes, it) }
                 .forEach(notifier::notify)
         }
-        engineError?.let(onEngineError)
     }
 
     /**
