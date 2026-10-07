@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.5.3 (unreleased)
+
+Fixes from a fourth full review (2026-10-07: engine data path, upstream and
+capture, parsers and policy, service and data, UI and export, by five
+parallel reviewers), plus a review of the fixes themselves.
+
+Engine:
+
+- **Blocking and detection:** `block_encrypted_dns` also catches DoH to the
+  well-known resolver addresses (1.1.1.1, 8.8.8.8, 9.9.9.9, AdGuard, and
+  their IPv6 forms) when no name is sent. Allowlisting a name (globally or
+  per app) now also lifts a CNAME-cloaking block on it. An address on both
+  an ad/tracking list and a threat list is reported as the threat (it used
+  to be whichever feed id sorted first, so no threat alert). Global allow
+  and deny entries of the form `*.example.com` are no longer dropped.
+- **Feeds:** the hosts-file header of lists such as StevenBlack put `local`
+  in the blocklist, which blocked every `*.local` name; header lines are
+  skipped, and single-label names and IP literals are rejected. A leading
+  `.` is accepted. Unknown feed categories no longer silently load as
+  `tracking` (the feed is skipped and logged).
+- **Per-app rules:** a flow that a per-app rule cuts while it is being
+  set up (e.g. the app went to the background) no longer sends its first
+  bytes or held UDP datagrams; device-state changes during setup are no
+  longer missed (subscription and recheck ordering).
+- **DNS labels:** answers from resolvers an app chose itself no longer
+  label other apps' connections (an app could name any address).
+- **SOCKS5:** the UDP relay is always the proxy's own address (a reply
+  naming another host could send UDP elsewhere, outside the proxy).
+  `send_domain` connects by name only when vigil's resolver answered that
+  name with the dialled address (an app could dial a decoy address with the
+  SNI of a host on an IP feed); the DNS cache keeps up to four names per
+  address for this.
+- **WireGuard:** IPv4-mapped IPv6 destinations follow the tunnel's rules
+  (fail-closed); multicast/broadcast tunnel addresses and MTUs above 65400
+  are rejected; an oversized datagram no longer makes the socket rebind in
+  a loop.
+- **Packet capture:** resize and export no longer double memory or hold
+  the ring lock for a full copy (export streams in 1 MiB chunks); exported
+  files declare a snap length that covers every record, and PCAP-over-IP
+  always declares 65535.
+- **Robustness:** `udp_idle_timeout_s` (≤ 86400) and the resource caps
+  (≤ 1 048 576) are bounded (an overflow could stop all UDP); an evicted UDP
+  flow keeps its setup slot until its lookup ends; UDP flows open at shutdown
+  end with "engine stopped"; HTTP requests with bare-LF line ends no longer
+  stall 3 s, and absolute-form targets name the flow; QUIC lengths are
+  checked on 32-bit; JA4 uses the raw ALPN bytes and sets the SNI flag
+  whenever the extension is present.
+
+App:
+
+- **History:** the database is capped at 300 MB (oldest connections and DNS
+  lookups trimmed first; alerts kept). The health check reads the history in
+  windows instead of loading it whole (it could run the process, and so the
+  VPN, out of memory), matches IPv6 indicators in any spelling and IPv6
+  ranges.
+- **Service:** a database error while starting no longer leaves an engine
+  and interface nobody owns; an engine error is acted on even if storing its
+  batch fails; app-wide background jobs log failures instead of crashing;
+  Stop no longer waits for an ASN table load to finish.
+- **Alerts:** muted alerts no longer count as unread; Undo of a mute removes
+  only that mute.
+- **Packet export:** checks again after the file picker (inspection stopped
+  or restarted meanwhile), deletes the empty file and says why; stale
+  temporary files are cleaned up.
+- **Other:** "Test event sent" (not "delivered") for TCP/TLS syslog; no crash
+  when a system screen or file picker is missing; WireGuard `.conf` read off
+  the main thread; Activity rows show the date when not today; per-app and
+  global rule domains are converted to ASCII (IDN), so Unicode names work;
+  the `encrypted_dns` block reason is explained; heavy Overview queries run
+  at most once per throttle period; an Elastic batch that only got 429s no
+  longer discards held records.
+
+Build and CI:
+
+- CI: least-privilege token, actions pinned by commit, `cargo audit`,
+  `--locked`, cargo-ndk pinned, Gradle wrapper validation, the CI APK
+  uploaded unsigned; Dependabot (monthly, grouped).
+- The e2e capture stage no longer fails on hosts with slow reverse DNS.
+- README performance figures updated.
+
 ## 0.5.2 (2026-10-04): GitHub pre-release
 
 - Release APKs no longer carry the "Dependency metadata" signing block

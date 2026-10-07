@@ -1,0 +1,6 @@
+Fixes from a fourth code review:
+• DoH to resolver addresses (1.1.1.1, 8.8.8.8…) is caught; allowing a name also undoes its CNAME block; hosts lists no longer block .local names.
+• An IP on both an ad and a threat list raises the threat alert.
+• Per-app rules: no leak when an app is cut as a connection opens; Unicode domains work.
+• History size cap, lighter health check, safer stop and restart.
+• UI fixes: alert mutes, unread badge, packet export.

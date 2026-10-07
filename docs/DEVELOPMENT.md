@@ -44,10 +44,10 @@ app. Every one was green after the post-0.4.0 work; the counts are from
 those runs.
 
 ```sh
-cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace   # 190 unit tests
-scripts/e2e-netns.sh          # 209 checks: direct, beacon (in-flow beaconing), apprules (per-app conditions and device state), capture (PCAPng export, PCAP-over-IP), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
+cd core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --locked   # 216 unit tests
+scripts/e2e-netns.sh          # 210 checks: direct, beacon (in-flow beaconing), apprules (per-app conditions and device state), capture (PCAPng export, PCAP-over-IP), edns (encrypted DNS, also via SOCKS5), socks5, wireguard stages (E2E_STAGES=...), needs internet, no root
 scripts/jni-smoke.sh          # 38 checks, no root
-cd android && ./gradlew lintDebug testDebugUnitTest   # 212 JVM tests (1 skipped: TaxiiLiveTest)
+cd android && ./gradlew lintDebug testDebugUnitTest   # 275 JVM tests (1 skipped: TaxiiLiveTest)
 scripts/android-e2e.sh        # 28 checks, needs an emulator/userdebug device (see below)
 scripts/android-lifecycle.sh  # 21 checks + always-on at boot (reboots; SKIP_BOOT=1 to skip)
 scripts/android-features.sh   # 14 checks: DoH via Quad9, SOCKS5 via a proxy on the host, fail-closed, Maximum throughput restart

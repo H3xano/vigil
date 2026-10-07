@@ -5,7 +5,7 @@ members = ["vigil-core", "vigil-jni", "vigil-cli"]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/H3xano/vigil"

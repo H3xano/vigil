@@ -1,19 +1,31 @@
 # Project status and handoff
 
-Last updated: 2026-10-04, version 0.5.2 (APK without the dependency
-metadata signing block, for F-Droid; no app changes), GitHub pre-release.
+Last updated: 2026-10-07, version 0.5.3 prepared on `main` (fixes from a
+fourth review; not tagged or released yet). Latest release: 0.5.2 (APK
+without the dependency metadata signing block, for F-Droid; no app
+changes), GitHub pre-release.
 
 Read this first when resuming work. It records what exists, what has been
 verified and how, what is still missing (in priority order), and why the
 non-obvious decisions were made. [DEVELOPMENT.md](DEVELOPMENT.md) covers how
 to rebuild the toolchain, run the tests and cut a release.
 
-## Resume here (handoff of 2026-09-29)
+## Resume here (handoff of 2026-10-07)
 
-State: `main` = tag `v0.5.2` plus the release docs commit, pushed; CI
-green; v0.5.2 published as a GitHub pre-release (release-signed,
-reproducible; same app as 0.5.1, without the dependency metadata block). Every host suite and every emulator suite passes (see the
-table). No worktrees or feature branches are left.
+State: `main` holds version 0.5.3 (fourth review fixes, see "New in 0.5.3"),
+pushed; every host suite passes on it (counts in the table). **Not yet
+done for 0.5.3:** the four emulator suites on Android 15 and 16 (on
+2026-10-07 the emulator could not start: the user's desktop session was
+inactive, so logind had removed the KVM ACL on `/dev/kvm`; unlock the
+session or `sudo setfacl -m u:$USER:rw /dev/kvm`), then the release
+checklist from step 3 (tag, build, upgrade test, publish) once the owner
+asks, and the F-Droid recipe/MR bump to 0.5.3. v0.5.2 is the published
+GitHub pre-release.
+
+Dependabot (added 2026-10-07) opened 8 PRs before its config was
+restricted (monthly, grouped, Rust patch releases only, AndroidX versions
+needing compileSdk 37 ignored); #1–#8 are still open for the owner to close
+or merge (#6 tokio-rustls 0.26.6 is a patch release and passes CI).
 
 **Waiting on the owner** (ask about these first; none can be done without them):
 
@@ -96,12 +108,12 @@ backlog item 1 is still to do.
 
 | Area | State | Verified by |
 |---|---|---|
-| Rust engine (`core/vigil-core`) | done | 190 unit tests (1 ignored: `wg_bench`), 209 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / apprules / capture / edns / socks5 / wireguard) |
+| Rust engine (`core/vigil-core`) | done | 216 unit tests (1 ignored: `wg_bench`), 210 end-to-end checks with real traffic (`scripts/e2e-netns.sh`, stages direct / beacon / apprules / capture / edns / socks5 / wireguard) |
 | JNI layer (`core/vigil-jni`) | done | 38 checks from a real JVM (`scripts/jni-smoke.sh`) |
-| Android app (`android/`) | done | 237 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16: 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
+| Android app (`android/`) | done | 275 Kotlin unit tests (1 skipped: live TAXII), lint clean; on-device on Android 15 **and** 16 (last run on 0.5.2; 0.5.3 pending): 28 (`android-e2e.sh`), 23 lifecycle (`android-lifecycle.sh`), 14 features (`android-features.sh`), 12 new-feature checks (`android-newfeatures.sh`: tracker and spyware downloads, spyware sinkhole, health check screen, PCAP-over-IP, per-app network conditions) |
 | Release APK (R8-minified) | builds, runs | reproducible (signed and unsigned builds from two clean clones in different paths, identical apart from signatures; no build paths in `libvigil.so`); installed over the published v0.5.0 on Android 16: schema 4 and rows kept, traffic flows, every screen opens, no JNI/serialization errors or crashes in logcat |
 | Linux CLI (`core/vigil-cli`) | done | used by the e2e and benchmark scripts |
-| CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions at v0.5.1 | both jobs: engine (fmt, clippy, tests, netns e2e, JNI) and android (lint, unit tests, release APK artifact) |
+| CI (`.github/workflows/ci.yml`) | **green** on GitHub Actions | three jobs: engine (fmt, clippy, tests, netns e2e, JNI), audit (`cargo audit`) and android (wrapper validation, lint, unit tests, unsigned release APK artifact); actions pinned by commit, `permissions: contents: read` |
 | Docs | README, ARCHITECTURE, EVENTS, PRIVACY, DEVELOPMENT, HEALTH_CHECK, this file; all brought up to date after the post-0.4.0 work | |
 | Repository | **public** since 2026-09-28: https://github.com/H3xano/vigil (`main`) | |
 | Release | [v0.5.2](https://github.com/H3xano/vigil/releases/tag/v0.5.2) pre-release, **release-signed** APK (3 ABIs, 14.0 MB), certificate `dc7a34da…8db3bc`; v0.1.0 was debug-signed | checksum verified after an anonymous download |
@@ -248,6 +260,26 @@ the merged tree. CHANGELOG.md (0.5.0) lists everything; the highlights:
   packs, then other lists, then the tracker labels and the ASN table (with
   about 30 built-in downloads now, a run stopped early must have fetched the
   protective ones first; found by the Android 16 e2e run).
+
+## New in 0.5.3: fourth review fixes (2026-10-07, not yet released)
+
+A fourth full review by five parallel reviewers (engine data path,
+upstream/capture/JNI, parsers/policy, service/data, UI/export/CI) found no
+crash reachable from the network and no black-hole, but about 50 smaller
+problems, including most of the open 2026-09-29 findings. They were fixed by
+five agents in worktrees, merged, then the merged diff was reviewed again
+and its findings fixed too. CHANGELOG.md (0.5.3) lists everything. The most
+user-visible: StevenBlack-style hosts headers blocked every `*.local` name;
+allowlisting a name did not lift its CNAME-cloaking block; threat IPs also on
+an ad list raised no threat alert; DoH to 1.1.1.1/8.8.8.8 by address escaped
+`block_encrypted_dns`; the health check could run the shared process (and so
+the VPN) out of memory on a long history, which now also has a 300 MB cap.
+Also: CI hardening (pinned actions, `cargo audit`, least privilege) and
+Dependabot.
+
+Verified: every host suite (fmt, clippy, 216 Rust tests, 210 netns e2e
+checks, JNI smoke, lint, 275 Kotlin tests). Not yet: the emulator suites
+(see "Resume here").
 
 ## New in 0.5.2: F-Droid signing-block fix (2026-10-04)
 
@@ -403,26 +435,14 @@ Health check); retention and clear history.
       are still stored as English text.
     - Persist unsent SIEM alerts across process death (the retry queue is
       in memory).
-11. **Open findings of the 2026-09-29 review** (lower priority, not fixed):
-    no size cap on the history database (age-based pruning only; the
-    health-check queries load every group); `block_encrypted_dns` misses DoH
-    to IP literals (1.1.1.1, 8.8.8.8); fire-and-forget UDP from a blocked
-    app can pass unattributed when the UID lookup finds no socket (not
-    verified on a device); the HTTP Host sniffer ignores absolute-form
-    targets and stalls 3 s on bare-LF requests; answers from app-chosen
-    resolvers poison the IP-to-name cache for every app; per-app cut races
-    (`open_cuttable_flow` re-checks before inserting; the UDP watch
-    subscribes after the decision); `udp_idle_timeout_s` has no upper bound
-    (overflow panic); QUIC varint `as usize` truncation on 32-bit; unknown
-    feed categories silently become `tracking`; health check misses
-    non-canonical IPv6 and IPv6 CIDR indicators; capture ring resize/export
-    doubles memory under the lock; SOCKS5 UDP relay address not validated;
-    `send_domain` lets the proxy reach a name whose IPs were never checked
-    against IP feeds; UI nits (unread badge counts muted alerts, Undo of a
-    mute restores the whole list, export after the SAF picker can fail
-    silently, stale PCAP temp files); CI (actions not pinned by SHA, no
-    `permissions:`, no `cargo audit`); README performance numbers
-    outdated.
+11. **Open review findings** (lower priority; everything else from the
+    2026-09-29 and 2026-10-07 reviews was fixed in 0.5.3): fire-and-forget
+    UDP from a blocked app can pass unattributed when the UID lookup finds
+    no socket (not verified on a device); `stats.blocked` can count a flow
+    twice when it is cut at open and by a concurrent recheck; Undo of an
+    alert mute leaves the alerts it marked read as read; the health check's
+    distinct-name count is a SQL `UNION` over the whole history (temporary
+    memory in SQLite, bounded by the 300 MB history cap).
 
 ## Known limitations (by design or platform)
 
@@ -495,4 +515,9 @@ Health check); retention and clear history.
 | Spyware packs from MVT's index and Echap, downloaded by the device; labels kept app-side | Source allowlist (mvt-project, AmnestyTech, AssoEchap on GitHub); the engine carries no per-entry labels for domain feeds. A small hand-written YAML reader instead of a YAML library. |
 | AdGuard companiesdb for tracker labels, not loaded by the engine | CC BY-SA 4.0 (commercial use allowed; DuckDuckGo, Ghostery and Disconnect data are non-commercial); labels are looked up at display and export time. |
 | UI strings in one resource file per area; `UiText` for text built without a Context | Smaller files for translators (one Weblate component each) and no merge conflicts between areas; data-layer and view-model messages stay testable on the JVM by comparing resource ids. Alert messages stay English in Room and the SIEM export (machine data); screens render a translated sentence from kind + detail, falling back to the stored message. |
+| DNS answers label flows only when they come from vigil's own resolver | Answers from an app's hard-coded resolver could name any address for every app (and steer `send_domain`). |
+| SOCKS5 `send_domain` only for names vigil resolved to the dialled address | Only the dialled address went through the IP feeds; a decoy address with a C2's SNI would otherwise reach the C2 by name. The cache keeps four names per address so shared CDN addresses still work. |
+| History capped at 300 MB (oldest connections/DNS first, alerts kept) | Age-based pruning alone let a busy device with 90-day retention grow without bound; the health check and VACUUM scale with it. |
+| An unknown feed category skips that feed, never rejects the config | It must not silently become `tracking` (no threat alerts), and one bad feed must not keep inspection from starting (always-on lockdown would leave the device offline). |
+| Dependabot: Rust patch releases only | Most engine crates are 0.x, where Dependabot's "minor" is breaking (smoltcp also needs the vendored netstack patch); `cargo audit` in CI covers security advisories. |
 | F-Droid recipe uses Debian's `rustup` (+ `build-essential`), not the rustup srclib | Requested by the fdroiddata reviewer; same official toolchain binaries, so the build stays reproducible (verified on the v0.5.1 libraries). |
