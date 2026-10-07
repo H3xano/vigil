@@ -167,7 +167,7 @@ dependencies {
     //noinspection GradleDependency: needs compileSdk 37
     implementation("androidx.lifecycle:lifecycle-service:2.10.0")
     //noinspection GradleDependency: needs compileSdk 37
-    implementation("androidx.navigation:navigation-compose:2.9.8")
+    implementation("androidx.navigation:navigation-compose:2.10.2")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
 
     implementation("androidx.room:room-runtime:2.8.5")
