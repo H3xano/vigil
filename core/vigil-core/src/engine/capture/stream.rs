@@ -16,7 +16,7 @@
 //! connecting socket: on Android the shell (`adb forward`) or root.
 
 use super::pcap::pcap_global_header;
-use crate::config::capture::StreamConfig;
+use crate::config::capture::{StreamConfig, DEFAULT_SNAPLEN};
 use crate::config::upstream::Cidr;
 use crate::platform::Platform;
 use bytes::Bytes;
@@ -71,7 +71,7 @@ pub struct StreamStats {
 
 #[derive(Default)]
 struct Server {
-    config: Option<(StreamConfig, u32)>,
+    config: Option<StreamConfig>,
     task: Option<tokio::task::AbortHandle>,
 }
 
@@ -140,13 +140,9 @@ impl Hub {
     /// Starts, restarts or stops the server for `config` (None: off). Must
     /// run inside the engine's runtime when starting one. `platform`
     /// identifies clients connecting from the device itself.
-    pub fn apply(
-        self: &Arc<Self>,
-        config: Option<(&StreamConfig, u32)>,
-        platform: &Arc<dyn Platform>,
-    ) {
+    pub fn apply(self: &Arc<Self>, config: Option<&StreamConfig>, platform: &Arc<dyn Platform>) {
         let mut server = self.server.lock();
-        let wanted = config.map(|(c, s)| (c.clone(), s));
+        let wanted = config.cloned();
         if server.config == wanted {
             return;
         }
@@ -156,7 +152,7 @@ impl Hub {
         self.disconnect_all();
         *self.status.lock() = (None, None);
         server.config = wanted.clone();
-        let Some((cfg, snaplen)) = wanted else {
+        let Some(cfg) = wanted else {
             return;
         };
         let Some(ip) = cfg.bind_addr() else {
@@ -171,7 +167,7 @@ impl Hub {
         let addr = SocketAddr::new(ip, cfg.port);
         let allow = cfg.allowlist();
         let platform = platform.clone();
-        server.task = Some(tokio::spawn(serve(hub, addr, allow, snaplen, platform)).abort_handle());
+        server.task = Some(tokio::spawn(serve(hub, addr, allow, platform)).abort_handle());
     }
 
     /// Stops the server and disconnects every client.
@@ -266,13 +262,7 @@ async fn local_client_allowed(
     (platform.local_stream_client_allowed(uid), uid)
 }
 
-async fn serve(
-    hub: Arc<Hub>,
-    addr: SocketAddr,
-    allow: Vec<Cidr>,
-    snaplen: u32,
-    platform: Arc<dyn Platform>,
-) {
+async fn serve(hub: Arc<Hub>, addr: SocketAddr, allow: Vec<Cidr>, platform: Arc<dyn Platform>) {
     let listener = loop {
         match bind(addr) {
             Ok(l) => break l,
@@ -326,7 +316,7 @@ async fn serve(
             let h = hub.clone();
             let q = queued.clone();
             let task = tokio::spawn(async move {
-                if let Err(e) = client(sock, rx, &q, snaplen).await {
+                if let Err(e) = client(sock, rx, &q).await {
                     log::info!("PCAP-over-IP: client {peer}: {e}");
                 }
                 h.remove(id);
@@ -350,11 +340,13 @@ async fn client(
     sock: tokio::net::TcpStream,
     mut rx: mpsc::Receiver<Bytes>,
     queued: &AtomicUsize,
-    snaplen: u32,
 ) -> std::io::Result<()> {
     let _ = sock.set_nodelay(true);
     let (mut r, mut w) = sock.into_split();
-    write(&mut w, &pcap_global_header(snaplen)).await?;
+    // The largest snap length there can be, not the configured one: the
+    // stream outlives changes of it, and a reader rejects records longer
+    // than the header declares.
+    write(&mut w, &pcap_global_header(DEFAULT_SNAPLEN)).await?;
     let mut discard = [0u8; 512];
     loop {
         tokio::select! {
@@ -428,7 +420,7 @@ mod tests {
             let platform: Arc<dyn Platform> = owner.clone();
             let hub = Arc::new(Hub::default());
             // The allowlist admits loopback; the owner check still applies.
-            hub.apply(Some((&cfg(0, &["127.0.0.1"]), 1500)), &platform);
+            hub.apply(Some(&cfg(0, &["127.0.0.1"])), &platform);
             let addr = listening(&hub).await;
             let mut s = TcpStream::connect(addr).await.unwrap();
             let me = s.local_addr().unwrap();
@@ -476,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn stalled_client_releases_its_slot() {
         let hub = Arc::new(Hub::default());
-        hub.apply(Some((&cfg(0, &[]), 65535)), &null());
+        hub.apply(Some(&cfg(0, &[])), &null());
         let addr = listening(&hub).await;
         let _stalled = TcpStream::connect(addr).await.unwrap();
         wait_clients(&hub, 1).await;
@@ -494,7 +486,7 @@ mod tests {
     #[tokio::test]
     async fn stop_aborts_client_tasks() {
         let hub = Arc::new(Hub::default());
-        hub.apply(Some((&cfg(0, &[]), 65535)), &null());
+        hub.apply(Some(&cfg(0, &[])), &null());
         let addr = listening(&hub).await;
         let mut s = TcpStream::connect(addr).await.unwrap();
         wait_clients(&hub, 1).await;
@@ -543,12 +535,12 @@ mod tests {
     #[tokio::test]
     async fn streams_header_and_packets_to_clients() {
         let hub = Arc::new(Hub::default());
-        hub.apply(Some((&cfg(0, &[]), 1500)), &null());
+        hub.apply(Some(&cfg(0, &[])), &null());
         let addr = listening(&hub).await;
         let mut a = TcpStream::connect(addr).await.unwrap();
         let mut header = [0u8; 24];
         a.read_exact(&mut header).await.unwrap();
-        assert_eq!(header, pcap_global_header(1500));
+        assert_eq!(header, pcap_global_header(65535));
         wait_clients(&hub, 1).await;
         hub.send(Bytes::from(pcap_record(5_000_000, 3, &[1, 2, 3])));
         let mut rec = [0u8; 19];
@@ -581,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn slow_client_loses_packets_not_the_engine() {
         let hub = Arc::new(Hub::default());
-        hub.apply(Some((&cfg(0, &[]), 65535)), &null());
+        hub.apply(Some(&cfg(0, &[])), &null());
         let addr = listening(&hub).await;
         // Connects but never reads: its socket buffers and then its queue
         // fill up; sending never blocks and the excess is counted.
@@ -603,7 +595,7 @@ mod tests {
     #[tokio::test]
     async fn allowlist_refuses_other_clients() {
         let hub = Arc::new(Hub::default());
-        hub.apply(Some((&cfg(0, &["192.0.2.0/24"]), 65535)), &null());
+        hub.apply(Some(&cfg(0, &["192.0.2.0/24"])), &null());
         let addr = listening(&hub).await;
         let mut s = TcpStream::connect(addr).await.unwrap();
         let mut buf = [0u8; 24];
@@ -616,7 +608,7 @@ mod tests {
             "::ffff:127.0.0.1".parse().unwrap()
         ));
         // Re-applying the same config keeps the server (and its port).
-        hub.apply(Some((&cfg(0, &["192.0.2.0/24"]), 65535)), &null());
+        hub.apply(Some(&cfg(0, &["192.0.2.0/24"])), &null());
         assert_eq!(listening(&hub).await, addr);
         hub.stop();
         assert_eq!(hub.stats().listening, None);
@@ -627,13 +619,13 @@ mod tests {
         let hub = Arc::new(Hub::default());
         let mut c = cfg(57012, &[]);
         c.bind.clear();
-        hub.apply(Some((&c, 65535)), &null());
+        hub.apply(Some(&c), &null());
         let s = hub.stats();
         assert_eq!(s.listening, None);
         assert!(s.error.unwrap().contains("no address"));
         // An address that is not local: bind fails, retried later.
         c.bind = "192.0.2.1".into();
-        hub.apply(Some((&c, 65535)), &null());
+        hub.apply(Some(&c), &null());
         for _ in 0..200 {
             if hub.stats().error.is_some() {
                 break;

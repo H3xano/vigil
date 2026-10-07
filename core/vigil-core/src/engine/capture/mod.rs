@@ -43,6 +43,8 @@ const MAX_BINDINGS_PER_KEY: usize = 8;
 const MERGE_WINDOW_US: u64 = 120_000_000;
 /// Bindings are kept this long before the oldest packet in the ring.
 const BINDING_SLACK_US: u64 = 60_000_000;
+/// Bytes of the ring an export copies out per hold of the ring's lock.
+const EXPORT_CHUNK: usize = 1 << 20;
 
 fn now_us() -> u64 {
     SystemTime::now()
@@ -172,6 +174,8 @@ pub(crate) struct Capture {
     dropped_before: AtomicU64,
     stream: Arc<stream::Hub>,
     stream_on: AtomicBool,
+    /// A resize is between its two steps (see [`Capture::apply`]).
+    resizing: AtomicBool,
 }
 
 impl Default for Capture {
@@ -186,6 +190,7 @@ impl Default for Capture {
             dropped_before: AtomicU64::new(0),
             stream: Arc::new(stream::Hub::default()),
             stream_on: AtomicBool::new(false),
+            resizing: AtomicBool::new(false),
         }
     }
 }
@@ -289,6 +294,7 @@ impl Capture {
     /// (call inside the runtime).
     pub fn apply(&self, cfg: &CaptureConfig, platform: &Arc<dyn Platform>) -> bool {
         let mut newly_on = false;
+        let mut resize = None;
         {
             let mut ring = self.ring.lock();
             let size = cfg.buffer_bytes as usize;
@@ -306,24 +312,48 @@ impl Capture {
                         self.dropped_before.store(0, Relaxed);
                         newly_on = true;
                     }
-                    Some(old) if old.capacity() != size => {
-                        let mut new = Ring::new(size);
-                        old.for_each(|h, d| {
-                            new.push(h, d);
-                        });
-                        self.dropped_before.fetch_add(old.evicted(), Relaxed);
-                        *old = new;
+                    Some(cur) if cur.capacity() != size => {
+                        // Recording goes on into a fresh ring while the old
+                        // one is cut down outside the lock (finish_resize).
+                        self.resizing.store(true, Relaxed);
+                        let fresh = Ring::new(size);
+                        let fresh_id = fresh.id();
+                        resize = Some((std::mem::replace(cur, fresh), fresh_id, size));
                     }
                     Some(_) => {}
                 }
                 self.on.store(true, Relaxed);
             }
         }
+        if let Some((old, fresh_id, size)) = resize {
+            self.finish_resize(old, fresh_id, size);
+        }
         let stream = cfg.enabled && cfg.stream.enabled;
         self.stream_on.store(stream, Relaxed);
-        self.stream
-            .apply(stream.then_some((&cfg.stream, cfg.snaplen)), platform);
+        self.stream.apply(stream.then_some(&cfg.stream), platform);
         newly_on
+    }
+
+    /// Second half of a resize: keeps the newest packets of `old` that fit
+    /// (in place when shrinking, while the packet path records into the
+    /// fresh ring `fresh_id`), then puts them in front of what was recorded
+    /// meanwhile. Discarded if capture was turned off or resized again in
+    /// between.
+    fn finish_resize(&self, old: Ring, fresh_id: u64, size: usize) {
+        let old_evicted = old.evicted();
+        let mut merged = old.resized(size);
+        {
+            let mut ring = self.ring.lock();
+            if let Some(fresh) = ring.as_mut().filter(|r| r.id() == fresh_id) {
+                fresh.for_each(|h, d| {
+                    merged.push(h, d);
+                });
+                self.dropped_before
+                    .fetch_add(old_evicted + fresh.evicted(), Relaxed);
+                *fresh = merged;
+            }
+        }
+        self.resizing.store(false, Relaxed);
     }
 
     /// Stops the stream server (engine shutdown). The ring is kept, so it
@@ -334,7 +364,9 @@ impl Capture {
 
     /// Housekeeping: forgets bindings older than every packet held.
     pub fn prune(&self) {
-        if !self.is_on() {
+        // Mid-resize the ring holds only the newest packets: their age
+        // would prune bindings the older ones still need.
+        if !self.is_on() || self.resizing.load(Relaxed) {
             return;
         }
         let oldest = self.ring.lock().as_ref().and_then(|r| r.oldest_ts());
@@ -361,23 +393,15 @@ impl Capture {
         }
     }
 
-    /// Writes the packets matching `filter` to `path` as PCAPng. The ring
-    /// is copied under its lock (one memcpy), then matched and written
-    /// without blocking the packet path. With capture off the file holds
-    /// no packets.
+    /// Writes the packets matching `filter` to `path` as PCAPng, in one
+    /// pass over the ring: records are copied out in chunks of at most
+    /// [`EXPORT_CHUNK`] bytes under the ring's lock (so the packet path
+    /// waits for one short copy at a time, and memory stays bounded), then
+    /// matched and written without it. The export covers what the ring
+    /// held when it started; packets overwritten while it runs are missing
+    /// (and reported as `truncated_by_ring`). With capture off the file
+    /// holds no packets.
     pub fn export(&self, filter: &CaptureFilter, path: &Path) -> io::Result<ExportSummary> {
-        let (snapshot, evicted, oldest, snaplen) = {
-            let ring = self.ring.lock();
-            match ring.as_ref() {
-                Some(r) => (
-                    r.snapshot(),
-                    r.evicted() + self.dropped_before.load(Relaxed),
-                    r.oldest_ts(),
-                    self.snaplen.load(Relaxed),
-                ),
-                None => (Vec::new(), 0, None, self.snaplen.load(Relaxed)),
-            }
-        };
         let since_us = filter.since_ms.map(|m| m.saturating_mul(1000));
         let until_us = filter
             .until_ms
@@ -386,13 +410,59 @@ impl Capture {
         let uids: HashSet<u32> = filter.uids.iter().copied().collect();
         let attribute = !flows.is_empty() || !uids.is_empty();
 
-        // Match (and attribute, for comments) under the bindings lock;
-        // write afterwards.
-        let mut selected: Vec<(RecordHeader, &[u8], Option<Binding>)> = Vec::new();
-        let mut earliest_flow_binding: Option<u64> = None;
-        {
-            let bindings = self.bindings.lock();
-            for (h, data) in ring::records(&snapshot) {
+        // The ring's id, the next position to read and where to stop.
+        let (mut cursor, evicted, oldest, snaplen) = {
+            let ring = self.ring.lock();
+            let snaplen = self.snaplen.load(Relaxed);
+            match ring.as_ref() {
+                Some(r) => (
+                    Some((r.id(), r.head(), r.tail())),
+                    r.evicted() + self.dropped_before.load(Relaxed),
+                    r.oldest_ts(),
+                    // Records taken before the snap length was lowered are
+                    // longer: the declared one must cover them all.
+                    snaplen.max(r.max_cap_len() as u32),
+                ),
+                None => (None, 0, None, snaplen),
+            }
+        };
+        let earliest_flow_binding = if flows.is_empty() {
+            None
+        } else {
+            self.bindings
+                .lock()
+                .map
+                .values()
+                .flatten()
+                .filter(|b| b.flow.is_some_and(|f| flows.contains(&f)))
+                .map(|b| b.ts_us)
+                .min()
+        };
+
+        let file = std::fs::File::create(path)?;
+        let app = format!("vigil {}", env!("CARGO_PKG_VERSION"));
+        let mut w = PcapngWriter::new(BufWriter::with_capacity(256 * 1024, file), snaplen, &app)?;
+        let mut sum = ExportSummary::default();
+        let mut comment = String::new();
+        let mut chunk = Vec::new();
+        let mut lost = false;
+        while let Some((id, pos, end)) = cursor {
+            {
+                let ring = self.ring.lock();
+                let Some(r) = ring.as_ref().filter(|r| r.id() == id) else {
+                    // Turned off or resized meanwhile.
+                    lost = true;
+                    break;
+                };
+                // Overwritten since the export started.
+                lost |= pos < r.head();
+                let pos = pos.max(r.head());
+                if pos >= end {
+                    break;
+                }
+                cursor = Some((id, r.read_records(pos, end, EXPORT_CHUNK, &mut chunk), end));
+            }
+            for (h, data) in ring::records(&chunk) {
                 if since_us.is_some_and(|s| h.ts_us < s) || until_us.is_some_and(|u| h.ts_us > u) {
                     continue;
                 }
@@ -402,7 +472,9 @@ impl Capture {
                         Dir::ToApp => (k.dst, k.src),
                     };
                     let opening = k.initial_syn && h.dir == Dir::FromApp;
-                    bindings.resolve(&(k.proto, app, remote), h.ts_us, opening)
+                    self.bindings
+                        .lock()
+                        .resolve(&(k.proto, app, remote), h.ts_us, opening)
                 });
                 if attribute {
                     let Some(b) = binding else { continue };
@@ -413,57 +485,39 @@ impl Capture {
                         continue;
                     }
                 }
-                selected.push((h, data, binding));
-            }
-            if !flows.is_empty() {
-                earliest_flow_binding = bindings
-                    .map
-                    .values()
-                    .flatten()
-                    .filter(|b| b.flow.is_some_and(|f| flows.contains(&f)))
-                    .map(|b| b.ts_us)
-                    .min();
-            }
-        }
-
-        let file = std::fs::File::create(path)?;
-        let app = format!("vigil {}", env!("CARGO_PKG_VERSION"));
-        let mut w = PcapngWriter::new(BufWriter::with_capacity(256 * 1024, file), snaplen, &app)?;
-        let mut sum = ExportSummary::default();
-        let mut comment = String::new();
-        for (h, data, b) in &selected {
-            comment.clear();
-            if let Some(b) = b {
-                use std::fmt::Write as _;
-                if let Some(u) = b.uid {
-                    let _ = write!(comment, "uid={u}");
+                comment.clear();
+                if let Some(b) = binding {
+                    use std::fmt::Write as _;
+                    if let Some(u) = b.uid {
+                        let _ = write!(comment, "uid={u}");
+                    }
+                    if let Some(f) = b.flow {
+                        let _ = write!(
+                            comment,
+                            "{}flow={f}",
+                            if comment.is_empty() { "" } else { " " }
+                        );
+                    }
                 }
-                if let Some(f) = b.flow {
-                    let _ = write!(
-                        comment,
-                        "{}flow={f}",
-                        if comment.is_empty() { "" } else { " " }
-                    );
-                }
+                w.packet(
+                    h.ts_us,
+                    h.orig_len,
+                    data,
+                    h.dir,
+                    (!comment.is_empty()).then_some(comment.as_str()),
+                )?;
+                sum.packets += 1;
+                sum.bytes += data.len() as u64;
+                sum.first_ts.get_or_insert(h.ts_us / 1000);
+                sum.last_ts = Some(h.ts_us / 1000);
             }
-            w.packet(
-                h.ts_us,
-                h.orig_len,
-                data,
-                h.dir,
-                (!comment.is_empty()).then_some(comment.as_str()),
-            )?;
-            sum.packets += 1;
-            sum.bytes += data.len() as u64;
-            sum.first_ts.get_or_insert(h.ts_us / 1000);
-            sum.last_ts = Some(h.ts_us / 1000);
         }
         let file = w.finish()?.into_inner().map_err(|e| e.into_error())?;
         file.sync_all()?;
         // The window starts before what the ring still holds, and the ring
         // has overwritten packets: some matching ones may be gone.
         let start = since_us.or(earliest_flow_binding).unwrap_or(0);
-        sum.truncated_by_ring = evicted > 0 && oldest.map_or(true, |o| start < o);
+        sum.truncated_by_ring = lost || (evicted > 0 && oldest.map_or(true, |o| start < o));
         Ok(sum)
     }
 }
@@ -495,15 +549,21 @@ mod tests {
         c
     }
 
-    fn export(c: &Capture, f: &CaptureFilter) -> (ExportSummary, Vec<(u64, Vec<u8>, String)>) {
+    fn export_file(c: &Capture, f: &CaptureFilter) -> (ExportSummary, Vec<u8>) {
+        static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "vigil-capture-test-{}-{}",
             std::process::id(),
-            now_us()
+            N.fetch_add(1, Relaxed)
         ));
         let sum = c.export(f, &dir).unwrap();
         let file = std::fs::read(&dir).unwrap();
         std::fs::remove_file(&dir).unwrap();
+        (sum, file)
+    }
+
+    fn export(c: &Capture, f: &CaptureFilter) -> (ExportSummary, Vec<(u64, Vec<u8>, String)>) {
+        let (sum, file) = export_file(c, f);
         let pkts = blocks(&file)
             .into_iter()
             .filter(|(t, _)| *t == 6)
@@ -740,6 +800,99 @@ mod tests {
         assert_eq!(c.stats(), CaptureStats::default());
         c.record(&p, Dir::FromApp);
         assert_eq!(export(&c, &CaptureFilter::default()).0.packets, 0);
+    }
+
+    fn udp(fill: u8, len: usize) -> Vec<u8> {
+        packet::build_udp(sa("10.0.0.2:1000"), sa("192.0.2.1:9"), &vec![fill; len]).unwrap()
+    }
+
+    fn with(buffer: u64, snaplen: u32) -> CaptureConfig {
+        CaptureConfig {
+            enabled: true,
+            buffer_bytes: buffer,
+            snaplen,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn export_declares_a_snaplen_covering_every_record() {
+        let c = on(1 << 20);
+        let p = udp(1, 972);
+        c.record(&p, Dir::FromApp);
+        // Lowered at runtime: the packet already held stays 1000 bytes.
+        c.apply(&with(1 << 20, 100), &null());
+        c.record(&p, Dir::ToApp);
+        let (sum, file) = export_file(&c, &CaptureFilter::default());
+        assert_eq!(sum.bytes, 1100);
+        let idb = blocks(&file).into_iter().find(|(t, _)| *t == 1).unwrap().1;
+        let snaplen = u32::from_le_bytes(idb[4..8].try_into().unwrap());
+        assert_eq!(snaplen, 1000);
+        // Nothing longer than the snap length held: it is declared as is.
+        let c = on(1 << 20);
+        c.apply(&with(1 << 20, 200), &null());
+        c.record(&p, Dir::FromApp);
+        let idb = blocks(&export_file(&c, &CaptureFilter::default()).1)
+            .into_iter()
+            .find(|(t, _)| *t == 1)
+            .unwrap()
+            .1;
+        assert_eq!(u32::from_le_bytes(idb[4..8].try_into().unwrap()), 200);
+    }
+
+    #[test]
+    fn export_spans_several_chunks_in_order() {
+        let c = on(4 << 20);
+        let n = 3 * EXPORT_CHUNK / 1016 + 7;
+        for i in 0..n {
+            c.record(&udp(i as u8, 972), Dir::FromApp);
+        }
+        let (sum, pkts) = export(&c, &CaptureFilter::default());
+        assert_eq!((sum.packets as usize, pkts.len()), (n, n));
+        assert!(!sum.truncated_by_ring);
+        for (i, p) in pkts.iter().enumerate() {
+            assert_eq!(p.1, udp(i as u8, 972));
+        }
+        assert!(pkts.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn resize_merges_packets_recorded_meanwhile() {
+        let c = on(64 * 1024);
+        for i in 0..3 {
+            c.record(&udp(i, 100), Dir::FromApp);
+        }
+        // The first half of a resize, as apply does it.
+        let take = |size: usize| {
+            let mut ring = c.ring.lock();
+            let fresh = Ring::new(size);
+            let id = fresh.id();
+            c.resizing.store(true, Relaxed);
+            (std::mem::replace(ring.as_mut().unwrap(), fresh), id)
+        };
+        let (old, fresh_id) = take(128 * 1024);
+        c.record(&udp(3, 100), Dir::FromApp);
+        c.prune(); // a no-op while resizing
+        c.finish_resize(old, fresh_id, 128 * 1024);
+        assert!(!c.resizing.load(Relaxed));
+        let s = c.stats();
+        assert_eq!(
+            (s.buffered_packets, s.buffer_bytes, s.dropped),
+            (4, 128 * 1024, 0)
+        );
+        let (_, pkts) = export(&c, &CaptureFilter::default());
+        let got: Vec<_> = pkts.into_iter().map(|p| p.1).collect();
+        assert_eq!(got, (0..4).map(|i| udp(i, 100)).collect::<Vec<_>>());
+
+        // Shrinking drops the oldest; turned off in between, it is dropped.
+        let (old, fresh_id) = take(300);
+        c.finish_resize(old, fresh_id, 300);
+        let s = c.stats();
+        assert_eq!((s.buffered_packets, s.dropped), (2, 2));
+        let (old, fresh_id) = take(1 << 20);
+        c.apply(&CaptureConfig::default(), &null());
+        c.finish_resize(old, fresh_id, 1 << 20);
+        assert_eq!(c.stats(), CaptureStats::default());
     }
 
     #[test]

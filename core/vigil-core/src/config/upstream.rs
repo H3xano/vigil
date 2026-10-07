@@ -254,6 +254,18 @@ impl Socks5Config {
     }
 }
 
+/// Smallest accepted WireGuard tunnel MTU.
+pub const MIN_WG_MTU: u16 = 576;
+/// Largest accepted WireGuard tunnel MTU: a full packet plus WireGuard's 32
+/// bytes must fit one UDP datagram over IPv4 (65507 bytes of payload).
+pub const MAX_WG_MTU: u16 = 65_400;
+
+/// Neither unspecified, multicast nor the IPv4 broadcast address.
+fn is_unicast(ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    !ip.is_unspecified() && !ip.is_multicast() && ip != IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
+}
+
 impl WireGuardConfig {
     pub fn validate(&self) -> Result<(), String> {
         if decode_key(&self.private_key).is_none() {
@@ -284,10 +296,18 @@ impl WireGuardConfig {
                 "upstream.wireguard.addresses: at most one IPv4 and one IPv6 address".into(),
             );
         }
-        self.allowed()?;
-        if !(576..=65535).contains(&self.mtu) {
+        // The tunnel's own addresses must be unicast (the user-space stack
+        // refuses anything else at start).
+        if let Some(c) = addrs.iter().find(|c| !is_unicast(c.addr)) {
             return Err(format!(
-                "upstream.wireguard.mtu {} outside 576..=65535",
+                "upstream.wireguard.addresses: {} is not a unicast address",
+                c.addr
+            ));
+        }
+        self.allowed()?;
+        if !(MIN_WG_MTU..=MAX_WG_MTU).contains(&self.mtu) {
+            return Err(format!(
+                "upstream.wireguard.mtu {} outside {MIN_WG_MTU}..={MAX_WG_MTU}",
                 self.mtu
             ));
         }
@@ -408,6 +428,25 @@ mod tests {
         assert!(bad(|c| c.addresses = vec!["garbage".into()]));
         assert!(bad(|c| c.allowed_ips = vec!["0.0.0.0/99".into()]));
         assert!(bad(|c| c.mtu = 100));
+        assert!(bad(|c| c.mtu = 65_535));
+        assert!(bad(|c| c.mtu = MAX_WG_MTU + 1));
+        assert!(!bad(|c| c.mtu = MAX_WG_MTU));
+        assert!(!bad(|c| c.mtu = MIN_WG_MTU));
+        for a in [
+            "0.0.0.0/32",
+            "224.0.0.1/32",
+            "255.255.255.255/32",
+            "::/128",
+            "ff02::1/128",
+        ] {
+            let mut c = wg();
+            c.addresses = vec![a.into()];
+            let e = c.validate().unwrap_err();
+            assert!(e.contains("not a unicast address"), "{a}: {e}");
+        }
+        assert!(!bad(
+            |c| c.addresses = vec!["10.9.0.2/24".into(), "fd00::2/64".into()]
+        ));
         let mut ok = wg();
         ok.preshared_key = Some(KEY.into());
         ok.allowed_ips = vec!["0.0.0.0/0".into(), "::/0".into()];

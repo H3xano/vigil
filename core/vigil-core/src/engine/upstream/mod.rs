@@ -41,6 +41,7 @@ mod wireguard;
 
 use super::sock;
 use crate::config::upstream::{literal_socket_addr, split_host_port, UpstreamConfig, UpstreamMode};
+use crate::dnscache::DnsCache;
 use crate::event::UpstreamStatus;
 use crate::platform::Platform;
 use parking_lot::RwLock;
@@ -278,6 +279,11 @@ async fn resolve(spec: &str, timeout: Duration) -> io::Result<Vec<SocketAddr>> {
     Ok(addrs)
 }
 
+/// `dst` with an IPv4-mapped IPv6 address turned into the IPv4 one.
+fn canonical(dst: SocketAddr) -> SocketAddr {
+    SocketAddr::new(dst.ip().to_canonical(), dst.port())
+}
+
 async fn direct_tcp(platform: &Arc<dyn Platform>, dst: SocketAddr) -> io::Result<UpstreamTcp> {
     sock::connect_tcp(platform.clone(), dst)
         .await
@@ -306,6 +312,8 @@ impl Dialer {
     /// `0.0.0.0/0`) is refused instead of leaking under the real address;
     /// only a split tunnel within a routed family bypasses.
     fn wg_bypass(&self, t: &WgTunnel, dst: SocketAddr) -> io::Result<bool> {
+        // `[::ffff:a.b.c.d]` is a.b.c.d: AllowedIPs `0.0.0.0/0` route it.
+        let dst = canonical(dst);
         if t.routes(dst.ip()) {
             return Ok(!self.fail_closed && t.is_down());
         }
@@ -314,22 +322,20 @@ impl Dialer {
                 io::ErrorKind::AddrNotAvailable,
                 format!(
                     "wireguard: AllowedIPs route no IPv{} (fail_closed)",
-                    if dst.ip().to_canonical().is_ipv4() {
-                        4
-                    } else {
-                        6
-                    }
+                    if dst.is_ipv4() { 4 } else { 6 }
                 ),
             ));
         }
         Ok(true)
     }
 
+    /// `relay` is set for relayed app connections: the engine's DNS cache,
+    /// which vouches for the names SOCKS5 `send_domain` may use.
     async fn connect_tcp(
         &self,
         platform: &Arc<dyn Platform>,
         dst: SocketAddr,
-        relay: bool,
+        relay: Option<&DnsCache>,
     ) -> io::Result<UpstreamTcp> {
         match &self.path {
             Path::Direct => direct_tcp(platform, dst).await,
@@ -338,7 +344,10 @@ impl Dialer {
                 ProxyUnavailable(e.clone()),
             )),
             Path::Socks5(s) => {
-                if relay && s.send_domain() {
+                if let Some(cache) = relay.filter(|_| s.send_domain()) {
+                    // The name vigil's resolver gave for this address (when
+                    // the app looked it up): the only one the CONNECT may use.
+                    let resolved = cache.lookup(dst.ip(), std::time::Instant::now());
                     // Reach the proxy now; only the CONNECT waits for the
                     // name in the app's first bytes.
                     return match s.handshake(platform).await {
@@ -346,6 +355,7 @@ impl Dialer {
                             s.clone(),
                             conn,
                             dst,
+                            resolved,
                         )))),
                         Err(e) if !self.fail_closed && is_proxy_unavailable(&e) => {
                             direct_tcp(platform, dst).await
@@ -362,6 +372,7 @@ impl Dialer {
                 }
             }
             Path::Wireguard(t) => {
+                let dst = canonical(dst);
                 if self.wg_bypass(t, dst)? {
                     return direct_tcp(platform, dst).await;
                 }
@@ -389,6 +400,7 @@ impl Dialer {
                 Err(e) => Err(e),
             },
             Path::Wireguard(t) => {
+                let dst = canonical(dst);
                 if self.wg_bypass(t, dst)? {
                     return direct_udp(platform, dst).await;
                 }
@@ -407,18 +419,20 @@ pub(crate) async fn connect_tcp(
     dst: SocketAddr,
 ) -> io::Result<UpstreamTcp> {
     let d = shared.upstream.dialer();
-    d.connect_tcp(&shared.platform, dst, false).await
+    d.connect_tcp(&shared.platform, dst, None).await
 }
 
 /// Like [`connect_tcp`], for relayed app connections: with SOCKS5 and
 /// `send_domain`, the connection is made lazily, by the name found in the
-/// app's first bytes (TLS SNI / HTTP Host).
+/// app's first bytes (TLS SNI / HTTP Host) when vigil's resolver gave the
+/// dialled address for that name (else by address).
 pub(crate) async fn connect_relay(
     shared: &super::Shared,
     dst: SocketAddr,
 ) -> io::Result<UpstreamTcp> {
     let d = shared.upstream.dialer();
-    d.connect_tcp(&shared.platform, dst, true).await
+    d.connect_tcp(&shared.platform, dst, Some(&shared.dns_cache))
+        .await
 }
 
 /// A UDP "connection" to `dst` over the configured upstream path. Errors
@@ -620,6 +634,9 @@ enum LazyState {
 pub(crate) struct LazySocks {
     dialer: Arc<Socks5Dialer>,
     dst: SocketAddr,
+    /// The name the DNS cache holds for `dst` (see
+    /// [`socks5::target_from_first_bytes`]).
+    resolved: Option<String>,
     /// The negotiated connection to the proxy, until the CONNECT is sent.
     conn: Option<TcpStream>,
     state: LazyState,
@@ -629,10 +646,16 @@ pub(crate) struct LazySocks {
 }
 
 impl LazySocks {
-    fn new(dialer: Arc<Socks5Dialer>, conn: TcpStream, dst: SocketAddr) -> Self {
+    fn new(
+        dialer: Arc<Socks5Dialer>,
+        conn: TcpStream,
+        dst: SocketAddr,
+        resolved: Option<String>,
+    ) -> Self {
         Self {
             dialer,
             dst,
+            resolved,
             conn: Some(conn),
             state: LazyState::Waiting,
             deadline: Box::pin(tokio::time::sleep(LAZY_WAIT)),
@@ -727,7 +750,7 @@ impl AsyncWrite for LazySocks {
     ) -> Poll<io::Result<usize>> {
         let me = self.get_mut();
         if matches!(me.state, LazyState::Waiting) {
-            let target = socks5::target_from_first_bytes(buf, me.dst);
+            let target = socks5::target_from_first_bytes(buf, me.dst, me.resolved.as_deref());
             me.start(target);
         }
         match me.poll_connected(cx) {
@@ -972,6 +995,13 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(e.kind(), io::ErrorKind::AddrNotAvailable, "{e}");
+        // An IPv4-mapped IPv6 destination (e.g. a configured resolver) is
+        // IPv4: tunnelled, not sent direct.
+        let mapped: SocketAddr = "[::ffff:127.0.0.1]:9".parse().unwrap();
+        assert_eq!(
+            connect_udp(&shared, mapped).await.unwrap().via(),
+            "wireguard"
+        );
 
         // Fail-open: the unrouted family goes direct, as before.
         shared
@@ -989,6 +1019,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(u.via(), "direct");
+        assert_eq!(connect_udp(&shared, mapped).await.unwrap().via(), "direct");
         // ... but IPv6, which it does not route at all, is refused.
         let e = connect_tcp(&shared, v6_dst).await.err().unwrap();
         assert_eq!(e.kind(), io::ErrorKind::AddrNotAvailable, "{e}");
