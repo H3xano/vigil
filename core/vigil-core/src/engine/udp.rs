@@ -195,9 +195,34 @@ impl FlowEnd<'_> {
 impl Drop for FlowEnd<'_> {
     fn drop(&mut self) {
         if let Some(id) = self.id.take() {
-            self.shared.finish_flow(id, Some(EVICTED.into()));
+            // Tasks are also dropped when the engine shuts down.
+            let why = if self.shared.shut_down.load(Relaxed) {
+                super::SHUTDOWN_REASON
+            } else {
+                EVICTED
+            };
+            self.shared.finish_flow(id, Some(why.into()));
         }
     }
+}
+
+/// Runs a UDP flow's setup step (UID lookup, socket creation: blocking-pool
+/// work that cannot be cancelled) under a `udp_setup` permit. The step runs
+/// in a task of its own that owns the permit, so an evicted flow (whose task
+/// is aborted) keeps counting against the cap until the work has ended.
+/// None if the engine is shutting down.
+async fn setup<T: Send + 'static>(
+    shared: &Shared,
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    let permit = shared.limits.udp_setup.clone().acquire_owned().await.ok()?;
+    tokio::spawn(async move {
+        let out = work.await;
+        drop(permit);
+        out
+    })
+    .await
+    .ok()
 }
 
 /// One UDP flow. May be aborted at any await (eviction): nothing is
@@ -213,11 +238,20 @@ async fn flow(
     let (src, dst) = key;
     let cfg = shared.config();
     let idle = Duration::from_secs(cfg.udp_idle_timeout_s.max(5));
+    // Subscribed before the policy decision, so a device state or rule
+    // change landing after it still releases a flow held blocked.
+    let mut changed = shared.app_rules_changed.subscribe();
     let uid = {
-        let Ok(_permit) = shared.limits.udp_setup.acquire().await else {
+        let s = shared.clone();
+        let Some(uid) = setup(
+            shared,
+            async move { s.lookup_uid(PROTO_UDP, src, dst).await },
+        )
+        .await
+        else {
             return;
         };
-        shared.lookup_uid(PROTO_UDP, src, dst).await
+        uid
     };
     shared.stats.flows_total.fetch_add(1, Relaxed);
 
@@ -304,7 +338,6 @@ async fn flow(
         // device state or the rules lift it, so the app's next datagram is
         // decided again (e.g. once it is in the foreground).
         if reason.is_per_app() {
-            let mut changed = shared.app_rules_changed.subscribe();
             loop {
                 tokio::select! {
                     r = tokio::time::timeout(idle, rx.recv()) => {
@@ -329,10 +362,12 @@ async fn flow(
 
     ev.via = Some(shared.upstream.via());
     let connected = {
-        let Ok(_permit) = shared.limits.udp_setup.acquire().await else {
+        let s = shared.clone();
+        let Some(c) = setup(shared, async move { upstream::connect_udp(&s, dst).await }).await
+        else {
             return;
         };
-        upstream::connect_udp(shared, dst).await
+        c
     };
     let sock = match connected {
         Ok(s) => s,
@@ -358,6 +393,12 @@ async fn flow(
     let cut = FlowCut::new();
     shared.open_cuttable_flow(ev.clone(), &counters, &cut);
     observe_allowed(shared, &ev);
+    if let Some(e) = cut.cut_error_now() {
+        // Blocked by a per-app rule while the socket was set up (e.g. the
+        // app went to the background): nothing is sent.
+        end.finish(Some(e));
+        return;
+    }
 
     let mut error = None;
     for d in held.drain(..) {
@@ -388,7 +429,9 @@ async fn flow(
                 match r {
                     Ok((n, pkt)) => {
                         counters.rx.fetch_add(n as u64, Relaxed);
-                        deadline = tokio::time::Instant::now() + idle;
+                        deadline = tokio::time::Instant::now()
+                            .checked_add(idle)
+                            .unwrap_or(deadline);
                         last_active.store(shared.ticks(), Relaxed);
                         if let Some(pkt) = pkt {
                             shared.send_to_tun(pkt);
@@ -646,5 +689,139 @@ mod tests {
         ));
         let resp = dns_proto::servfail_response(&q).unwrap();
         assert!(!is_dns_query(&resp));
+    }
+
+    #[test]
+    fn flows_dropped_at_shutdown_end_as_stopped() {
+        let shared = test_shared(Config::default());
+        shared.open_flow(
+            FlowEvent {
+                id: 1,
+                ..Default::default()
+            },
+            &FlowCounters::new(),
+        );
+        shared.shut_down.store(true, Relaxed);
+        // The runtime drops the flow's task: not an eviction.
+        drop(FlowEnd {
+            shared: &shared,
+            id: Some(1),
+        });
+        let ends: Vec<_> = shared
+            .events
+            .poll(100, Duration::ZERO)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::FlowEnd(f) => Some(f.error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends, vec![Some(super::super::SHUTDOWN_REASON.into())]);
+    }
+
+    /// A platform whose UID lookups take a while (as on a busy device).
+    struct SlowUid;
+
+    impl crate::platform::Platform for SlowUid {
+        fn owner_uid(
+            &self,
+            _: u8,
+            _: std::net::SocketAddr,
+            _: std::net::SocketAddr,
+        ) -> Option<u32> {
+            std::thread::sleep(Duration::from_millis(400));
+            None
+        }
+
+        fn protect(&self, _: std::os::fd::RawFd) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evicted_flows_keep_their_setup_slot_until_the_lookup_ends() {
+        let (tx, _rx) = mpsc::channel(64);
+        let shared = Arc::new(Shared::new(
+            Config {
+                max_udp_flows: 2,
+                ..Default::default()
+            },
+            Arc::new(SlowUid),
+            tx,
+        ));
+        let free = || shared.limits.udp_setup.available_permits();
+        for port in 1..=3u16 {
+            let (u, pkt) = udp(port, "192.0.2.1:9999");
+            on_packet(&shared, u, &pkt[u.payload_offset..u.payload_end]);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // The third flow evicted the first, whose lookup still runs on the
+        // blocking pool: it still counts against the cap.
+        assert_eq!(shared.udp_flows.lock().len(), 2);
+        assert_eq!(free(), UDP_SETUP_CONCURRENCY - 3);
+        // Released once the blocking work has ended.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(free() > UDP_SETUP_CONCURRENCY - 3, "{}", free());
+    }
+
+    /// Attributes every flow to UID 10123, and moves that app to the
+    /// background while its socket is being created (after the flow was
+    /// decided), without the recheck that would normally follow.
+    struct BackgroundDuringSetup(std::sync::OnceLock<std::sync::Weak<Shared>>);
+
+    impl crate::platform::Platform for BackgroundDuringSetup {
+        fn owner_uid(
+            &self,
+            _: u8,
+            _: std::net::SocketAddr,
+            _: std::net::SocketAddr,
+        ) -> Option<u32> {
+            Some(10123)
+        }
+
+        fn protect(&self, _: std::os::fd::RawFd) -> bool {
+            if let Some(s) = self.0.get().and_then(|w| w.upgrade()) {
+                s.policy.write().set_state(&crate::config::DeviceState {
+                    foreground_uids: Some(vec![]),
+                    ..Default::default()
+                });
+            }
+            true
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn held_datagrams_are_not_sent_when_the_flow_is_cut_at_open() {
+        use crate::config::{AppRule, DeviceState};
+        let (tx, _rx) = mpsc::channel(64);
+        let platform = Arc::new(BackgroundDuringSetup(Default::default()));
+        let shared = Arc::new(Shared::new(
+            Config {
+                app_rules: vec![AppRule {
+                    uid: 10123,
+                    block_background: true,
+                    ..Default::default()
+                }],
+                device_state: Some(DeviceState {
+                    foreground_uids: Some(vec![10123]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            platform.clone(),
+            tx,
+        ));
+        platform.0.set(Arc::downgrade(&shared)).unwrap();
+        let (u, pkt) = udp(42000, "192.0.2.1:9999");
+        on_packet(&shared, u, &pkt[u.payload_offset..u.payload_end]);
+        let Event::Flow(f) = next_flow_event(&shared).await else {
+            panic!("expected a flow")
+        };
+        assert_eq!(f.verdict, Some(Verdict::Allow));
+        let Event::FlowEnd(end) = next_flow_event(&shared).await else {
+            panic!("expected the flow's end")
+        };
+        assert_eq!(end.error.as_deref(), Some("blocked: app rule: background"));
+        assert_eq!(end.tx, 0, "a held datagram was sent");
     }
 }

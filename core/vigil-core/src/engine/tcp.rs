@@ -11,12 +11,12 @@ use super::upstream::{self, UpstreamTcp};
 use super::{dns, FlowCounters, FlowCut, FlowKey, GaugeGuard, Shared};
 use crate::event::{now_ms, Event, FlowEndEvent, FlowEvent, Severity, Verdict};
 use crate::packet::{self, TcpInfo, PROTO_TCP};
-use crate::policy::{Decision, Policy, DOT_PORT};
+use crate::policy::{is_doh_ip, Decision, Policy, DOT_PORT};
 use crate::proto::http::{self, HttpRequest};
 use crate::proto::tls::{self, ClientHello, Sniff};
 use futures::StreamExt;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -419,22 +419,34 @@ fn apply_sniffed(ev: &mut FlowEvent, sniffed: &Sniffed) {
 }
 
 /// Policy decision once the destination name is known. Returns the block
-/// reason, if any.
+/// reason, if any. Without a name the app sent, a connection to port 443 of
+/// a well-known DoH resolver address counts as encrypted DNS (DoH to an IP
+/// literal sends no SNI).
 pub(crate) fn decide_named(
     shared: &Shared,
     ev: &mut FlowEvent,
 ) -> Option<crate::policy::BlockReason> {
     let authoritative = matches!(ev.domain_source, Some("sni" | "http" | "quic"));
     let policy = shared.policy.read();
-    if let (true, Some(domain)) = (authoritative, ev.domain.as_deref()) {
-        if policy.is_doh_host(domain) {
-            if !ev.tags.contains(&"encrypted_dns") {
-                ev.tags.push("encrypted_dns");
-            }
-            if policy.block_encrypted_dns {
-                return Some(Policy::encrypted_dns_block());
-            }
+    let name = ev.domain.as_deref().filter(|_| authoritative);
+    let doh = match name {
+        Some(domain) => policy.is_doh_host(domain),
+        None => {
+            ev.dst_port == 443
+                && ev.dst_ip.parse().is_ok_and(|ip: IpAddr| {
+                    is_doh_ip(policy.nat64_v4(ip).map(IpAddr::V4).unwrap_or(ip))
+                })
         }
+    };
+    if doh {
+        if !ev.tags.contains(&"encrypted_dns") {
+            ev.tags.push("encrypted_dns");
+        }
+        if policy.block_encrypted_dns {
+            return Some(Policy::encrypted_dns_block());
+        }
+    }
+    if let Some(domain) = name {
         if let Decision::Block(r) = policy.check_domain(ev.uid, domain) {
             return Some(r);
         }
@@ -584,6 +596,11 @@ async fn relay(
             shared.open_cuttable_flow(ev.clone(), &counters, &cut);
             opened.store(true, Relaxed);
             observe_allowed(shared, &ev);
+            if cut.cut_error_now().is_some() {
+                // Cut at once (e.g. the app went to the background while
+                // the connection was set up): no client byte is forwarded.
+                return Ok(false);
+            }
             if let SniffEnd::Failed(err) = sniff_end {
                 return Err(RelayError {
                     side: Side::Client,
@@ -629,7 +646,13 @@ async fn relay(
                                 shared.tcp_half_closed.lock().insert(key, client_abort.clone());
                             }
                         }
-                        Ok(false) => break RelayEnd::Blocked,
+                        Ok(false) => {
+                            // Cut before forwarding: report the cut reason.
+                            if let Some(e) = cut.cut_error_now() {
+                                error = Some(e);
+                            }
+                            break RelayEnd::Blocked;
+                        }
                         Err(e) => {
                             error.get_or_insert_with(|| e.err.to_string());
                             break RelayEnd::Failed(e.side);
@@ -1166,5 +1189,79 @@ mod tests {
             matches!(&r, Err(e) if e.kind() == io::ErrorKind::ConnectionReset),
             "server side not reset: {r:?}"
         );
+    }
+
+    #[test]
+    fn flows_opened_in_a_blocking_state_are_cut_before_forwarding() {
+        use crate::config::{AppRule, DeviceState};
+        // The app went to the background after its connection was decided
+        // (`decide_named`) but before the relay opened: the relay and UDP
+        // flows check `cut_error_now` before forwarding their first bytes.
+        let (shared, _tun) = test_shared_with_tun(Config {
+            app_rules: vec![AppRule {
+                uid: 10123,
+                block_background: true,
+                ..Default::default()
+            }],
+            device_state: Some(DeviceState {
+                foreground_uids: Some(vec![10200]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let open = |uid: u32| {
+            let cut = FlowCut::new();
+            let ev = FlowEvent {
+                id: shared.next_flow_id(),
+                uid: Some(uid),
+                verdict: Some(Verdict::Allow),
+                ..Default::default()
+            };
+            shared.open_cuttable_flow(ev, &FlowCounters::new(), &cut);
+            cut.cut_error_now()
+        };
+        assert_eq!(
+            open(10123).as_deref(),
+            Some("blocked: app rule: background")
+        );
+        assert_eq!(open(10200), None);
+    }
+
+    #[test]
+    fn doh_to_resolver_addresses_counts_as_encrypted_dns() {
+        let shared = super::super::tests::test_shared(Config {
+            block_encrypted_dns: true,
+            ..Default::default()
+        });
+        let ev = |ip: &str, port: u16, sni: Option<&str>| FlowEvent {
+            dst_ip: ip.into(),
+            dst_port: port,
+            domain: sni.map(str::to_string).or(Some("dns.example".into())),
+            domain_source: Some(if sni.is_some() { "sni" } else { "dns" }),
+            ..Default::default()
+        };
+        let decide = |mut e: FlowEvent| {
+            let r = decide_named(&shared, &mut e).map(|r| r.describe());
+            (r, e.tags.contains(&"encrypted_dns"))
+        };
+        let doh = (Some("encrypted_dns".to_string()), true);
+        // No name the app sent (DoH to an IP literal): by address.
+        assert_eq!(decide(ev("1.1.1.1", 443, None)), doh);
+        assert_eq!(decide(ev("2620:fe::fe", 443, None)), doh);
+        // NAT64: the embedded IPv4 address.
+        assert_eq!(decide(ev("64:ff9b::808:808", 443, None)), doh);
+        // Other ports and addresses are not.
+        assert_eq!(decide(ev("1.1.1.1", 80, None)), (None, false));
+        assert_eq!(decide(ev("192.0.2.1", 443, None)), (None, false));
+        // A name that is not a DoH host wins over the address...
+        assert_eq!(
+            decide(ev("1.1.1.1", 443, Some("www.example.com"))),
+            (None, false)
+        );
+        // ...and a DoH host is one at any address.
+        assert_eq!(decide(ev("192.0.2.1", 443, Some("dns.google"))), doh);
+        // Tagged only when blocking is off.
+        shared.policy.write().block_encrypted_dns = false;
+        assert_eq!(decide(ev("8.8.8.8", 443, None)), (None, true));
     }
 }

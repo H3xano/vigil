@@ -222,10 +222,13 @@ async fn answer(
         return Some(resp);
     };
 
-    // CNAME cloaking: a first-party name aliased to a listed tracker.
+    // CNAME cloaking: a first-party name aliased to a listed tracker. A
+    // name the user allowed (globally or for this app) is answered as is:
+    // the allow rule wins over lists that name its CNAME targets.
     {
         let policy = shared.policy.read();
-        for rec in &r.answers {
+        let allowed = policy.is_allowlisted_for(uid, &q.name);
+        for rec in r.answers.iter().filter(|_| !allowed) {
             if let RData::Cname(target) = &rec.data {
                 if let Decision::Block(mut reason) = policy.check_domain(uid, target) {
                     drop(policy);
@@ -253,10 +256,15 @@ async fn answer(
         dns::zero_ttls(&mut resp);
     }
 
-    let now = Instant::now();
-    let ttl = r.min_ttl().unwrap_or(300);
-    for ip in r.answer_ips() {
-        shared.dns_cache.insert(ip, &q.name, ttl, now);
+    // Only vigil's own resolver path feeds the IP→name cache that labels
+    // every app's flows: an app-chosen server could answer any name with
+    // any address and so mislabel other apps' connections.
+    if upstream.is_none() {
+        let now = Instant::now();
+        let ttl = r.min_ttl().unwrap_or(300);
+        for ip in r.answer_ips() {
+            shared.dns_cache.insert(ip, &q.name, ttl, now);
+        }
     }
     ev.rcode = dns::rcode_name(r.rcode).into();
     ev.answers = r
@@ -747,5 +755,100 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, Event::Dns(d) if d.verdict == Verdict::Block && d.rcode == "REFUSED")
         ));
+    }
+
+    /// A resolver on loopback that answers every query with
+    /// `CNAME edge.tracker.example` and `A 192.0.2.7`.
+    async fn cname_resolver() -> SocketAddr {
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            while let Ok((n, from)) = s.recv_from(&mut buf).await {
+                let mut m = buf[..n].to_vec();
+                m[2] = 0x81;
+                m[3] = 0x80;
+                m[7] = 2; // ancount
+                m.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60]);
+                let cname: Vec<u8> = [
+                    &[4u8][..],
+                    b"edge",
+                    &[7],
+                    b"tracker",
+                    &[7],
+                    b"example",
+                    &[0],
+                ]
+                .concat();
+                m.extend_from_slice(&(cname.len() as u16).to_be_bytes());
+                let off = m.len();
+                m.extend_from_slice(&cname);
+                m.extend_from_slice(&[0xc0 | (off >> 8) as u8, off as u8]);
+                m.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 7]);
+                let _ = s.send_to(&m, from).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn cname_cloaking_yields_to_user_allow_rules() {
+        use crate::config::{AppDomainRule, DomainAction};
+        let server = cname_resolver().await;
+        let shared = test_shared(Config {
+            upstream_dns: vec![server],
+            deny_domains: vec!["tracker.example".into()],
+            allow_domains: vec!["shop.example".into()],
+            app_domain_rules: vec![AppDomainRule {
+                uid: 10123,
+                domain: "news.example".into(),
+                action: DomainAction::Allow,
+            }],
+            ..Default::default()
+        });
+        let verdict = |name: &'static str, uid: u32| {
+            let shared = shared.clone();
+            async move {
+                let q = dns::build_query(9, name, dns::TYPE_A);
+                answer(&shared, &q, Some(uid), None, "udp").await.unwrap();
+                shared
+                    .events
+                    .poll(100, Duration::ZERO)
+                    .into_iter()
+                    .find_map(|e| match e {
+                        Event::Dns(d) => Some(d.verdict),
+                        _ => None,
+                    })
+                    .unwrap()
+            }
+        };
+        // Cloaked: sinkholed via the CNAME target...
+        assert_eq!(verdict("www.first.example", 10123).await, Verdict::Block);
+        // ...unless the user allowed the name: globally, or for this app.
+        assert_eq!(verdict("www.shop.example", 10200).await, Verdict::Allow);
+        assert_eq!(verdict("news.example", 10123).await, Verdict::Allow);
+        assert_eq!(verdict("news.example", 10200).await, Verdict::Block);
+    }
+
+    #[tokio::test]
+    async fn only_vigils_own_lookups_name_addresses() {
+        let server = cname_resolver().await;
+        let shared = test_shared(Config {
+            upstream_dns: vec![server],
+            ..Default::default()
+        });
+        let ip = "192.0.2.7".parse().unwrap();
+        // An app's hard-coded resolver could map any address to any name.
+        let q = dns::build_query(1, "bank.example", dns::TYPE_A);
+        let r = answer(&shared, &q, Some(10123), Some(server), "udp").await;
+        assert!(r.is_some());
+        assert_eq!(shared.dns_cache.lookup(ip, Instant::now()), None);
+        // The virtual resolver's answers do.
+        let q = dns::build_query(2, "www.first.example", dns::TYPE_A);
+        answer(&shared, &q, Some(10123), None, "udp").await.unwrap();
+        assert_eq!(
+            shared.dns_cache.lookup(ip, Instant::now()).as_deref(),
+            Some("www.first.example")
+        );
     }
 }

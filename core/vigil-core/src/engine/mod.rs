@@ -127,18 +127,23 @@ pub(crate) struct Limits {
     /// DNS queries being answered.
     pub dns: Arc<Semaphore>,
     pub udp_flows: usize,
-    /// UDP flows looking up their UID or creating their socket.
-    pub udp_setup: Semaphore,
+    /// UDP flows looking up their UID or creating their socket. A permit
+    /// is held until the blocking work ends, even if the flow is evicted
+    /// meanwhile (see `udp::setup`).
+    pub udp_setup: Arc<Semaphore>,
 }
 
 impl Limits {
     fn new(cfg: &Config) -> Self {
+        // `Config::validate` bounds the caps; clamped anyway, as
+        // `Semaphore::new` panics above `MAX_PERMITS`.
+        let permits = |n: usize| Arc::new(Semaphore::new(n.min(Semaphore::MAX_PERMITS)));
         Self {
-            gate: Arc::new(Semaphore::new(cfg.max_pending_connects)),
-            tcp: Arc::new(Semaphore::new(cfg.max_tcp_flows)),
-            dns: Arc::new(Semaphore::new(cfg.max_dns_inflight)),
+            gate: permits(cfg.max_pending_connects),
+            tcp: permits(cfg.max_tcp_flows),
+            dns: permits(cfg.max_dns_inflight),
             udp_flows: cfg.max_udp_flows,
-            udp_setup: Semaphore::new(udp::UDP_SETUP_CONCURRENCY),
+            udp_setup: permits(udp::UDP_SETUP_CONCURRENCY),
         }
     }
 }
@@ -208,6 +213,16 @@ impl FlowCut {
         self.notify.notified().await;
         let reason = self.reason.lock().clone().unwrap_or_default();
         format!("blocked: {reason}")
+    }
+
+    /// The `flow_end` error to report if the flow is already cut. Checked
+    /// before a flow forwards its first bytes, which `open_cuttable_flow`
+    /// may have cut at once.
+    pub fn cut_error_now(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .as_ref()
+            .map(|reason| format!("blocked: {reason}"))
     }
 }
 
@@ -334,7 +349,12 @@ impl Shared {
                 log::warn!("feed {:?}: needs an id and an absolute path", f.id);
                 continue;
             }
-            match self.load_feed_file(&f.id, f.category(), path, Some(ticket)) {
+            // Unknown categories are rejected by `Config::validate`.
+            let Some(category) = f.category() else {
+                log::warn!("feed {:?}: unknown category {:?}", f.id, f.category);
+                continue;
+            };
+            match self.load_feed_file(&f.id, category, path, Some(ticket)) {
                 Ok((sum, true)) => log::info!(
                     "feed {} preloaded: {} domains, {} ranges, {} ja4, {} rejected",
                     f.id,
@@ -399,7 +419,11 @@ impl Shared {
 
     /// [`open_flow`](Self::open_flow) for an allowed flow that per-app rules
     /// may cut later: `cut` fires when they come to block it. Checked once
-    /// more right away, for a state change since the flow was decided.
+    /// more right away, for a state change since the flow was decided:
+    /// after the flow is registered, so a concurrent change is seen either
+    /// here or by the `recheck_open_flows` scan (which runs after the policy
+    /// is written). The caller must check [`FlowCut::cut_error_now`] before
+    /// forwarding anything.
     pub fn open_cuttable_flow(
         &self,
         ev: FlowEvent,
@@ -413,6 +437,12 @@ impl Shared {
             Some("sni" | "http" | "quic") => ev.domain.clone(),
             _ => None,
         };
+        let target = CutTarget {
+            uid,
+            name: name.clone(),
+            cut: cut.clone(),
+        };
+        self.open_flow_inner(ev, counters, Some(target));
         let recheck = {
             let policy = self.policy.read();
             policy
@@ -420,12 +450,6 @@ impl Shared {
                 .then(|| policy.recheck_open(Some(uid), name.as_deref()))
                 .flatten()
         };
-        let target = CutTarget {
-            uid,
-            name,
-            cut: cut.clone(),
-        };
-        self.open_flow_inner(ev, counters, Some(target));
         if let Some(r) = recheck {
             self.stats.blocked.fetch_add(1, Relaxed);
             cut.cut(r.describe());
