@@ -567,10 +567,10 @@ impl WgTunnel {
         match socket2::SockRef::from(sock).send(p) {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            // An ICMP error from the peer's address: keep the socket.
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                self.set_error(format!("send: {e}"))
-            }
+            // An ICMP error from the peer's address, or a datagram too
+            // large for the path (re-creating the socket would not make it
+            // fit): keep the socket.
+            Err(e) if !needs_rebind(&e) => self.set_error(format!("send: {e}")),
             Err(e) => {
                 // Typically the network went away under the socket.
                 self.set_error(format!("send: {e}"));
@@ -851,6 +851,14 @@ impl WgTcpStream {
     }
 }
 
+/// Whether a send error means the socket should be re-created. Not for an
+/// ICMP error from the peer's address (`ConnectionRefused`), nor for a
+/// datagram too large to send (`EMSGSIZE`): a new socket would hit it again,
+/// and rebinding over and over would only disrupt the tunnel.
+fn needs_rebind(e: &io::Error) -> bool {
+    e.kind() != io::ErrorKind::ConnectionRefused && e.raw_os_error() != Some(libc::EMSGSIZE)
+}
+
 fn reset_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::ConnectionReset,
@@ -1019,6 +1027,18 @@ mod tests {
     use crate::platform::NullPlatform;
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn oversized_datagrams_do_not_rebind() {
+        assert!(!needs_rebind(&io::Error::from_raw_os_error(libc::EMSGSIZE)));
+        assert!(!needs_rebind(&io::Error::from(
+            io::ErrorKind::ConnectionRefused
+        )));
+        assert!(needs_rebind(&io::Error::from_raw_os_error(
+            libc::ENETUNREACH
+        )));
+        assert!(needs_rebind(&io::Error::from_raw_os_error(libc::EBADF)));
+    }
 
     fn b64(k: &[u8; 32]) -> String {
         base64::engine::general_purpose::STANDARD.encode(k)

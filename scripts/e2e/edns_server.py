@@ -8,7 +8,7 @@ Usage: edns_server.py CERT KEY DOT_PORT DOH_PORT PLAIN_PORT HITS_FILE
 - Plain DNS over UDP on 127.0.0.1:PLAIN_PORT; every query it receives is
   appended to HITS_FILE, so the test can prove nothing leaked in cleartext.
 
-Encrypted answers: A 192.0.2.53 (any name); TXT for big.vigil.test is
+Encrypted answers: A 192.0.2.53 (any name but one.one.one.one: 1.1.1.1); TXT for big.vigil.test is
 ~1.5 KB (exceeds 512 bytes, so UDP clients must get TC). Plain answers:
 A 192.0.2.99. The certificate is the committed test CA's
 (core/vigil-core/testdata/edns), valid for dns.vigil.test and 127.0.0.1.
@@ -34,7 +34,9 @@ def answer(q, a_ip):
     end, name, qtype = question(q)
     records = []
     if qtype == 1:
-        records.append((1, bytes(a_ip)))
+        # The real address, so the SOCKS5 send_domain check can connect by
+        # name to a host vigil resolved.
+        records.append((1, bytes([1, 1, 1, 1] if name == "one.one.one.one" else a_ip)))
     elif qtype == 16 and name == "big.vigil.test":
         txt = b"".join(bytes([200]) + b"x" * 200 for _ in range(7))
         records.append((16, txt))

@@ -270,8 +270,17 @@ pub(crate) async fn request<S: AsyncRead + AsyncWrite + Unpin>(
 }
 
 /// The name to hand to the proxy for a relayed connection: the TLS SNI or
-/// HTTP Host in the app's first bytes, else the IP address.
-pub(crate) fn target_from_first_bytes(first: &[u8], dst: SocketAddr) -> Target {
+/// HTTP Host in the app's first bytes, provided `resolved` (the name the
+/// engine's DNS cache holds for the dialled address, learnt from vigil's own
+/// resolver) is that same name; else the IP address. Only the dialled IP
+/// was checked against IP feeds: an app dialling a decoy address with the
+/// SNI of a host whose real address is on a feed must not get the proxy to
+/// connect to that host by name.
+pub(crate) fn target_from_first_bytes(
+    first: &[u8],
+    dst: SocketAddr,
+    resolved: Option<&str>,
+) -> Target {
     let name = match tls::parse_records(first) {
         tls::Sniff::Found(ch) => ch.sni,
         _ => match http::parse_request(first) {
@@ -280,9 +289,18 @@ pub(crate) fn target_from_first_bytes(first: &[u8], dst: SocketAddr) -> Target {
         },
     };
     match name {
-        Some(n) if is_domain(&n) => Target::Domain(n.to_ascii_lowercase(), dst.port()),
+        Some(n) if is_domain(&n) && resolved.is_some_and(|r| same_name(r, &n)) => {
+            Target::Domain(n.to_ascii_lowercase(), dst.port())
+        }
         _ => Target::Ip(dst),
     }
+}
+
+/// DNS names compared case-insensitively, ignoring a trailing dot.
+fn same_name(a: &str, b: &str) -> bool {
+    let a = a.strip_suffix('.').unwrap_or(a);
+    let b = b.strip_suffix('.').unwrap_or(b);
+    a.eq_ignore_ascii_case(b)
 }
 
 fn strip_port(host: &str) -> &str {
@@ -577,12 +595,7 @@ impl Socks5Dialer {
             }
         };
         self.udp.store(UDP_SUPPORTED, Relaxed);
-        let proxy_ip = ctrl.peer_addr()?.ip();
-        let relay = match bound {
-            Some(a) if !a.ip().is_unspecified() => a,
-            Some(a) => SocketAddr::new(proxy_ip, a.port()),
-            None => return Err(protocol_error("UDP relay given as a name")),
-        };
+        let relay = relay_addr(ctrl.peer_addr()?, bound)?;
         let sock = sock::connect_udp(platform.clone(), relay).await?;
         Ok(Socks5UdpFlow {
             ctrl,
@@ -591,6 +604,26 @@ impl Socks5Dialer {
             header: encode_udp_header(dst),
         })
     }
+}
+
+/// Where to send a UDP association's datagrams: always the proxy itself
+/// (the control connection's peer), at the port of the reply's BND.ADDR.
+/// The reply's address is not trusted: a spoofed or hostile reply could
+/// otherwise point the relay, and so every UDP flow, at any host, sent from
+/// the device's real address on a protected socket.
+fn relay_addr(proxy: SocketAddr, bound: Option<SocketAddr>) -> io::Result<SocketAddr> {
+    let bound = bound.ok_or_else(|| protocol_error("UDP relay given as a name"))?;
+    if bound.port() == 0 {
+        return Err(protocol_error("UDP relay without a port"));
+    }
+    let proxy_ip = proxy.ip().to_canonical();
+    let ip = bound.ip().to_canonical();
+    if !ip.is_unspecified() && ip != proxy_ip {
+        log::debug!(
+            "socks5: UDP relay given as {ip}, not the proxy's address {proxy_ip}; using the proxy's"
+        );
+    }
+    Ok(SocketAddr::new(proxy.ip(), bound.port()))
 }
 
 /// The error for UDP that the proxy cannot carry.
@@ -655,6 +688,7 @@ impl Socks5UdpFlow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dnscache::DnsCache;
     use crate::platform::NullPlatform;
     use tokio::net::TcpListener;
 
@@ -725,18 +759,29 @@ mod tests {
         rec.extend_from_slice(&(hello.len() as u16).to_be_bytes());
         rec.extend_from_slice(&hello);
         assert_eq!(
-            target_from_first_bytes(&rec, dst),
+            target_from_first_bytes(&rec, dst, Some("example.com.")),
             Target::Domain("example.com".into(), 443)
         );
         let http = b"GET / HTTP/1.1\r\nHost: www.example.org:8080\r\n\r\n";
         assert_eq!(
-            target_from_first_bytes(http, dst),
+            target_from_first_bytes(http, dst, Some("WWW.example.org")),
             Target::Domain("www.example.org".into(), 443)
         );
-        let ip_host = b"GET / HTTP/1.1\r\nHost: 1.2.3.4\r\n\r\n";
-        assert_eq!(target_from_first_bytes(ip_host, dst), Target::Ip(dst));
+        // The name is used only when vigil's resolver gave `dst` for it: an
+        // app dialling a decoy address with another host's SNI, or an
+        // address it did not look up through vigil, gets the address.
         assert_eq!(
-            target_from_first_bytes(b"SSH-2.0-x\r\n", dst),
+            target_from_first_bytes(&rec, dst, Some("decoy.example.net")),
+            Target::Ip(dst)
+        );
+        assert_eq!(target_from_first_bytes(http, dst, None), Target::Ip(dst));
+        let ip_host = b"GET / HTTP/1.1\r\nHost: 1.2.3.4\r\n\r\n";
+        assert_eq!(
+            target_from_first_bytes(ip_host, dst, Some("1.2.3.4")),
+            Target::Ip(dst)
+        );
+        assert_eq!(
+            target_from_first_bytes(b"SSH-2.0-x\r\n", dst, Some("example.com")),
             Target::Ip(dst)
         );
         assert_eq!(strip_port("[::1]:80"), "::1");
@@ -1042,13 +1087,13 @@ mod tests {
         let dst = echo_server().await;
         let hung = broken_proxy(vec![], false).await;
         let (d, platform) = dialer_with(quick_dialer(hung), false);
-        let s = tokio::time::timeout(Duration::from_secs(5), d.connect_tcp(&platform, dst, false))
+        let s = tokio::time::timeout(Duration::from_secs(5), d.connect_tcp(&platform, dst, None))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(s.via(), "direct");
         let (d, platform) = dialer_with(quick_dialer(hung), true);
-        let e = d.connect_tcp(&platform, dst, false).await.err().unwrap();
+        let e = d.connect_tcp(&platform, dst, None).await.err().unwrap();
         assert!(super::super::is_proxy_unavailable(&e), "{e}");
     }
 
@@ -1073,33 +1118,89 @@ mod tests {
             .unwrap()
             .local_addr()
             .unwrap();
+        let cache = DnsCache::new(16);
         let (d, platform) = dialer_with(send_domain(dead), false);
-        let mut s = d.connect_tcp(&platform, dst, true).await.unwrap();
+        let mut s = d.connect_tcp(&platform, dst, Some(&cache)).await.unwrap();
         assert_eq!(s.via(), "direct");
         s.write_all(b"ping").await.unwrap();
         let mut b = [0u8; 4];
         s.read_exact(&mut b).await.unwrap();
         let (d, platform) = dialer_with(send_domain(dead), true);
-        let e = d.connect_tcp(&platform, dst, true).await.err().unwrap();
+        let e = d
+            .connect_tcp(&platform, dst, Some(&cache))
+            .await
+            .err()
+            .unwrap();
         assert!(super::super::is_proxy_unavailable(&e), "{e}");
 
-        // The proxy is up: the CONNECT names the Host the app sent.
-        let target = Target::Domain("example.org".into(), dst.port());
+        // The proxy is up and vigil resolved the address for the Host the
+        // app sent: the CONNECT names it. Without that, the address.
+        let req = b"GET / HTTP/1.1\r\nHost: example.org\r\n\r\n";
+        for resolved in [Some("example.org"), Some("other.example"), None] {
+            let cache = DnsCache::new(16);
+            if let Some(name) = resolved {
+                cache.insert(dst.ip(), name, 60, Instant::now());
+            }
+            let target = match resolved {
+                Some("example.org") => Target::Domain("example.org".into(), dst.port()),
+                _ => Target::Ip(dst),
+            };
+            let proxy = fake_proxy(vec![
+                (vec![5, 1, 0], vec![5, 0]),
+                (
+                    encode_request(CMD_CONNECT, &target),
+                    vec![5, 0, 0, 1, 10, 0, 0, 1, 0x1f, 0x90],
+                ),
+            ])
+            .await;
+            let (d, platform) = dialer_with(send_domain(proxy), false);
+            let mut s = d.connect_tcp(&platform, dst, Some(&cache)).await.unwrap();
+            assert_eq!(s.via(), "socks5");
+            s.write_all(req).await.unwrap();
+            let mut b = vec![0u8; req.len()];
+            s.read_exact(&mut b).await.unwrap();
+            assert_eq!(&b, req, "{resolved:?}");
+        }
+    }
+
+    #[test]
+    fn udp_relay_is_always_the_proxy() {
+        let proxy: SocketAddr = "203.0.113.5:1080".parse().unwrap();
+        let at = |s: &str| Some(s.parse::<SocketAddr>().unwrap());
+        let want: SocketAddr = "203.0.113.5:40000".parse().unwrap();
+        assert_eq!(relay_addr(proxy, at("0.0.0.0:40000")).unwrap(), want);
+        assert_eq!(relay_addr(proxy, at("203.0.113.5:40000")).unwrap(), want);
+        // A reply naming another host does not redirect the datagrams.
+        assert_eq!(relay_addr(proxy, at("198.51.100.7:40000")).unwrap(), want);
+        assert_eq!(relay_addr(proxy, at("[2001:db8::1]:40000")).unwrap(), want);
+        assert!(relay_addr(proxy, at("203.0.113.5:0")).is_err());
+        assert!(relay_addr(proxy, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn udp_associate_ignores_a_foreign_relay_address() {
+        // The reply names 192.0.2.1 as the relay: datagrams must still go
+        // to the proxy (127.0.0.1), at the reply's port.
+        let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = relay.local_addr().unwrap().port();
+        let mut reply = vec![5, 0, 0, 1, 192, 0, 2, 1];
+        reply.extend_from_slice(&port.to_be_bytes());
+        let any = Target::Ip("0.0.0.0:0".parse().unwrap());
         let proxy = fake_proxy(vec![
             (vec![5, 1, 0], vec![5, 0]),
-            (
-                encode_request(CMD_CONNECT, &target),
-                vec![5, 0, 0, 1, 10, 0, 0, 1, 0x1f, 0x90],
-            ),
+            (encode_request(CMD_UDP_ASSOCIATE, &any), reply),
         ])
         .await;
-        let (d, platform) = dialer_with(send_domain(proxy), false);
-        let mut s = d.connect_tcp(&platform, dst, true).await.unwrap();
-        assert_eq!(s.via(), "socks5");
-        let req = b"GET / HTTP/1.1\r\nHost: example.org\r\n\r\n";
-        s.write_all(req).await.unwrap();
-        let mut b = vec![0u8; req.len()];
-        s.read_exact(&mut b).await.unwrap();
-        assert_eq!(&b, req);
+        let d = dialer(proxy, "", "");
+        let platform: Arc<dyn Platform> = Arc::new(NullPlatform);
+        let dst: SocketAddr = "9.9.9.9:53".parse().unwrap();
+        let flow = d.associate(&platform, dst).await.unwrap();
+        flow.send(b"q").await.unwrap();
+        let mut b = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), relay.recv(&mut b))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(parse_udp_datagram(&b[..n]), Some((dst, &b"q"[..])));
     }
 }

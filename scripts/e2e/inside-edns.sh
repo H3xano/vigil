@@ -49,7 +49,9 @@ case "$phase" in
     check "hardcoded-dns"   retry bash -c 'dig +short +time=5 +tries=2 example.org A @1.1.1.1 | grep -Eq "^[0-9.]+$"'
     # JA4 of curl --tls-max 1.2 is on the feed: reset before any proxy contact.
     check "ja4-blocked"     bash -c '! curl -s -o /dev/null --max-time 10 --tls-max 1.2 --resolve ja4-blocked.vigil-test.example:443:1.1.1.1 https://ja4-blocked.vigil-test.example/'
-    # Another fingerprint gets through, connected by name.
+    # Another fingerprint gets through, connected by name: the name vigil
+    # resolved the address for (send_domain only uses such names).
+    check "resolved-by-vigil" bash -c '[ "$(dig +short +time=4 +tries=1 one.one.one.one A @10.111.222.2)" = 1.1.1.1 ]'
     check "https-by-name"   retry curl -sS -o /dev/null --max-time 20 --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/
     ;;
   live-dot|live-doh)
