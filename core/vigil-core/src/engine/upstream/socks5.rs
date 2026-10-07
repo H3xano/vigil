@@ -270,16 +270,16 @@ pub(crate) async fn request<S: AsyncRead + AsyncWrite + Unpin>(
 }
 
 /// The name to hand to the proxy for a relayed connection: the TLS SNI or
-/// HTTP Host in the app's first bytes, provided `resolved` (the name the
-/// engine's DNS cache holds for the dialled address, learnt from vigil's own
-/// resolver) is that same name; else the IP address. Only the dialled IP
+/// HTTP Host in the app's first bytes, provided it is one of `resolved` (the
+/// names the engine's DNS cache holds for the dialled address, learnt from
+/// vigil's own resolver); else the IP address. Only the dialled IP
 /// was checked against IP feeds: an app dialling a decoy address with the
 /// SNI of a host whose real address is on a feed must not get the proxy to
 /// connect to that host by name.
 pub(crate) fn target_from_first_bytes(
     first: &[u8],
     dst: SocketAddr,
-    resolved: Option<&str>,
+    resolved: &[String],
 ) -> Target {
     let name = match tls::parse_records(first) {
         tls::Sniff::Found(ch) => ch.sni,
@@ -289,7 +289,7 @@ pub(crate) fn target_from_first_bytes(
         },
     };
     match name {
-        Some(n) if is_domain(&n) && resolved.is_some_and(|r| same_name(r, &n)) => {
+        Some(n) if is_domain(&n) && resolved.iter().any(|r| same_name(r, &n)) => {
             Target::Domain(n.to_ascii_lowercase(), dst.port())
         }
         _ => Target::Ip(dst),
@@ -759,29 +759,35 @@ mod tests {
         rec.extend_from_slice(&(hello.len() as u16).to_be_bytes());
         rec.extend_from_slice(&hello);
         assert_eq!(
-            target_from_first_bytes(&rec, dst, Some("example.com.")),
+            target_from_first_bytes(&rec, dst, &["example.com.".to_string()]),
             Target::Domain("example.com".into(), 443)
         );
         let http = b"GET / HTTP/1.1\r\nHost: www.example.org:8080\r\n\r\n";
         assert_eq!(
-            target_from_first_bytes(http, dst, Some("WWW.example.org")),
+            target_from_first_bytes(http, dst, &["WWW.example.org".to_string()]),
             Target::Domain("www.example.org".into(), 443)
         );
         // The name is used only when vigil's resolver gave `dst` for it: an
         // app dialling a decoy address with another host's SNI, or an
         // address it did not look up through vigil, gets the address.
         assert_eq!(
-            target_from_first_bytes(&rec, dst, Some("decoy.example.net")),
+            target_from_first_bytes(&rec, dst, &["decoy.example.net".to_string()]),
             Target::Ip(dst)
         );
-        assert_eq!(target_from_first_bytes(http, dst, None), Target::Ip(dst));
+        // A CDN address shared by several names: any of them matches.
+        let shared = ["other.example".to_string(), "EXAMPLE.com".to_string()];
+        assert_eq!(
+            target_from_first_bytes(&rec, dst, &shared),
+            Target::Domain("example.com".into(), 443)
+        );
+        assert_eq!(target_from_first_bytes(http, dst, &[]), Target::Ip(dst));
         let ip_host = b"GET / HTTP/1.1\r\nHost: 1.2.3.4\r\n\r\n";
         assert_eq!(
-            target_from_first_bytes(ip_host, dst, Some("1.2.3.4")),
+            target_from_first_bytes(ip_host, dst, &["1.2.3.4".to_string()]),
             Target::Ip(dst)
         );
         assert_eq!(
-            target_from_first_bytes(b"SSH-2.0-x\r\n", dst, Some("example.com")),
+            target_from_first_bytes(b"SSH-2.0-x\r\n", dst, &["example.com".to_string()]),
             Target::Ip(dst)
         );
         assert_eq!(strip_port("[::1]:80"), "::1");

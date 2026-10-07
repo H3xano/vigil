@@ -17,9 +17,12 @@ const MAX_TTL: Duration = Duration::from_secs(6 * 3600);
 /// full cache drops half its entries instead, so a stream of new addresses
 /// cannot make every insert scan the whole map under the lock.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
+/// Names kept per address (CDN addresses serve many), newest first.
+const NAMES_PER_IP: usize = 4;
 
 struct Inner {
-    map: HashMap<IpAddr, (String, Instant)>,
+    /// Names per address, newest first, each with its expiry.
+    map: HashMap<IpAddr, Vec<(String, Instant)>>,
     last_sweep: Option<Instant>,
 }
 
@@ -53,7 +56,7 @@ impl DnsCache {
                 .map_or(true, |t| now.saturating_duration_since(t) >= SWEEP_EVERY);
             if due {
                 inner.last_sweep = Some(now);
-                m.retain(|_, (_, exp)| *exp > now);
+                m.retain(|_, names| names.iter().any(|(_, exp)| *exp > now));
             }
             if m.len() >= self.capacity {
                 // Still full (of live entries, or no sweep was due): drop an
@@ -66,16 +69,33 @@ impl DnsCache {
                 });
             }
         }
-        m.insert(ip, (name.to_string(), now + ttl));
+        let names = m.entry(ip).or_default();
+        names.retain(|(n, exp)| *exp > now && n != name);
+        names.truncate(NAMES_PER_IP - 1);
+        names.insert(0, (name.to_string(), now + ttl));
     }
 
+    /// The name most recently resolved to `ip` (a label for flows).
     pub fn lookup(&self, ip: IpAddr, now: Instant) -> Option<String> {
         let inner = self.inner.lock();
         inner
             .map
-            .get(&ip)
-            .filter(|(_, exp)| *exp > now)
+            .get(&ip)?
+            .iter()
+            .find(|(_, exp)| *exp > now)
             .map(|(n, _)| n.clone())
+    }
+
+    /// Every live name recently resolved to `ip`, newest first.
+    pub fn names(&self, ip: IpAddr, now: Instant) -> Vec<String> {
+        let inner = self.inner.lock();
+        inner.map.get(&ip).map_or_else(Vec::new, |names| {
+            names
+                .iter()
+                .filter(|(_, exp)| *exp > now)
+                .map(|(n, _)| n.clone())
+                .collect()
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -143,5 +163,34 @@ mod tests {
         }
         assert_eq!(c.inner.lock().last_sweep, Some(t1));
         assert_eq!(c.lookup(ip(10_999), t1).as_deref(), Some("y.example"));
+    }
+
+    #[test]
+    fn shared_addresses_keep_several_names() {
+        let c = DnsCache::new(16);
+        let t0 = Instant::now();
+        let ip = IpAddr::from([104, 16, 0, 1]);
+        for n in [
+            "a.example",
+            "b.example",
+            "c.example",
+            "a.example",
+            "d.example",
+            "e.example",
+        ] {
+            c.insert(ip, n, 600, t0);
+        }
+        // Newest first, re-resolving moves a name to the front, at most four.
+        assert_eq!(c.lookup(ip, t0).as_deref(), Some("e.example"));
+        assert_eq!(
+            c.names(ip, t0),
+            ["e.example", "d.example", "a.example", "c.example"]
+        );
+        // Expired names are not returned.
+        c.insert(ip, "short.example", 0, t0);
+        let later = t0 + MIN_TTL + Duration::from_secs(1);
+        assert_eq!(c.names(ip, later), ["e.example", "d.example", "a.example"]);
+        assert_eq!(c.lookup(ip, later).as_deref(), Some("e.example"));
+        assert!(c.names(IpAddr::from([10, 0, 0, 1]), t0).is_empty());
     }
 }

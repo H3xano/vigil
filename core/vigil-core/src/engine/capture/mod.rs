@@ -176,6 +176,8 @@ pub(crate) struct Capture {
     stream_on: AtomicBool,
     /// A resize is between its two steps (see [`Capture::apply`]).
     resizing: AtomicBool,
+    /// Serialises [`Capture::apply`], so two resizes never overlap.
+    applying: Mutex<()>,
 }
 
 impl Default for Capture {
@@ -191,6 +193,7 @@ impl Default for Capture {
             stream: Arc::new(stream::Hub::default()),
             stream_on: AtomicBool::new(false),
             resizing: AtomicBool::new(false),
+            applying: Mutex::new(()),
         }
     }
 }
@@ -293,6 +296,7 @@ impl Capture {
     /// keeps the newest packets that fit. Starts or stops the stream server
     /// (call inside the runtime).
     pub fn apply(&self, cfg: &CaptureConfig, platform: &Arc<dyn Platform>) -> bool {
+        let _applying = self.applying.lock();
         let mut newly_on = false;
         let mut resize = None;
         {

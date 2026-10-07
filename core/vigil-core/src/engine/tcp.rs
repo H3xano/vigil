@@ -595,12 +595,13 @@ async fn relay(
             ev.verdict = Some(Verdict::Allow);
             shared.open_cuttable_flow(ev.clone(), &counters, &cut);
             opened.store(true, Relaxed);
-            observe_allowed(shared, &ev);
             if cut.cut_error_now().is_some() {
                 // Cut at once (e.g. the app went to the background while
-                // the connection was set up): no client byte is forwarded.
+                // the connection was set up): no client byte is forwarded,
+                // so nothing is learnt or alerted on either.
                 return Ok(false);
             }
+            observe_allowed(shared, &ev);
             if let SniffEnd::Failed(err) = sniff_end {
                 return Err(RelayError {
                     side: Side::Client,

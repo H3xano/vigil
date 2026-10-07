@@ -307,9 +307,9 @@ class VigilVpnService : android.net.VpnService() {
             fail(it.message ?: getString(R.string.vpn_error_restart))
             return
         }
-        old?.let { stopSideJobs(it) }
+        val oldSideDone = old?.let { stopSideJobs(it) } ?: true
         activate(new)
-        if (old != null) teardown(old)
+        if (old != null) teardown(old, oldSideDone)
         closeStale(new.id)
     }
 
@@ -436,9 +436,10 @@ class VigilVpnService : android.net.VpnService() {
      * open flows), lets the pump drain and process those final events, then
      * frees the engine and closes the interface.
      */
-    private suspend fun teardown(s: Session) = withContext(NonCancellable) {
+    private suspend fun teardown(s: Session, sideStopped: Boolean? = null) = withContext(NonCancellable) {
         if (ServiceState.engine.value?.session == s.id) ServiceState.engine.value = null
-        val sideDone = stopSideJobs(s)
+        // A restart already stopped them (and waited once): don't wait again.
+        val sideDone = sideStopped ?: stopSideJobs(s)
         val graceful = s.engine.shutdown()
         s.draining = true
         val pump = s.pump

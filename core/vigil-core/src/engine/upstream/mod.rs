@@ -347,7 +347,7 @@ impl Dialer {
                 if let Some(cache) = relay.filter(|_| s.send_domain()) {
                     // The name vigil's resolver gave for this address (when
                     // the app looked it up): the only one the CONNECT may use.
-                    let resolved = cache.lookup(dst.ip(), std::time::Instant::now());
+                    let resolved = cache.names(dst.ip(), std::time::Instant::now());
                     // Reach the proxy now; only the CONNECT waits for the
                     // name in the app's first bytes.
                     return match s.handshake(platform).await {
@@ -636,7 +636,7 @@ pub(crate) struct LazySocks {
     dst: SocketAddr,
     /// The name the DNS cache holds for `dst` (see
     /// [`socks5::target_from_first_bytes`]).
-    resolved: Option<String>,
+    resolved: Vec<String>,
     /// The negotiated connection to the proxy, until the CONNECT is sent.
     conn: Option<TcpStream>,
     state: LazyState,
@@ -650,7 +650,7 @@ impl LazySocks {
         dialer: Arc<Socks5Dialer>,
         conn: TcpStream,
         dst: SocketAddr,
-        resolved: Option<String>,
+        resolved: Vec<String>,
     ) -> Self {
         Self {
             dialer,
@@ -750,7 +750,7 @@ impl AsyncWrite for LazySocks {
     ) -> Poll<io::Result<usize>> {
         let me = self.get_mut();
         if matches!(me.state, LazyState::Waiting) {
-            let target = socks5::target_from_first_bytes(buf, me.dst, me.resolved.as_deref());
+            let target = socks5::target_from_first_bytes(buf, me.dst, &me.resolved);
             me.start(target);
         }
         match me.poll_connected(cx) {

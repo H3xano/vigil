@@ -392,13 +392,13 @@ async fn flow(
     };
     let cut = FlowCut::new();
     shared.open_cuttable_flow(ev.clone(), &counters, &cut);
-    observe_allowed(shared, &ev);
     if let Some(e) = cut.cut_error_now() {
         // Blocked by a per-app rule while the socket was set up (e.g. the
-        // app went to the background): nothing is sent.
+        // app went to the background): nothing is sent, learnt or alerted.
         end.finish(Some(e));
         return;
     }
+    observe_allowed(shared, &ev);
 
     let mut error = None;
     for d in held.drain(..) {

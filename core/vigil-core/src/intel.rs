@@ -649,7 +649,7 @@ fn is_hosts_boilerplate(name: &str) -> bool {
             n.as_str(),
             "localhost" | "local" | "broadcasthost" | "localhost.localdomain" | "localdomain"
         )
-        || n.starts_with("ip6-")
+        || (n.starts_with("ip6-") && !n.contains('.'))
         || n.ends_with(".localdomain")
         || n.ends_with(".localhost")
 }
@@ -811,10 +811,13 @@ fe00::0 ip6-localnet
 ff02::1 ip6-allnodes
 0.0.0.0 0.0.0.0
 0.0.0.0 ads.example.com lan 192.0.2.1 .dot.example.org
+0.0.0.0 ip6-tracker.example.com
 ";
         let f = parse_feed(text);
-        assert_eq!(f.domains.len(), 2);
+        assert_eq!(f.domains.len(), 3);
         assert!(f.domains.contains_exact("ads.example.com"));
+        // Only the single-label `ip6-*` header names are boilerplate.
+        assert!(f.domains.contains_exact("ip6-tracker.example.com"));
         assert!(f.domains.contains_exact("dot.example.org"));
         assert_eq!(f.domains.match_suffix("printer.local"), None);
         assert_eq!(f.domains.match_suffix("box.lan"), None);

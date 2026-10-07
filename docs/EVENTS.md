@@ -113,8 +113,11 @@ and `threat_ip` alerts name that IPv4 address as `target`.
 
 `domain_source` tells you how much to trust `domain`: `sni`, `quic` and `http`
 are what the app itself sent. `dns` is a reverse lookup of the address in
-recent DNS answers, which is ambiguous for shared CDN addresses, so it is
-never used for blocking.
+recent answers of vigil's own resolver (the newest name for that address),
+which is ambiguous for shared CDN addresses, so it is never used for
+blocking. Answers an app gets from a resolver it chose itself (hard-coded
+DNS servers) are inspected but never label other flows: one app must not
+be able to name addresses for every app.
 
 `via` is the upstream path of the flow's own connection (see `upstream`
 below): `direct`, `wireguard` or `socks5`. It is `direct` in the tunnel and
@@ -175,8 +178,12 @@ the same fingerprint, which is why matching alerts only by default.
 (block only), `ja4` and `asn`. An unknown category fails the load (logged,
 null returned); it never loads as another category. Lines are
 recognised individually: hosts-file entries, plain domains (`*.` prefix
-allowed), AdGuard `||domain^` rules, IP addresses and CIDR ranges, and JA4
-fingerprints. A JA4 line is the fingerprint optionally followed by a label,
+or a leading `.` allowed), AdGuard `||domain^` rules, IP addresses and CIDR
+ranges, and JA4 fingerprints. Names must contain a dot and not be an IP
+address (a single label such as `local` would block a whole namespace);
+the standard hosts-file header lines (`localhost`, `local`,
+`broadcasthost`, `ip6-localhost`, `0.0.0.0 0.0.0.0`, …) are skipped without
+counting as rejected. A JA4 line is the fingerprint optionally followed by a label,
 separated by whitespace, `#`, `,`, `;` or `|`:
 
 ```
@@ -482,7 +489,7 @@ capture"), for `nativeExportPcap`; optionally streams them live.
 | `enabled` | bool | `false` | Record packets. Turning it off discards the ring (and stops the stream). |
 | `buffer_bytes` | integer, 65536..=134217728 | 16777216 | Ring size: packet data plus 16 bytes per packet; the oldest packets are overwritten. A new size applies at once and keeps the newest packets that fit. |
 | `snaplen` | integer, 64..=65535 | 65535 | Bytes kept of each packet (the original length is recorded). |
-| `stream.enabled` | bool | `false` | PCAP-over-IP server (needs `enabled`). Each client receives a classic PCAP header (µs timestamps, link type 101, raw IP) and then every packet recorded from then on; nothing it sends is read. At most 2 clients; each has a bounded queue (8192 packets, 8 MiB), and a client that reads too slowly loses packets. |
+| `stream.enabled` | bool | `false` | PCAP-over-IP server (needs `enabled`). Each client receives a classic PCAP header (µs timestamps, link type 101, raw IP, snap length 65535 whatever `snaplen` is, so a later change needs no new header) and then every packet recorded from then on; nothing it sends is read. At most 2 clients; each has a bounded queue (8192 packets, 8 MiB), and a client that reads too slowly loses packets. |
 | `stream.port` | integer | 57012 | TCP port (must be positive while `stream.enabled`). |
 | `stream.bind` | IP address string | `""` | Address to listen on; empty: not listening. The app sends the Wi-Fi (or Ethernet) IPv4 address by default, `0.0.0.0` for "all networks", `127.0.0.1` for "this device", and `""` while there is no Wi-Fi. A bind that fails is retried every 5 s. |
 | `stream.allow` | list of addresses or CIDRs (≤ 32) | `[]` | Clients allowed to connect; empty allows any (the app never sends an empty list with a non-loopback `bind`: it does not stream on a network without an allowlist). IPv4-mapped IPv6 peers are matched as IPv4. Clients on the device itself (loopback or one of its addresses) must in addition be owned by UID 2000 (shell, `adb forward`) or 0 (root). |
@@ -599,11 +606,11 @@ connections of `encrypted_dns`. Inspection is the same in every mode.
 | `wireguard.endpoint` | | `host:port` or `[v6]:port`. Host names are resolved when the tunnel starts, on roaming and every 30 s while handshakes fail. IPv4 answers are preferred. A lookup has 5 s; when it fails the last address is kept. |
 | `wireguard.addresses` | | Tunnel addresses (CIDR; a bare address is a host route). At most one IPv4 and one IPv6. Destinations of a family without an address fail (apps fall back to the other family). |
 | `wireguard.allowed_ips` | `[]` (everything) | Destinations routed through the peer, as wg-quick does; others go direct, except that with `fail_closed` destinations of an address family with no entry at all (e.g. IPv6 with only `0.0.0.0/0`) are refused. Inner packets from other sources are dropped. |
-| `wireguard.mtu` | 1420 | Tunnel MTU, 576..=65535 (the app sends 1280 unless the `.conf` sets one). |
+| `wireguard.mtu` | 1420 | Tunnel MTU, 576..=65400, so an encrypted packet fits a UDP datagram (the app sends 1280 unless the `.conf` sets one). |
 | `wireguard.persistent_keepalive` | 0 | Seconds between keepalives (0 = off). |
 | `socks5.server` | | `host:port` of the proxy (loopback works, e.g. Orbot's `127.0.0.1:9050`). A host name is looked up with a 3 s timeout and the address reused for 5 min, or until connecting to it fails; when a lookup fails the last address is used. |
 | `socks5.username`, `password` | `""` | RFC 1929 credentials, at most 255 bytes each; a password needs a username. |
-| `socks5.send_domain` | `false` | CONNECT by the TLS SNI or HTTP Host the app sent (the proxy resolves it; useful for Tor) instead of by address. The connection to the proxy (and authentication) is still made at the SYN, so an unusable proxy refuses the app's connection (or, with `fail_closed: false`, sends it direct); the CONNECT is sent when the app's first bytes arrive (or after 3.5 s by address, for server-speaks-first protocols), so a refused CONNECT resets an already accepted connection. |
+| `socks5.send_domain` | `false` | CONNECT by the TLS SNI or HTTP Host the app sent (the proxy resolves it; useful for Tor) instead of by address, provided vigil's own resolver recently answered that name with the dialled address (the cache keeps up to four names per address); otherwise by address, because only the address was checked against IP feeds. The connection to the proxy (and authentication) is still made at the SYN, so an unusable proxy refuses the app's connection (or, with `fail_closed: false`, sends it direct); the CONNECT is sent when the app's first bytes arrive (or after 3.5 s by address, for server-speaks-first protocols), so a refused CONNECT resets an already accepted connection. |
 | `socks5.udp` | `auto` | `auto`: UDP flows use UDP ASSOCIATE (one association per flow); once the proxy refuses it (a SOCKS reply code; not a timeout or a dropped connection), UDP is blocked. `block`: UDP is never relayed. Plain DNS always goes to the proxy as DNS over TCP. |
 
 Changing `upstream` with `nativeUpdateConfig` takes effect at once for new
@@ -658,7 +665,8 @@ false (and the running config is kept) when the JSON does not parse or:
 - `upstream.mode` is `wireguard` or `socks5` without its section, a key is
   not base64 of 32 bytes, an endpoint or server is not `host:port`, an
   address or AllowedIPs entry is not a CIDR, there is no tunnel address or
-  more than one per family, the WireGuard MTU is outside 576..=65535, or
+  more than one per family, a tunnel address is not unicast (unspecified,
+  multicast or broadcast), the WireGuard MTU is outside 576..=65400, or
   SOCKS5 credentials are too long or a password has no username;
 - `capture` is invalid (see its section above).
 

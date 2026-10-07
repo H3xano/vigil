@@ -349,8 +349,9 @@ interface FlowDao {
 
     /** Distinct names and addresses in the whole history (DNS, connections, learned destinations), counted in SQL. */
     @Query(
-        """SELECT COUNT(*) FROM (SELECT lower(qname) FROM dns_queries UNION SELECT lower(domain) FROM flows WHERE domain IS NOT NULL
-           UNION SELECT lower(dstIp) FROM flows UNION SELECT lower(destination) FROM destinations)""",
+        """SELECT COUNT(*) FROM (SELECT rtrim(lower(trim(qname)), '.') AS n FROM dns_queries
+           UNION SELECT rtrim(lower(trim(domain)), '.') FROM flows WHERE domain IS NOT NULL
+           UNION SELECT lower(dstIp) FROM flows UNION SELECT rtrim(lower(trim(destination)), '.') FROM destinations) WHERE n != ''""",
     )
     fun countObservedNames(): Int
 
