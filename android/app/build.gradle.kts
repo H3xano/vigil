@@ -149,7 +149,7 @@ dependencies {
     // minCompileSdk 37: Compose BOM 2026.08.00+ (UI 1.12), core 1.19,
     // lifecycle 2.11 (its compose artifacts; lifecycle versions are aligned),
     // navigation-compose 2.10.
-    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
