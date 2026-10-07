@@ -24,7 +24,7 @@ socket2 = { version = "0.5", features = ["all"] }
 parking_lot = "0.12"
 aes = "0.8"
 aes-gcm = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 sha2 = "0.10"
 # Encrypted upstream DNS (DoT/DoH). ring, not aws-lc-rs: no C/cmake cross
 # build for Android, and simpler reproducible builds.
