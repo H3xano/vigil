@@ -532,6 +532,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -707,7 +717,7 @@ dependencies = [
  "etherparse",
  "futures",
  "rand",
- "smoltcp",
+ "smoltcp 0.12.0",
  "spin",
  "tokio",
  "tokio-util",
@@ -1051,7 +1061,22 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "defmt 0.3.100",
- "heapless",
+ "heapless 0.8.0",
+ "log",
+ "managed",
+]
+
+[[package]]
+name = "smoltcp"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f8b28ad56c6e35524a37dd492af5d1a47e31e1a4d175cd12f89c075f01980f"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "cfg-if",
+ "defmt 1.1.1",
+ "heapless 0.9.3",
  "log",
  "managed",
 ]
@@ -1304,7 +1329,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "smoltcp",
+ "smoltcp 0.14.0",
  "socket2 0.5.10",
  "tokio",
  "tokio-rustls",
