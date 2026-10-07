@@ -43,6 +43,12 @@ pub struct ClientHello {
     /// GREASE version of it on every handshake, so on its own this does not
     /// mean the SNI is hidden; see [`ClientHello::ech_active`].
     pub ech: bool,
+    /// A `server_name` extension is present, even if its value was not a
+    /// usable host name (`sni` is then `None`); JA4 reports it as `d`.
+    pub sni_ext: bool,
+    /// Raw first and last bytes of the first ALPN value, for JA4 (whose
+    /// hex fallback is defined on the bytes, not on lossy UTF-8 text).
+    pub alpn_ends: Option<(u8, u8)>,
 }
 
 pub fn is_grease(v: u16) -> bool {
@@ -120,11 +126,13 @@ impl ClientHello {
     }
 
     fn alpn_code(&self) -> String {
-        let Some(first) = self.alpn.first().filter(|a| !a.is_empty()) else {
+        let ends = self.alpn_ends.or_else(|| {
+            let b = self.alpn.first()?.as_bytes();
+            Some((*b.first()?, *b.last()?))
+        });
+        let Some((f, l)) = ends else {
             return "00".into();
         };
-        let bytes = first.as_bytes();
-        let (f, l) = (bytes[0], bytes[bytes.len() - 1]);
         if f.is_ascii_alphanumeric() && l.is_ascii_alphanumeric() {
             format!("{}{}", f as char, l as char)
         } else {
@@ -153,7 +161,11 @@ impl ClientHello {
             "{}{}{}{:02}{:02}{}",
             transport,
             version_code(self.max_version()),
-            if self.sni.is_some() { 'd' } else { 'i' },
+            if self.sni_ext || self.sni.is_some() {
+                'd'
+            } else {
+                'i'
+            },
             ciphers.len().min(99),
             exts.len().min(99),
             self.alpn_code()
@@ -279,6 +291,7 @@ fn parse_client_hello_body(body: &[u8]) -> Option<ClientHello> {
         let mut d = Reader::new(data);
         match etype {
             EXT_SERVER_NAME => {
+                ch.sni_ext = true;
                 let mut list = Reader::new(d.vec16()?);
                 while !list.is_empty() {
                     let name_type = list.u8()?;
@@ -294,6 +307,9 @@ fn parse_client_hello_body(body: &[u8]) -> Option<ClientHello> {
                 let mut list = Reader::new(d.vec16()?);
                 while !list.is_empty() {
                     let p = list.vec8()?;
+                    if ch.alpn.is_empty() {
+                        ch.alpn_ends = p.first().zip(p.last()).map(|(f, l)| (*f, *l));
+                    }
                     ch.alpn.push(String::from_utf8_lossy(p).into_owned());
                 }
             }
@@ -450,6 +466,39 @@ mod tests {
             panic!()
         };
         assert!(ch.ja4('q').starts_with("q13i020300_"));
+    }
+
+    #[test]
+    fn ja4_alpn_uses_raw_bytes() {
+        let hs = build_client_hello(Some("example.com"), &["Zxq", "h2"], 0);
+        let at = hs.windows(3).position(|w| w == b"Zxq").unwrap();
+        let mut raw = hs.clone();
+        raw[at..at + 3].copy_from_slice(&[0xc3, b'x', 0x01]);
+        let Sniff::Found(ch) = parse_handshake(&raw) else {
+            panic!()
+        };
+        // Lossy UTF-8 would turn 0xc3 into U+FFFD (0xef...) and give "e1".
+        assert_eq!(&ch.ja4('t')[8..10], "c1");
+        assert_eq!(ch.alpn_ends, Some((0xc3, 0x01)));
+        // Alphanumeric ends stay literal; single-byte values use one byte twice.
+        for (alpn, want) in [("Zxq", "Zq"), ("x", "xx"), ("-a", "21"), ("a.", "6e")] {
+            let hs = build_client_hello(None, &[alpn], 0);
+            let Sniff::Found(ch) = parse_handshake(&hs) else {
+                panic!()
+            };
+            assert_eq!(&ch.ja4('t')[8..10], want, "{alpn}");
+        }
+    }
+
+    #[test]
+    fn ja4_sni_flag_tracks_extension_presence() {
+        let hs = build_client_hello(Some("not a host!"), &[], 0);
+        let Sniff::Found(ch) = parse_handshake(&hs) else {
+            panic!()
+        };
+        assert_eq!(ch.sni, None);
+        assert!(ch.sni_ext);
+        assert!(ch.ja4('t').starts_with("t13d0204"), "{}", ch.ja4('t'));
     }
 
     #[test]

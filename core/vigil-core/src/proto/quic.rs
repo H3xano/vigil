@@ -123,9 +123,9 @@ pub fn decrypt_initial(datagram: &[u8]) -> Option<Vec<u8>> {
     if scid.len() > 20 {
         return None;
     }
-    let token_len = r.varint()? as usize;
+    let token_len = varint_usize(&mut r)?;
     r.skip(token_len)?;
-    let length = r.varint()? as usize;
+    let length = varint_usize(&mut r)?;
     let pn_offset = r.pos();
     let end = pn_offset.checked_add(length)?;
     if end > datagram.len() || length < 20 {
@@ -158,6 +158,12 @@ pub fn decrypt_initial(datagram: &[u8]) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// A varint used as a length: `None` if it does not fit `usize` (a plain
+/// cast would truncate on 32-bit targets such as armv7).
+fn varint_usize(r: &mut Reader) -> Option<usize> {
+    usize::try_from(r.varint()?).ok()
+}
+
 /// Walks QUIC frames and yields `(offset, data)` for every CRYPTO frame.
 fn crypto_frames(plain: &[u8]) -> Vec<(u64, &[u8])> {
     let mut out = Vec::new();
@@ -188,18 +194,20 @@ fn crypto_frames(plain: &[u8]) -> Vec<(u64, &[u8])> {
                 }
             }
             0x06 => {
-                let (Some(off), Some(len)) = (r.varint(), r.varint()) else {
+                let (Some(off), Some(len)) = (r.varint(), varint_usize(&mut r)) else {
                     break;
                 };
-                let Some(data) = r.bytes(len as usize) else {
+                let Some(data) = r.bytes(len) else {
                     break;
                 };
                 out.push((off, data));
             }
             0x1c => {
                 let _ = (r.varint(), r.varint());
-                let Some(n) = r.varint() else { break };
-                if r.skip(n as usize).is_none() {
+                let Some(n) = varint_usize(&mut r) else {
+                    break;
+                };
+                if r.skip(n).is_none() {
                     break;
                 }
             }
@@ -404,6 +412,32 @@ mod tests {
         let mut s = QuicSniffer::new();
         assert_eq!(s.feed(b"\x00\x01garbage-datagram"), Sniff::NotMatched);
         assert!(!looks_like_initial(&[0x40, 1, 2, 3, 4, 5, 6, 7]));
+    }
+
+    #[test]
+    fn oversized_varint_lengths_are_rejected() {
+        // 8-byte varint 2^32 + 4: a truncating cast on 32-bit made it 4.
+        let huge = [0xc0, 0, 0, 0x01, 0, 0, 0, 0x04];
+        let fits = usize::try_from((1u64 << 32) + 4).ok();
+        assert_eq!(varint_usize(&mut Reader::new(&huge)), fits);
+        let mut frame = vec![0x06, 0x00];
+        frame.extend_from_slice(&huge);
+        frame.extend_from_slice(b"abcd");
+        assert!(crypto_frames(&frame).is_empty());
+        let mut frame = vec![0x1c, 0x00, 0x00];
+        frame.extend_from_slice(&huge);
+        frame.extend_from_slice(&[0x06, 0x00, 0x01, b'z']);
+        assert!(crypto_frames(&frame).is_empty());
+        // An Initial whose token length overflows is dropped, not misparsed.
+        let hello = tls::build_client_hello(Some("x.example"), &[], 0);
+        let pkt = seal_initial(VERSION_1, &[1; 8], 0, &[(0, &hello)]);
+        let token_at = 1 + 4 + 1 + 8 + 1;
+        assert_eq!(pkt[token_at], 0, "empty token");
+        let mut bad = pkt[..token_at].to_vec();
+        bad.extend_from_slice(&huge);
+        bad.extend_from_slice(&pkt[token_at + 1..]);
+        assert!(decrypt_initial(&bad).is_none());
+        assert!(decrypt_initial(&pkt).is_some());
     }
 
     #[test]

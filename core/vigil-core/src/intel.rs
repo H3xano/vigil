@@ -82,7 +82,8 @@ pub struct DomainSetBuilder {
 
 impl DomainSetBuilder {
     pub fn push(&mut self, raw: &str) -> bool {
-        let s = raw.trim().trim_end_matches('.');
+        // `.example.com` (a suffix-rule spelling) is the same as `example.com`.
+        let s = raw.trim().trim_end_matches('.').trim_start_matches('.');
         if s.is_empty() || s.len() > 253 || self.arena.len() + s.len() > u32::MAX as usize {
             return false;
         }
@@ -605,12 +606,20 @@ fn parse_line(
     let mut rest = fields.peekable();
     if rest.peek().is_some() && first.parse::<IpAddr>().is_ok() {
         // hosts-file entry; sink addresses precede the blocked names.
-        if is_sink_address(first) {
-            for h in rest.filter(|h| *h != "localhost" && !h.ends_with(".localdomain")) {
-                domains.push(h);
-            }
-        } else {
+        // Standard header lines (`127.0.0.1 localhost`, `255.255.255.255
+        // broadcasthost`, `::1 ip6-localhost`, `0.0.0.0 0.0.0.0`) are skipped.
+        let names: Vec<&str> = rest.filter(|h| !is_hosts_boilerplate(h)).collect();
+        if names.is_empty() {
+            return;
+        }
+        if !is_sink_address(first) {
             *rejected += 1;
+            return;
+        }
+        for h in names {
+            if !(is_list_name(h) && domains.push(h)) {
+                *rejected += 1;
+            }
         }
         return;
     }
@@ -619,9 +628,30 @@ fn parse_line(
         return;
     }
     let name = first.strip_prefix("*.").unwrap_or(first);
-    if !(name.contains('.') && !name.contains('*') && domains.push(name)) {
+    if !(is_list_name(name) && domains.push(name)) {
         *rejected += 1;
     }
+}
+
+/// Whether a blocklist entry can be a domain name: dotted, no wildcard,
+/// not an IP literal. Single labels (`local`, `lan`) would block a whole
+/// namespace by suffix match.
+fn is_list_name(name: &str) -> bool {
+    let core = name.trim_matches('.');
+    core.contains('.') && !name.contains('*') && core.parse::<IpAddr>().is_err()
+}
+
+/// Names on the standard hosts-file header lines, never blocklist entries.
+fn is_hosts_boilerplate(name: &str) -> bool {
+    let n = name.trim_end_matches('.').to_ascii_lowercase();
+    is_sink_address(&n)
+        || matches!(
+            n.as_str(),
+            "localhost" | "local" | "broadcasthost" | "localhost.localdomain" | "localdomain"
+        )
+        || n.starts_with("ip6-")
+        || n.ends_with(".localdomain")
+        || n.ends_with(".localhost")
 }
 
 /// Whether an address is in a range that must never leave the device or be
@@ -766,6 +796,43 @@ not_a_domain
         assert_eq!(streamed.domains.len(), f.domains.len());
         assert_eq!(streamed.ips.len(), f.ips.len());
         assert_eq!(streamed.rejected, f.rejected);
+    }
+
+    #[test]
+    fn hosts_header_does_not_block_namespaces() {
+        let text = "\
+127.0.0.1 localhost
+127.0.0.1 localhost.localdomain
+127.0.0.1 local
+255.255.255.255 broadcasthost
+::1 localhost
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff02::1 ip6-allnodes
+0.0.0.0 0.0.0.0
+0.0.0.0 ads.example.com lan 192.0.2.1 .dot.example.org
+";
+        let f = parse_feed(text);
+        assert_eq!(f.domains.len(), 2);
+        assert!(f.domains.contains_exact("ads.example.com"));
+        assert!(f.domains.contains_exact("dot.example.org"));
+        assert_eq!(f.domains.match_suffix("printer.local"), None);
+        assert_eq!(f.domains.match_suffix("box.lan"), None);
+        // `lan` (single label) and `192.0.2.1` (IP literal) are rejected.
+        assert_eq!(f.rejected, 2);
+        assert!(f.ips.is_empty());
+        // A leading dot is a suffix-rule spelling in plain lists too.
+        let p = parse_feed(".lead.example\n.\n");
+        assert!(p.domains.contains_exact("lead.example"));
+        assert_eq!(
+            p.domains.match_suffix("x.lead.example"),
+            Some("lead.example")
+        );
+        assert_eq!(p.rejected, 1);
+        let set = DomainSet::from_names([".from.example", "..", "UPPER.Example."]);
+        assert!(set.contains_exact("from.example"));
+        assert!(set.contains_exact("upper.example"));
+        assert_eq!(set.len(), 2);
     }
 
     const SLIVER: &str = "t13d190900_9dc949149365_97f8aa674fd9";
