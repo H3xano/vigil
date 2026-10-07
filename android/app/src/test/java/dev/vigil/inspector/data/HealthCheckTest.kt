@@ -189,4 +189,46 @@ class HealthCheckTest {
         assertEquals(listOf("a.b.example.com", "b.example.com", "example.com"), HealthCheck.suffixes("a.b.example.com"))
         assertEquals(emptyList<String>(), HealthCheck.suffixes("localhost"))
     }
+
+    @Test
+    fun ipv6IndicatorsMatchByValueAndRange() {
+        val pack = SpywarePack(
+            feedId = "v6", name = "v6 pack", source = "s", license = "CC0", downloadedAt = now - day,
+            groups = listOf(
+                SpywareGroup("Exact6", ips = listOf("2001:db8:0::1")),
+                SpywareGroup("Range6", ips = listOf("2001:DB8:aa00::/40")),
+                SpywareGroup("Mapped", ips = listOf("::ffff:192.0.2.7")),
+            ),
+        )
+        val r = HealthCheck.run(
+            input(
+                packs = listOf(feed(pack, kind = FeedKinds.SPYWARE) to pack),
+                observed = listOf(obs("2001:DB8::1"), obs("2001:db8:aabb::5"), obs("2001:db8:ab00::5"), obs("192.0.2.7")),
+            ),
+        )
+        assertEquals(HealthCheck.VERDICT_FOUND, r.verdict)
+        // A different spelling of the listed address matches; the listed text is the indicator.
+        assertTrue(r.findings.any { it.label == "Exact6" && it.indicator == "2001:db8:0::1" && it.observed == "2001:db8::1" })
+        // An IPv6 range matches the addresses inside it, not the ones outside.
+        assertTrue(r.findings.any { it.label == "Range6" && it.indicator == "2001:DB8:aa00::/40" && it.observed == "2001:db8:aabb::5" })
+        assertEquals(1, r.findings.count { it.label == "Range6" })
+        assertTrue(r.findings.any { it.label == "Mapped" && it.observed == "192.0.2.7" })
+    }
+
+    @Test
+    fun streamedHistoryWithCallerCount() {
+        // The caller streams the history and counts distinct names itself (in SQL).
+        val base = input()
+        val stream = sequenceOf(obs("media.copy9.com"), obs("media.copy9.com", count = 4, blocked = 1)).asIterable()
+        val r = HealthCheck.run(
+            HealthCheck.Input(
+                now = base.now, appVersion = base.appVersion, packs = base.packs, apps = base.apps, observed = stream, destinationsChecked = 1234,
+                historySince = null, retentionDays = 7, inspectionRunning = true, text = ::text,
+            ),
+        )
+        assertEquals(1234, r.destinationsChecked)
+        val f = r.findings.single { it.label == "TheTruthSpy" }
+        assertEquals(5L, f.count)
+        assertEquals(1L, f.blocked)
+    }
 }

@@ -43,6 +43,8 @@
     <string name="health_running">Checking apps and history…</string>
     <!-- %1$s is the error (often in English, from the system). -->
     <string name="health_failed">The check could not finish: %1$s</string>
+    <!-- Shown as the error of health_failed when the device ran out of memory. -->
+    <string name="health_failed_memory">not enough memory. Shorten the history retention in Settings, or clear the history, and try again</string>
 
     <!-- What was checked (screen and report). -->
     <plurals name="health_checked_apps">

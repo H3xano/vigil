@@ -344,6 +344,7 @@ class SpywareLabels(private val files: () -> List<File>) {
 
     private var key: List<Pair<String, Long>> = emptyList()
     private var index: Map<String, Hit> = emptyMap()
+    private var ips: IpMatcher<Hit> = IpMatcher()
 
     @Synchronized
     fun lookup(value: String): Hit? {
@@ -351,19 +352,25 @@ class SpywareLabels(private val files: () -> List<File>) {
         val k = current.map { it.path to it.lastModified() }
         if (k != key) {
             val m = HashMap<String, Hit>()
+            val ipm = IpMatcher<Hit>()
             for (f in current) {
                 val p = SpywareStore.read(f) ?: continue
                 for (g in p.groups) {
                     if (g.severity != SpywareSeverity.INDICATOR) continue
                     val hit = Hit(g.label, p.name, p.feedId)
                     for (v in g.domains) m.putIfAbsent(v, hit)
-                    for (v in g.ips) m.putIfAbsent(v, hit)
+                    for (v in g.ips) {
+                        ipm.add(v, hit)
+                        m.putIfAbsent(v.lowercase(), hit)
+                    }
                 }
             }
             index = m
+            ips = ipm
             key = k
         }
-        return index[value.lowercase()]
+        // Addresses by value (the engine names the address it matched, in its own spelling), ranges included.
+        return ips.match(value).firstOrNull()?.value ?: index[value.lowercase()]
     }
 
     /** [e] with the spyware named in its message and `detail.spyware`, or [e] itself. */

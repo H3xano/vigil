@@ -213,6 +213,14 @@ class SpywareTest {
             )
             SpywareStore.write(pack, file)
             assertEquals(pack, SpywareStore.read(file))
+            // Listed in a non-canonical spelling (as an older pack file may hold it).
+            SpywareStore.write(
+                pack.copy(
+                    feedId = "v6", name = "v6",
+                    groups = listOf(SpywareGroup("Pegasus6", ips = listOf("2001:DB8:0:0::1")), SpywareGroup("Range6", ips = listOf("2001:db8:ff00::/40"))),
+                ),
+                File(dir, "v6.spy.json"),
+            )
             assertNull(SpywareStore.read(File(dir, "missing.spy.json")))
 
             val labels = SpywareLabels { dir.listFiles()!!.toList() }
@@ -230,6 +238,11 @@ class SpywareTest {
             // IP alerts: the rule is the address.
             val ip = labels.enrich(alert.copy(kind = "threat_ip", target = "69.64.74.239", message = "Connection to 69.64.74.239 blocked: listed by feed:x (69.64.74.239)"))
             assertTrue(ip.message.contains("TheTruthSpy"))
+            // IPv6 entries match by value (any spelling) and ranges by containment.
+            val v6 = labels.enrich(alert.copy(kind = "threat_ip", target = "2001:db8::1", message = "Connection to 2001:db8::1 blocked: listed by feed:x (2001:db8::1)"))
+            assertTrue(v6.message, v6.message.contains("Pegasus6"))
+            val v6Range = labels.enrich(alert.copy(kind = "threat_ip", target = "2001:db8:ffff::9", message = "Connection to 2001:db8:ffff::9 blocked"))
+            assertTrue(v6Range.message, v6Range.message.contains("Range6"))
             // Warnings, other kinds and unknown entries are left alone.
             val warn = alert.copy(message = "Lookup of wisemo.com sinkholed: listed by feed:urlhaus (wisemo.com)", target = "wisemo.com")
             assertSame(warn, labels.enrich(warn))

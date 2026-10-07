@@ -275,8 +275,21 @@ class VigilVpnService : android.net.VpnService() {
             fail(it.message ?: getString(R.string.vpn_error_start))
             return
         }
-        app.db.flows().closeStale(new.id)
+        // The new engine and interface are owned once activated: a database
+        // error here must not leave them running with nobody to stop them.
         activate(new)
+        closeStale(new.id)
+    }
+
+    /** Closes the rows earlier sessions left open; best effort (the history is not the VPN). */
+    private suspend fun closeStale(sessionId: Long) {
+        try {
+            app.db.flows().closeStale(sessionId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "closing stale flows failed", e)
+        }
     }
 
     /**
@@ -294,10 +307,10 @@ class VigilVpnService : android.net.VpnService() {
             fail(it.message ?: getString(R.string.vpn_error_restart))
             return
         }
-        old?.side?.cancelAndJoin()
+        old?.let { stopSideJobs(it) }
         activate(new)
         if (old != null) teardown(old)
-        app.db.flows().closeStale(new.id)
+        closeStale(new.id)
     }
 
     private fun activate(s: Session) {
@@ -425,7 +438,7 @@ class VigilVpnService : android.net.VpnService() {
      */
     private suspend fun teardown(s: Session) = withContext(NonCancellable) {
         if (ServiceState.engine.value?.session == s.id) ServiceState.engine.value = null
-        s.side?.cancelAndJoin()
+        val sideDone = stopSideJobs(s)
         val graceful = s.engine.shutdown()
         s.draining = true
         val pump = s.pump
@@ -434,9 +447,38 @@ class VigilVpnService : android.net.VpnService() {
             pump.cancelAndJoin()
         }
         runCatching { s.processor.finishSession() }.onFailure { Log.w(TAG, "finishing session ${s.id} failed", it) }
-        s.engine.close()
-        runCatching { s.tun.close() }
+        if (sideDone) {
+            s.engine.close()
+            runCatching { s.tun.close() }
+        } else {
+            // A feed load still runs in native code (it cannot be interrupted) and
+            // holds the handle's read lock: close() would wait for it. The engine is
+            // shut down and has its own copy of the TUN descriptor, so close the
+            // interface now and free the engine once the load returns, without
+            // holding up the stop or the restart.
+            runCatching { s.tun.close() }
+            val side = s.side
+            app.scope.launch(Dispatchers.IO + NonCancellable) {
+                side?.join()
+                s.engine.close()
+                Log.i(TAG, "session ${s.id}: engine freed after its feed load")
+            }
+        }
         Log.i(TAG, "session ${s.id} stopped")
+    }
+
+    /**
+     * Cancels the session's side jobs (feed sync, config and device state,
+     * notification) and waits briefly for them. False if they are still busy
+     * after [SIDE_JOIN_MS]: a native feed load (an ASN table takes seconds)
+     * cannot be cancelled, and teardown must not wait for it.
+     */
+    private suspend fun stopSideJobs(s: Session): Boolean {
+        val side = s.side ?: return true
+        side.cancel()
+        if (withTimeoutOrNull(SIDE_JOIN_MS) { side.join() } != null) return true
+        Log.w(TAG, "session ${s.id}: a feed load is still running; not waiting for it")
+        return false
     }
 
     /**
@@ -548,6 +590,9 @@ class VigilVpnService : android.net.VpnService() {
                 val version = feed.lastUpdated ?: 0L
                 if (loaded[id] == version) continue
                 val summary = s.engine.use { VigilNative.nativeLoadFeedFile(it, id, feed.category, app.feeds.fileFor(id).absolutePath) }
+                // The load cannot be interrupted: if the session was stopped meanwhile, stop here,
+                // so a stopped session never publishes its feed state over the next one's.
+                coroutineContext.ensureActive()
                 if (summary != null) {
                     val fs = EngineJson.json.decodeFromString(FeedSummary.serializer(), summary)
                     Log.i(TAG, "feed $id: ${fs.domains} domains, ${fs.ipRanges} ranges")
@@ -827,6 +872,8 @@ class VigilVpnService : android.net.VpnService() {
         private const val NOTIFICATION_FAILED_ID = 2
         private const val NOTIFICATION_CONFIG_ID = 3
         private const val DRAIN_TIMEOUT_MS = 5_000L
+        /** How long teardown waits for the side jobs (see [stopSideJobs]). */
+        private const val SIDE_JOIN_MS = 1_000L
         private const val MAX_DRAIN_BATCHES = 200
         /** How often the foreground app is looked up while a background rule needs it. */
         private const val FOREGROUND_POLL_MS = 1_000L

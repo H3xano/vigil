@@ -237,6 +237,9 @@ data class ObservedName(
     val blocked: Long,
 )
 
+/** Smallest and largest row id of a table (both null when it is empty). */
+data class IdRange(val firstId: Long?, val lastId: Long?)
+
 data class Totals(
     val flows: Long,
     val blocked: Long,
@@ -320,19 +323,40 @@ interface FlowDao {
     @Query("DELETE FROM flows")
     suspend fun clear()
 
-    /** Every (domain, app) pair in the history, for the health check. */
+    /*
+     * Health check reads: the history is scanned in windows of ids (see
+     * HistoryScan), each aggregated per (name, app) in SQL, so memory stays
+     * bounded whatever the history size. Blocking (not suspend): they are
+     * called from a lazily evaluated sequence on a background thread.
+     */
+
+    @Query("SELECT MIN(id) AS firstId, MAX(id) AS lastId FROM flows")
+    fun idRange(): IdRange
+
+    /** (domain, app) pairs of the rows with ids in [first, last], for the health check. */
     @Query(
         """SELECT domain AS name, pkg, MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, COUNT(*) AS count, SUM(verdict = 'block') AS blocked
-           FROM flows WHERE domain IS NOT NULL GROUP BY domain, pkg""",
+           FROM flows WHERE id BETWEEN :first AND :last AND domain IS NOT NULL GROUP BY domain, pkg""",
     )
-    suspend fun observedDomains(): List<ObservedName>
+    fun observedDomains(first: Long, last: Long): List<ObservedName>
 
-    /** Every (address, app) pair in the history, for the health check. */
+    /** (address, app) pairs of the rows with ids in [first, last], for the health check. */
     @Query(
         """SELECT dstIp AS name, pkg, MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, COUNT(*) AS count, SUM(verdict = 'block') AS blocked
-           FROM flows GROUP BY dstIp, pkg""",
+           FROM flows WHERE id BETWEEN :first AND :last GROUP BY dstIp, pkg""",
     )
-    suspend fun observedIps(): List<ObservedName>
+    fun observedIps(first: Long, last: Long): List<ObservedName>
+
+    /** Distinct names and addresses in the whole history (DNS, connections, learned destinations), counted in SQL. */
+    @Query(
+        """SELECT COUNT(*) FROM (SELECT lower(qname) FROM dns_queries UNION SELECT lower(domain) FROM flows WHERE domain IS NOT NULL
+           UNION SELECT lower(dstIp) FROM flows UNION SELECT lower(destination) FROM destinations)""",
+    )
+    fun countObservedNames(): Int
+
+    /** The oldest rows (at most [limit]), for the history size cap. */
+    @Query("DELETE FROM flows WHERE id IN (SELECT id FROM flows ORDER BY ts LIMIT :limit)")
+    suspend fun deleteOldest(limit: Int): Int
 
     @Query("SELECT MIN(ts) FROM flows")
     suspend fun oldest(): Long?
@@ -378,12 +402,19 @@ interface DnsDao {
     @Query("DELETE FROM dns_queries")
     suspend fun clear()
 
-    /** Every (name, app) pair looked up in the history, blocked lookups included, for the health check. */
+    @Query("SELECT MIN(id) AS firstId, MAX(id) AS lastId FROM dns_queries")
+    fun idRange(): IdRange
+
+    /** (name, app) pairs looked up by the rows with ids in [first, last], blocked lookups included, for the health check. */
     @Query(
         """SELECT qname AS name, pkg, MIN(ts) AS firstSeen, MAX(ts) AS lastSeen, COUNT(*) AS count, SUM(verdict = 'block') AS blocked
-           FROM dns_queries GROUP BY qname, pkg""",
+           FROM dns_queries WHERE id BETWEEN :first AND :last GROUP BY qname, pkg""",
     )
-    suspend fun observedNames(): List<ObservedName>
+    fun observedNames(first: Long, last: Long): List<ObservedName>
+
+    /** The oldest rows (at most [limit]), for the history size cap. */
+    @Query("DELETE FROM dns_queries WHERE id IN (SELECT id FROM dns_queries ORDER BY ts LIMIT :limit)")
+    suspend fun deleteOldest(limit: Int): Int
 
     @Query("SELECT MIN(ts) FROM dns_queries")
     suspend fun oldest(): Long?
@@ -441,9 +472,12 @@ interface DestinationDao {
     @Query("DELETE FROM destinations")
     suspend fun clear()
 
-    /** The learned (app, destination) pairs (kept at least 90 days), for the health check. */
-    @Query("SELECT destination AS name, pkg, firstSeen, lastSeen, flows AS count, 0 AS blocked FROM destinations")
-    suspend fun observed(): List<ObservedName>
+    @Query("SELECT MIN(rowid) AS firstId, MAX(rowid) AS lastId FROM destinations")
+    fun idRange(): IdRange
+
+    /** The learned (app, destination) pairs (kept at least 90 days) with rowids in [first, last], for the health check. */
+    @Query("SELECT destination AS name, pkg, firstSeen, lastSeen, flows AS count, 0 AS blocked FROM destinations WHERE rowid BETWEEN :first AND :last")
+    fun observed(first: Long, last: Long): List<ObservedName>
 }
 
 @Dao
