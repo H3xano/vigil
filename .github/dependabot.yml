@@ -1,18 +1,45 @@
-# Weekly update PRs. Rust and Android toolchain pins (rust-toolchain.toml,
-# NDK, AGP) are also pinned in the F-Droid recipe: bump them together.
+# Monthly, grouped update PRs. Rust and Android toolchain pins
+# (rust-toolchain.toml, NDK, AGP) are also pinned in the F-Droid recipe:
+# bump them together.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
   - package-ecosystem: cargo
     directory: /core
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    groups:
+      cargo-patch:
+        update-types: [patch]
+    ignore:
+      # Patch releases only: most engine crates are 0.x, where Dependabot's
+      # "minor" is a breaking release (smoltcp also needs the vendored
+      # netstack-smoltcp patch). Security fixes are caught by cargo audit
+      # in CI.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
   - package-ecosystem: gradle
     directory: /android
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    groups:
+      gradle-minor:
+        update-types: [minor, patch]
+    ignore:
+      # These versions need compileSdk 37 (STATUS.md backlog item 9).
+      - dependency-name: "androidx.compose:compose-bom"
+        versions: [">= 2026.08.00"]
+      - dependency-name: "androidx.core:core-ktx"
+        versions: [">= 1.19.0"]
+      - dependency-name: "androidx.lifecycle:*"
+        versions: [">= 2.11.0"]
+      - dependency-name: "androidx.navigation:navigation-compose"
+        versions: [">= 2.10.0"]
