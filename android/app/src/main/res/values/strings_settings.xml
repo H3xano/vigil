@@ -284,7 +284,7 @@
     <string name="upstream_wg_first_address_only">Only the first IPv4 and the first IPv6 address are used.</string>
     <string name="upstream_wg_search_domains">DNS search domains ignored.</string>
     <!-- %1$s: the value in the file. -->
-    <string name="upstream_wg_mtu_invalid">[Interface] MTU \"%1$s\" is not a number between 576 and 65535.</string>
+    <string name="upstream_wg_mtu_invalid">[Interface] MTU \"%1$s\" is not a number between 576 and 65400.</string>
     <!-- %1$s: the value in the file. -->
     <string name="upstream_wg_allowed_ips_invalid">[Peer] AllowedIPs \"%1$s\" is not a CIDR range.</string>
     <!-- %1$s: the value in the file. -->

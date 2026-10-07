@@ -84,7 +84,7 @@ object WgQuick {
         if (dns.size < dnsEntries.size) warnings += UiText.of(R.string.upstream_wg_search_domains)
 
         val mtu = iface["mtu"]?.lastOrNull()?.let {
-            it.toIntOrNull()?.takeIf { m -> m in 576..65535 } ?: throw ParseException(UiText.of(R.string.upstream_wg_mtu_invalid, it))
+            it.toIntOrNull()?.takeIf { m -> m in 576..65400 } ?: throw ParseException(UiText.of(R.string.upstream_wg_mtu_invalid, it))
         }
         val allowed = list(peer["allowedips"]).map {
             normalizeCidr(it) ?: throw ParseException(UiText.of(R.string.upstream_wg_allowed_ips_invalid, it))
