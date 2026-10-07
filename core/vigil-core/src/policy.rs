@@ -247,6 +247,55 @@ const DOH_HOSTS: &[&str] = &[
 
 pub const DOT_PORT: u16 = 853;
 
+/// Addresses of well-known public resolvers that serve DNS over HTTPS on
+/// port 443 to clients that connect by address (no SNI): Cloudflare,
+/// Google, Quad9 and AdGuard.
+const DOH_IPS: &[IpAddr] = &[
+    IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+    IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1)),
+    IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+    IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
+    IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+    IpAddr::V4(Ipv4Addr::new(149, 112, 112, 112)),
+    IpAddr::V4(Ipv4Addr::new(94, 140, 14, 14)),
+    IpAddr::V4(Ipv4Addr::new(94, 140, 15, 15)),
+    IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
+    IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1001)),
+    IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
+    IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8844)),
+    IpAddr::V6(Ipv6Addr::new(0x2620, 0xfe, 0, 0, 0, 0, 0, 0xfe)),
+    IpAddr::V6(Ipv6Addr::new(0x2620, 0xfe, 0, 0, 0, 0, 0, 0x9)),
+];
+
+/// Whether `ip` is a well-known DoH resolver address (see [`DOH_IPS`]).
+/// IPv4-mapped IPv6 addresses count; for NAT64 pass the embedded IPv4
+/// address (`Policy::nat64_v4`).
+pub fn is_doh_ip(ip: IpAddr) -> bool {
+    DOH_IPS.contains(&ip.to_canonical())
+}
+
+#[cfg(test)]
+mod doh_ip_tests {
+    use super::*;
+
+    #[test]
+    fn well_known_doh_addresses() {
+        for ip in [
+            "1.1.1.1",
+            "8.8.4.4",
+            "94.140.15.15",
+            "2606:4700:4700::1001",
+            "2620:fe::9",
+            "::ffff:9.9.9.9",
+        ] {
+            assert!(is_doh_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["1.1.1.2", "8.8.8.9", "2606:4700:4700::1112", "192.0.2.1"] {
+            assert!(!is_doh_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+}
+
 pub struct Policy {
     blocked_uids: HashSet<u32>,
     /// Conditional app rules with at least one condition, by UID.

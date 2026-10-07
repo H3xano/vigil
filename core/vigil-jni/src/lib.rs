@@ -19,9 +19,10 @@ use std::os::fd::RawFd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
+use vigil_core::config::parse_feed_category;
 use vigil_core::config::DeviceState;
 use vigil_core::engine::capture::CaptureFilter;
-use vigil_core::{Config, Engine, FeedCategory, Platform};
+use vigil_core::{Config, Engine, Platform};
 
 struct JniPlatform {
     vm: JavaVM,
@@ -297,8 +298,12 @@ pub extern "system" fn Java_dev_vigil_inspector_engine_VigilNative_nativeLoadFee
         let id = jstr(&mut env, &id)?;
         let cat = jstr(&mut env, &category)?;
         let path = jstr(&mut env, &path)?;
-        let category: FeedCategory =
-            serde_json::from_value(serde_json::Value::String(cat)).unwrap_or_default();
+        // An unknown category fails the load instead of silently loading
+        // the feed as another category.
+        let Some(category) = parse_feed_category(&cat) else {
+            log::warn!("feed {id}: unknown category {cat:?}");
+            return None;
+        };
         match e.load_feed_file(&id, category, std::path::Path::new(&path)) {
             Ok(summary) => serde_json::to_string(&summary).ok(),
             Err(err) => {

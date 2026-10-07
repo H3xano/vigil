@@ -96,18 +96,30 @@ pub struct Config {
 pub struct FeedFile {
     pub id: String,
     /// A feed category (`malware`, `phishing`, `c2`, `tracking`, `ads`,
-    /// `custom`, `ja4`, `asn`); unknown names load as `tracking`, as with
-    /// `nativeLoadFeedFile`.
+    /// `custom`, `ja4`, `asn`); unknown names reject the configuration (as
+    /// `nativeLoadFeedFile` fails for them).
     pub category: String,
     /// Absolute path of the file.
     pub path: String,
 }
 
 impl FeedFile {
-    pub fn category(&self) -> crate::policy::FeedCategory {
-        serde_json::from_value(serde_json::Value::String(self.category.clone())).unwrap_or_default()
+    /// The feed category, or None for an unknown name.
+    pub fn category(&self) -> Option<crate::policy::FeedCategory> {
+        parse_feed_category(&self.category)
     }
 }
+
+/// Parses a feed category name (`malware`, `tracking`, `asn`, ...); None
+/// for an unknown one, which must never silently become another category.
+pub fn parse_feed_category(name: &str) -> Option<crate::policy::FeedCategory> {
+    serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
+}
+
+/// Upper bound of `udp_idle_timeout_s` (one day).
+pub const MAX_UDP_IDLE_TIMEOUT_S: u64 = 86_400;
+/// Upper bound of the `max_*` resource caps.
+pub const MAX_LIMIT: usize = 1 << 20;
 
 /// Upper bound of `feeds_preload_timeout_ms`.
 pub const MAX_FEEDS_PRELOAD_TIMEOUT_MS: u64 = 60_000;
@@ -606,8 +618,11 @@ impl Config {
         if self.tcp_connect_timeout_ms == 0 {
             return bad("tcp_connect_timeout_ms must be positive".into());
         }
-        if self.udp_idle_timeout_s == 0 {
-            return bad("udp_idle_timeout_s must be positive".into());
+        if self.udp_idle_timeout_s == 0 || self.udp_idle_timeout_s > MAX_UDP_IDLE_TIMEOUT_S {
+            return bad(format!(
+                "udp_idle_timeout_s must be between 1 and {MAX_UDP_IDLE_TIMEOUT_S} (got {})",
+                self.udp_idle_timeout_s
+            ));
         }
         if self.upstream_dns.is_empty() {
             return bad("upstream_dns is empty".into());
@@ -620,6 +635,17 @@ impl Config {
         ] {
             if v == 0 {
                 return bad(format!("{name} must be positive"));
+            }
+            if v > MAX_LIMIT {
+                return bad(format!("{name} must be at most {MAX_LIMIT} (got {v})"));
+            }
+        }
+        for f in &self.feeds {
+            if f.category().is_none() {
+                return bad(format!(
+                    "feeds: unknown category {:?} for feed {:?}",
+                    f.category, f.id
+                ));
             }
         }
         self.encrypted_dns
@@ -786,16 +812,16 @@ mod tests {
         let c = Config::from_json(
             r#"{"feeds":[{"id":"urlhaus","category":"malware","path":"/data/user/0/dev.vigil.inspector/files/feeds/urlhaus.txt"},
                         {"id":"asn","category":"asn","path":"/data/feeds/ip2asn.tsv"},
-                        {"id":"x","category":"no-such-category","path":"/data/feeds/x.txt"}],
+                        {"id":"t","category":"tracking","path":"/data/feeds/t.txt"}],
                 "feeds_preload_timeout_ms":5000}"#,
         )
         .unwrap();
         use crate::policy::FeedCategory;
         assert_eq!(c.feeds.len(), 3);
         assert_eq!(c.feeds[0].id, "urlhaus");
-        assert_eq!(c.feeds[0].category(), FeedCategory::Malware);
-        assert_eq!(c.feeds[1].category(), FeedCategory::Asn);
-        assert_eq!(c.feeds[2].category(), FeedCategory::Tracking);
+        assert_eq!(c.feeds[0].category(), Some(FeedCategory::Malware));
+        assert_eq!(c.feeds[1].category(), Some(FeedCategory::Asn));
+        assert_eq!(c.feeds[2].category(), Some(FeedCategory::Tracking));
         assert_eq!(c.feeds_preload_timeout_ms, 5000);
         let back = Config::from_json(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
@@ -805,7 +831,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.feeds.len(), 3);
-        assert_eq!(c.feeds[2].category(), FeedCategory::Ja4);
+        assert_eq!(c.feeds[2].category(), Some(FeedCategory::Ja4));
+        // An unknown category rejects the config instead of loading the
+        // feed as `tracking`.
+        let err = Config::from_json(
+            r#"{"feeds":[{"id":"x","category":"no-such-category","path":"/data/feeds/x.txt"}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no-such-category"), "{err}");
+        assert_eq!(parse_feed_category("trackers"), None);
+        assert_eq!(parse_feed_category("c2"), Some(FeedCategory::C2));
+    }
+
+    #[test]
+    fn timeouts_and_caps_are_bounded() {
+        Config {
+            udp_idle_timeout_s: MAX_UDP_IDLE_TIMEOUT_S,
+            max_udp_flows: MAX_LIMIT,
+            max_tcp_flows: MAX_LIMIT,
+            max_pending_connects: MAX_LIMIT,
+            max_dns_inflight: MAX_LIMIT,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
+        let too_long = Config {
+            udp_idle_timeout_s: u64::MAX,
+            ..Default::default()
+        };
+        assert!(too_long.validate().is_err());
+        let sets: [fn(&mut Config); 4] = [
+            |c| c.max_udp_flows = usize::MAX,
+            |c| c.max_tcp_flows = MAX_LIMIT + 1,
+            |c| c.max_pending_connects = usize::MAX,
+            |c| c.max_dns_inflight = usize::MAX >> 3,
+        ];
+        for set in sets {
+            let mut c = Config::default();
+            set(&mut c);
+            let err = c.validate().unwrap_err().to_string();
+            assert!(err.contains("at most"), "{err}");
+        }
     }
 
     #[test]
