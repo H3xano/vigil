@@ -349,7 +349,7 @@ impl Shared {
                 log::warn!("feed {:?}: needs an id and an absolute path", f.id);
                 continue;
             }
-            // Unknown categories are rejected by `Config::validate`.
+            // Unknown categories are skipped, never loaded as another one.
             let Some(category) = f.category() else {
                 log::warn!("feed {:?}: unknown category {:?}", f.id, f.category);
                 continue;

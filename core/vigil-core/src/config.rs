@@ -640,14 +640,6 @@ impl Config {
                 return bad(format!("{name} must be at most {MAX_LIMIT} (got {v})"));
             }
         }
-        for f in &self.feeds {
-            if f.category().is_none() {
-                return bad(format!(
-                    "feeds: unknown category {:?} for feed {:?}",
-                    f.category, f.id
-                ));
-            }
-        }
         self.encrypted_dns
             .validate()
             .map_err(ConfigError::Invalid)?;
@@ -832,13 +824,14 @@ mod tests {
         .unwrap();
         assert_eq!(c.feeds.len(), 3);
         assert_eq!(c.feeds[2].category(), Some(FeedCategory::Ja4));
-        // An unknown category rejects the config instead of loading the
-        // feed as `tracking`.
-        let err = Config::from_json(
+        // An unknown category never loads as another one (the preload logs
+        // and skips the feed), and never rejects the config: a feed must
+        // not keep inspection from starting.
+        let c = Config::from_json(
             r#"{"feeds":[{"id":"x","category":"no-such-category","path":"/data/feeds/x.txt"}]}"#,
         )
-        .unwrap_err();
-        assert!(err.to_string().contains("no-such-category"), "{err}");
+        .unwrap();
+        assert_eq!(c.feeds[0].category(), None);
         assert_eq!(parse_feed_category("trackers"), None);
         assert_eq!(parse_feed_category("c2"), Some(FeedCategory::C2));
     }

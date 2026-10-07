@@ -63,7 +63,7 @@ connection is reset on both sides.
 | `custom (<rule>)` | The global denylist (`deny_domains`). |
 | `feed:<id> (<rule>)` | A feed entry: a name, or an address for IP entries (NAT64 addresses name the embedded IPv4 address). |
 | `ja4:<feed> (<rule>)` | A listed JA4 fingerprint with `block_ja4_matches` (see "JA4 matches"). |
-| `encrypted_dns` | DoT/DoQ or a known DoH endpoint with `block_encrypted_dns`. |
+| `encrypted_dns` | DoT/DoQ or a known DoH endpoint with `block_encrypted_dns`; port 443 to a well-known resolver address (1.1.1.1, 8.8.8.8, 9.9.9.9, …) without a name counts as DoH. |
 | `not a standard query (…)` | `dns` only: a message to a hard-coded resolver that vigil cannot inspect (see below). |
 
 In a `dns` event blocked through a CNAME, the rule reads `<rule> via CNAME
@@ -172,7 +172,8 @@ the same fingerprint, which is why matching alerts only by default.
 
 `nativeLoadFeedFile(handle, id, category, path)` takes one of the categories
 `malware`, `phishing`, `c2` (threat: hits alert), `tracking`, `ads`, `custom`
-(block only), `ja4` and `asn`. Unknown categories load as `tracking`. Lines are
+(block only), `ja4` and `asn`. An unknown category fails the load (logged,
+null returned); it never loads as another category. Lines are
 recognised individually: hosts-file entries, plain domains (`*.` prefix
 allowed), AdGuard `||domain^` rules, IP addresses and CIDR ranges, and JA4
 fingerprints. A JA4 line is the fingerprint optionally followed by a label,
@@ -397,17 +398,17 @@ in the order of `config.rs`:
 | `beacon` | object | see "`beacon`" | Thresholds of the beaconing detectors. See "`beacon`" below. |
 | `mtu` | integer, 576..=65535 | 1500 | MTU of the TUN interface. |
 | `tcp_connect_timeout_ms` | integer > 0 | 15000 | Upstream connect timeout at the SYN gate. |
-| `udp_idle_timeout_s` | integer > 0 | 60 | A UDP flow ends this long after the last datagram from the server (details at the end of "Engine configuration"). |
+| `udp_idle_timeout_s` | integer, 1..=86400 | 60 | A UDP flow ends this long after the last datagram from the server (details at the end of "Engine configuration"). |
 | `stats_interval_ms` | integer | 2000 | Period of `stats` and `flow_update` events (at least 250). |
 | `worker_threads` | integer | 2 | Threads of the engine's async runtime (1 to 8). The app sends 1, or 2 with Settings → Maximum throughput. |
 | `nat64_prefixes` | list of CIDR strings | `[]` | NAT64 prefixes of the current network, e.g. `"64:ff9b::/96"` or the carrier's own prefix. IPv6 destinations inside one are matched against IP feeds by their embedded IPv4 address (last 32 bits). `64:ff9b::/96` always applies, even if absent. Only /96 prefixes are supported; other lengths and unparseable entries are logged and ignored (they do not reject the config). |
-| `max_udp_flows` | integer > 0 | 2048 | UDP NAT entries. When full, the flows idle for longest (1/32 of the table, at least one) are evicted: an open one ends with `flow_end.error` = `evicted: …`, one still being set up is dropped without events. |
-| `max_tcp_flows` | integer > 0 | 4096 | TCP connections admitted or relaying. Further SYNs are answered with a RST. |
-| `max_pending_connects` | integer > 0 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
-| `max_dns_inflight` | integer > 0 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |
+| `max_udp_flows` | integer, 1..=1048576 | 2048 | UDP NAT entries. When full, the flows idle for longest (1/32 of the table, at least one) are evicted: an open one ends with `flow_end.error` = `evicted: …`, one still being set up is dropped without events. |
+| `max_tcp_flows` | integer, 1..=1048576 | 4096 | TCP connections admitted or relaying. Further SYNs are answered with a RST. |
+| `max_pending_connects` | integer, 1..=1048576 | 256 | TCP connections waiting at the SYN gate (UID lookup and upstream connect, up to `tcp_connect_timeout_ms`). Further SYNs are answered with a RST. |
+| `max_dns_inflight` | integer, 1..=1048576 | 256 | DNS queries being answered at once. Further queries get SERVFAIL. |
 | `encrypted_dns` | object | `{"mode":"off"}` | DoT/DoH for the virtual resolver's lookups. See "`encrypted_dns`" below. |
 | `upstream` | object | `{"mode":"direct"}` | The path of every upstream socket: direct, WireGuard or SOCKS5. See "Upstream path" below. |
-| `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; unknown names load as `tracking`) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
+| `feeds` | list of `{"id", "category", "path"}` | `[]` | Feed files to load at start, before the first packet is processed, so blocklists apply right after a boot or restart. Each entry is the arguments of `nativeLoadFeedFile`: `id` (string), `category` (as there, `asn` included; an entry with an unknown name is logged and skipped) and `path` (absolute). Entries without an id or with a relative path, and files that fail to load, are logged and skipped (as `nativeLoadFeedFile` logs and returns null); they never reject the config. A later `nativeLoadFeedFile` with the same id replaces the feed (never a duplicate), and a preload still running never overwrites a feed the app loaded or removed after the engine started. |
 | `feeds_preload_timeout_ms` | integer | 10000 | How long packet processing waits for `feeds` at start (at most 60000). Feeds not loaded by then finish loading in the background while traffic flows. |
 | `capture` | object | off | Packet capture for PCAPng export and PCAP-over-IP. See "`capture`" below. |
 
@@ -646,9 +647,10 @@ false (and the running config is kept) when the JSON does not parse or:
   finite, `beacon.flow_idle_gap_s` is not positive and finite, or
   `flow_min_burst_bytes > flow_max_burst_bytes`;
 - `mtu` is outside 576..=65535;
-- `tcp_connect_timeout_ms` or `udp_idle_timeout_s` is 0;
+- `tcp_connect_timeout_ms` is 0, or `udp_idle_timeout_s` is outside
+  1..=86400;
 - `upstream_dns` is empty;
-- any of the four caps above is 0;
+- any of the four caps above is 0 or above 1 048 576;
 - `encrypted_dns` is invalid (see its section above);
 - an `app_domain_rules` entry has an empty domain, an `action` other than
   `allow`/`block`, or there are more than 10 000 `app_rules` or 100 000
