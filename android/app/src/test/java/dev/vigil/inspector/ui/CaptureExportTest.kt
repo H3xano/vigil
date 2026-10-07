@@ -11,6 +11,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class CaptureExportTest {
     private val active = ActiveEngine(session = 1_000_000L, handle = EngineHandle(0L))
@@ -78,5 +79,38 @@ class CaptureExportTest {
         assertEquals("wifi", old.settings.capture.streamBind)
         val s = old.settings.copy(capture = old.settings.capture.copy(enabled = true, streamAllow = listOf("192.168.1.10")))
         assertEquals(s, SettingsCodec.decode(SettingsCodec.encode(s)).settings)
+    }
+
+    @Test
+    fun flowExportRefusedWhenInspectionRestartedWhilePicking() {
+        val flowAlert = CaptureExport.forAlert(999_999L, "beacon", 10123, "c2.example", 17)!!
+        val restarted = ActiveEngine(session = 2_000_000L, handle = EngineHandle(0L))
+        // Picked during session 1 000 000; the alert is older than the new session anyway.
+        assertEquals(UiText.of(R.string.capture_unavailable_earlier_session), CaptureExport.unavailable(true, restarted, flowAlert, 1_000_000L))
+        // Flow ids are per session: a flow filter is refused once the engine changed.
+        val flow = PcapRequest(PcapFilter(flowIds = listOf(3)), "f.pcapng", itemTs = 2_500_000L)
+        assertEquals(UiText.of(R.string.capture_unavailable_restarted), CaptureExport.unavailable(true, restarted, flow, 1_000_000L))
+        assertNull(CaptureExport.unavailable(true, restarted, flow, 2_000_000L))
+        // An app window is valid in any session.
+        val app = PcapRequest(PcapFilter(uids = listOf(10123)), "a.pcapng", lastMs = 60_000L)
+        assertNull(CaptureExport.unavailable(true, restarted, app, 1_000_000L))
+        assertEquals(UiText.of(R.string.capture_unavailable_not_running), CaptureExport.unavailable(true, null, app, 1_000_000L))
+    }
+
+    @Test
+    fun staleTemporaryFilesAreDeleted() {
+        val dir = java.nio.file.Files.createTempDirectory("capture").toFile()
+        try {
+            val now = 10 * CaptureExport.STALE_TEMP_MS
+            val old = File(dir, "export-old.pcapng").apply { writeText("x"); setLastModified(now - CaptureExport.STALE_TEMP_MS - 1000) }
+            val fresh = File(dir, "export-new.pcapng").apply { writeText("x"); setLastModified(now - 60_000) }
+            CaptureExport.deleteStaleTemp(dir, now)
+            assertFalse(old.exists())
+            assertTrue(fresh.exists())
+            // A missing directory is fine.
+            CaptureExport.deleteStaleTemp(File(dir, "missing"), now)
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

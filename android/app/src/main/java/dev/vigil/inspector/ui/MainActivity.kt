@@ -165,7 +165,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestVpnConsent() {
         val consent = VpnService.prepare(this)
-        if (consent != null) vpnConsent.launch(consent) else VigilVpnService.start(this)
+        if (consent != null) vpnConsent.launchSafely(this, consent) else VigilVpnService.start(this)
     }
 
     fun stopInspection() = VigilVpnService.stop(this)

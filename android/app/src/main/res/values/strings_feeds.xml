@@ -361,6 +361,9 @@
     <!-- %1$s is the feed id, %2$s the listed fingerprint or label. -->
     <string name="block_reason_ja4">Its TLS fingerprint is listed by the JA4 feed %1$s, and blocking JA4 matches is on.</string>
     <string name="block_reason_ja4_rule">Its TLS fingerprint is listed by the JA4 feed %1$s (%2$s), and blocking JA4 matches is on.</string>
+    <string name="block_reason_encrypted_dns">An encrypted DNS server (DNS over TLS, QUIC or HTTPS), refused because “Block encrypted DNS” is on (Settings).</string>
+    <!-- %1$s is the engine's description of the message, in English (for example "DNS opcode 2"). -->
+    <string name="block_reason_nonstandard_dns">Refused: not a standard DNS lookup (%1$s).</string>
     <!-- Adds a sentence to one of the reasons above (%1$s). %2$s is the listed name the blocked name is an alias of. -->
     <string name="block_reason_with_cname">%1$s The name is an alias (CNAME) of %2$s, which is listed.</string>
 </resources>

@@ -60,6 +60,9 @@ import dev.vigil.inspector.ui.theme.VigilColors
 import dev.vigil.inspector.vpn.VpnStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import dev.vigil.inspector.ui.launchSafely
 
 /** "Route through VPN / proxy": direct, WireGuard or SOCKS5 egress. */
 @Composable
@@ -95,13 +98,14 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
         }
     }
 
+    val readScope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            val (text, name) = readSmallText(context, uri) ?: run {
-                importError = UiText.of(R.string.upstream_read_failed)
-                return@rememberLauncherForActivityResult
-            }
-            import(text, name)
+        if (uri == null) return@rememberLauncherForActivityResult
+        val app = context.applicationContext
+        readScope.launch {
+            // Provider IPC and file reads stay off the main thread.
+            val read = withContext(Dispatchers.IO) { readSmallText(app, uri) }
+            if (read == null) importError = UiText.of(R.string.upstream_read_failed) else import(read.first, read.second)
         }
     }
 
@@ -166,7 +170,7 @@ fun UpstreamScreen(vm: MainViewModel, nav: NavController) {
                     warnings.forEach { Text("• ${it.asString()}", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
                     importError?.let { Text(it.asString(), Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error) }
                     Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text(stringResource(R.string.upstream_import_file)) }
+                        OutlinedButton(onClick = { picker.launchSafely(context, arrayOf("*/*")) }) { Text(stringResource(R.string.upstream_import_file)) }
                         OutlinedButton(onClick = { pasting = true }) { Text(stringResource(R.string.upstream_paste_text)) }
                         if (wg != null) TextButton(onClick = { draft = draft.copy(wireguard = null); warnings = emptyList() }) { Text(stringResource(R.string.upstream_remove)) }
                     }

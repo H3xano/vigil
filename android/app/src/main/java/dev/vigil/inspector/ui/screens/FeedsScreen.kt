@@ -86,7 +86,7 @@ fun FeedsScreen(vm: MainViewModel, nav: NavController) {
     val resources = LocalResources.current
 
     // Report when an update the user can see (running or waiting) finishes.
-    var wasBusy by remember { mutableStateOf(false) }
+    var wasBusy by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(work) {
         if (work != FeedWork.IDLE) {
             wasBusy = true

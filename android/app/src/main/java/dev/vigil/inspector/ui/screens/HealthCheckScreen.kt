@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -40,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import dev.vigil.inspector.R
@@ -57,10 +57,14 @@ import dev.vigil.inspector.ui.UiText
 import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.ui.components.Tag
+import dev.vigil.inspector.ui.discardDocument
 import dev.vigil.inspector.ui.formatDateTime
 import dev.vigil.inspector.ui.formatRelative
+import dev.vigil.inspector.ui.openUrlSafely
 import dev.vigil.inspector.ui.theme.VigilColors
 import dev.vigil.inspector.vpn.VpnStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * The spyware health check: compares installed apps and the recorded
@@ -78,8 +82,19 @@ fun HealthCheckScreen(vm: MainViewModel, nav: NavController) {
     val resources = LocalResources.current
     val report = (state as? HealthState.Done)?.report
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null && report != null) {
-            hc.saveJson(uri, report) { ok -> vm.showMessage(UiText.of(if (ok) R.string.health_saved else R.string.health_save_failed)) }
+        if (uri == null) return@rememberLauncherForActivityResult
+        val app = context.applicationContext
+        // Remove the file just created when nothing could be written to it.
+        fun discard() = vm.viewModelScope.launch(Dispatchers.IO) { discardDocument(app, uri) }
+        if (report == null) {
+            // The report is gone (vigil was closed while the picker was open).
+            discard()
+            vm.showMessage(UiText.of(R.string.health_save_gone))
+        } else {
+            hc.saveJson(uri, report) { ok ->
+                if (!ok) discard()
+                vm.showMessage(UiText.of(if (ok) R.string.health_saved else R.string.health_save_failed))
+            }
         }
     }
 
@@ -232,7 +247,7 @@ private fun Verdict(r: HealthReport) {
 
 @Composable
 private fun FindingCard(f: HealthFinding) {
-    val uri = LocalUriHandler.current
+    val context = LocalContext.current
     val indicator = f.severity == SpywareSeverity.INDICATOR
     Card(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
@@ -271,7 +286,7 @@ private fun FindingCard(f: HealthFinding) {
                     ?: stringResource(R.string.health_finding_source, f.packName),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            f.reference?.let { ref -> Link(stringResource(R.string.health_finding_research), ref) { runCatching { uri.openUri(ref) } } }
+            f.reference?.let { ref -> Link(stringResource(R.string.health_finding_research), ref) { context.openUrlSafely(ref) } }
         }
     }
 }
@@ -283,10 +298,10 @@ private fun Guidance(text: String) {
 
 @Composable
 private fun HelpLinks() {
-    val uri = LocalUriHandler.current
+    val context = LocalContext.current
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Link(stringResource(R.string.health_link_access_now), HealthCheck.ACCESS_NOW) { runCatching { uri.openUri(HealthCheck.ACCESS_NOW) } }
-        Link(stringResource(R.string.health_link_stop_stalkerware), HealthCheck.STOP_STALKERWARE) { runCatching { uri.openUri(HealthCheck.STOP_STALKERWARE) } }
+        Link(stringResource(R.string.health_link_access_now), HealthCheck.ACCESS_NOW) { context.openUrlSafely(HealthCheck.ACCESS_NOW) }
+        Link(stringResource(R.string.health_link_stop_stalkerware), HealthCheck.STOP_STALKERWARE) { context.openUrlSafely(HealthCheck.STOP_STALKERWARE) }
     }
 }
 

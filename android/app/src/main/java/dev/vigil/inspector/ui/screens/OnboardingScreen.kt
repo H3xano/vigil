@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.vigil.inspector.R
 import dev.vigil.inspector.ui.MainViewModel
+import dev.vigil.inspector.ui.startActivitySafely
 
 private class Step(val icon: ImageVector, @param:StringRes val title: Int, @param:StringRes val body: Int)
 
@@ -97,7 +98,7 @@ fun OnboardingScreen(
                     3 -> if (usageAccess) {
                         Text(stringResource(R.string.onboarding_usage_granted), color = MaterialTheme.colorScheme.primary)
                     } else {
-                        OutlinedButton(onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text(stringResource(R.string.onboarding_usage_grant)) }
+                        OutlinedButton(onClick = { context.startActivitySafely(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text(stringResource(R.string.onboarding_usage_grant)) }
                     }
                     4 -> if (Build.VERSION.SDK_INT < 33 || notificationsGranted) {
                         Text(stringResource(R.string.onboarding_notifications_allowed), color = MaterialTheme.colorScheme.primary)

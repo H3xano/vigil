@@ -73,6 +73,7 @@ import dev.vigil.inspector.ui.formatRelative
 import dev.vigil.inspector.ui.AlertText
 import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.theme.VigilColors
+import dev.vigil.inspector.ui.startActivitySafely
 
 @Composable
 fun AppsScreen(vm: MainViewModel, nav: NavController) {
@@ -315,7 +316,7 @@ private fun NetworkAccessCard(vm: MainViewModel, pkg: String, label: String, blo
                         stringResource(R.string.apps_usage_access_needed),
                         style = MaterialTheme.typography.bodySmall, color = VigilColors.Medium,
                     )
-                    TextButton(onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text(stringResource(R.string.apps_grant_usage_access)) }
+                    TextButton(onClick = { context.startActivitySafely(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text(stringResource(R.string.apps_grant_usage_access)) }
                 }
             }
             RuleSwitch(stringResource(R.string.apps_block_screen_off), null, rule.blockScreenOff, enabled = !blockedAlways) {
@@ -348,8 +349,8 @@ private fun RuleSwitch(title: String, detail: String?, checked: Boolean, enabled
 @Composable
 private fun AppDomainRulesCard(vm: MainViewModel, pkg: String, label: String, rules: List<AppDomainRule>) {
     var input by rememberSaveable(pkg) { mutableStateOf("") }
-    val candidate = AppRules.normalize(input)
-    val valid = DomainNames.isDomainName(candidate)
+    val candidate = DomainNames.ruleDomain(input).orEmpty()
+    val valid = candidate.isNotEmpty()
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(stringResource(R.string.apps_rules_title), style = MaterialTheme.typography.titleMedium)

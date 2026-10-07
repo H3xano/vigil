@@ -129,4 +129,14 @@ class UiLogicTest {
         val noMessage = encryptedDnsStatus(on, true, StatsEvent(encryptedDnsFailed = 1, encryptedDnsLastErrorTs = now), now)!!
         assertEquals("Failing (last error now): unknown error · 0 answered encrypted, 1 failed", EnglishStrings.resolve(noMessage.first))
     }
+
+    @Test
+    fun rowTimesShowTheDateOnOtherDays() {
+        val utc = java.util.TimeZone.getTimeZone("UTC")
+        val noon = 1_790_000_000_000L - 1_790_000_000_000L % 86_400_000L + 43_200_000L
+        assertEquals(true, sameDay(noon, noon + 11 * 3_600_000L, utc))
+        assertEquals(false, sameDay(noon, noon + 12 * 3_600_000L, utc))
+        assertEquals(false, sameDay(noon, noon - 365 * 86_400_000L, utc))
+        assertEquals(formatTime(noon), formatRowTime(noon, noon))
+    }
 }

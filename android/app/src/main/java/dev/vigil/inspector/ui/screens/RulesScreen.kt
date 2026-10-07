@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import dev.vigil.inspector.R
+import dev.vigil.inspector.ui.DomainNames
 import dev.vigil.inspector.ui.MainViewModel
 import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.EmptyState
@@ -43,7 +44,7 @@ private val DOMAIN = Regex("^(\\*\\.)?([a-z0-9_-]+\\.)+[a-z0-9-]+$")
 fun RulesScreen(vm: MainViewModel, nav: NavController) {
     val s by vm.settings.collectAsStateWithLifecycle()
     var input by remember { mutableStateOf("") }
-    val candidate = input.trim().lowercase().removePrefix("*.")
+    val candidate = DomainNames.ruleDomain(input).orEmpty()
     val valid = DOMAIN.matches(candidate)
     val label = rememberAppLabels(vm, (s.blockedPackages + s.appRules.keys + s.appDomainRules.map { it.app }).distinct())
     Column(Modifier.fillMaxSize()) {

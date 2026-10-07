@@ -54,6 +54,9 @@ class BlockingTest {
         assertFalse(DomainNames.isDomainName("1.2.3.4"))
         assertFalse(DomainNames.isDomainName("AS13335"))
         assertFalse(DomainNames.isDomainName("123.456"))
+        // The engine matches ASCII names only: Unicode is converted by ruleDomain first.
+        assertFalse(DomainNames.isDomainName("bücher.de"))
+        assertNull(DomainNames.registrable("bücher.de"))
         assertTrue(DomainNames.isIpLiteral("2001:db8::1"))
         assertTrue(DomainNames.isIpLiteral("10.0.0.1"))
         assertFalse(DomainNames.isIpLiteral("example.com"))
@@ -91,7 +94,12 @@ class BlockingTest {
             BlockReasons.explainText("ja4:foxio (Sliver)", feeds),
         )
         assertEquals(UiText.of(R.string.block_reason_none), BlockReasons.explainText(null, feeds))
-        assertEquals(UiText.Raw("encrypted_dns"), BlockReasons.explainText("encrypted_dns", feeds))
+        assertEquals(UiText.of(R.string.block_reason_encrypted_dns), BlockReasons.explainText("encrypted_dns", feeds))
+        assertEquals(
+            UiText.of(R.string.block_reason_nonstandard_dns, "DNS opcode 2"),
+            BlockReasons.explainText("not a standard query (DNS opcode 2)", feeds),
+        )
+        assertEquals(UiText.Raw("future_code"), BlockReasons.explainText("future_code", feeds))
     }
 
     @Test
@@ -162,5 +170,22 @@ class BlockingTest {
         assertNull(validationError(ExportSettings(mode = "http", url = "https://siem.example/in")))
         assertNotNull(validationError(ExportSettings(mode = "http", httpFormat = "elastic_bulk", url = "https://es:9200/_bulk")))
         assertNull(validationError(ExportSettings(mode = "http", httpFormat = "elastic_bulk", url = "https://es:9200/vigil/_bulk")))
+    }
+
+    @Test
+    fun ruleDomainsAreConvertedToAscii() {
+        assertEquals("xn--bcher-kva.de", DomainNames.ruleDomain("bücher.de"))
+        assertEquals("xn--bcher-kva.de", DomainNames.ruleDomain("  *.Bücher.DE. "))
+        assertEquals("example.com", DomainNames.ruleDomain("*.Example.com"))
+        assertEquals("ads_tracker.example.com", DomainNames.ruleDomain("ads_tracker.example.com"))
+        assertEquals("xn--fiqs8s.example", DomainNames.ruleDomain("中国.example"))
+        assertNull(DomainNames.ruleDomain(""))
+        assertNull(DomainNames.ruleDomain("localhost"))
+        assertNull(DomainNames.ruleDomain("1.2.3.4"))
+        assertNull(DomainNames.ruleDomain("a b.example"))
+        assertNull(DomainNames.ruleDomain("a..example"))
+        // A label too long for DNS (IDN refuses it) or a name IDN cannot convert.
+        assertNull(DomainNames.ruleDomain("${"a".repeat(64)}.example"))
+        assertNull(DomainNames.ruleDomain("${"ü".repeat(60)}.example"))
     }
 }

@@ -47,6 +47,7 @@ import dev.vigil.inspector.ui.asString
 import dev.vigil.inspector.ui.components.HelpIcon
 import dev.vigil.inspector.ui.components.SectionTitle
 import dev.vigil.inspector.vpn.ConfigFactory
+import dev.vigil.inspector.ui.startActivitySafely
 
 @Composable
 fun SettingRow(
@@ -262,11 +263,11 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
             SettingRow(
                 stringResource(R.string.settings_usage_access_title),
                 stringResource(if (usageAccessGranted(vm)) R.string.settings_usage_access_granted else R.string.settings_usage_access_not_granted),
-                onClick = { context.startActivity(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) })
+                onClick = { context.startActivitySafely(Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS)) })
             SettingRow(stringResource(R.string.settings_always_on_title), stringResource(R.string.settings_always_on_summary),
-                onClick = { context.startActivity(Intent(AndroidSettings.ACTION_VPN_SETTINGS)) })
+                onClick = { context.startActivitySafely(Intent(AndroidSettings.ACTION_VPN_SETTINGS)) })
             SettingRow(stringResource(R.string.settings_notifications_title), stringResource(R.string.settings_notifications_summary), onClick = {
-                context.startActivity(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName))
+                context.startActivitySafely(Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName))
             })
 
             SectionTitle(stringResource(R.string.settings_section_data))
@@ -282,7 +283,7 @@ fun SettingsScreen(vm: MainViewModel, nav: NavController) {
                 stringResource(R.string.settings_engine_version, runCatching { VigilNative.nativeVersion() }.getOrDefault("?")),
             )
             SettingRow(stringResource(R.string.settings_source_code), "github.com/H3xano/vigil", onClick = {
-                context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/H3xano/vigil".toUri()))
+                context.startActivitySafely(Intent(Intent.ACTION_VIEW, "https://github.com/H3xano/vigil".toUri()))
             })
             Row(Modifier.padding(24.dp)) {}
         }

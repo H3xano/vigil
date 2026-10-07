@@ -68,6 +68,7 @@
     <string name="health_save_no_picker">No file picker available</string>
     <string name="health_saved">Report saved</string>
     <string name="health_save_failed">Could not save the report</string>
+    <string name="health_save_gone">The report is no longer open, so nothing was saved. Run the check again, then save it.</string>
 
     <!-- Verdict. The card is read as "Result: <title>. <summary>" by screen readers. -->
     <string name="health_verdict_found">Indicators found</string>

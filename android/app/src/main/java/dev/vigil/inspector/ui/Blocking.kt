@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import dev.vigil.inspector.R
 import dev.vigil.inspector.data.FeedCatalog
 import dev.vigil.inspector.data.FeedEntity
+import java.net.IDN
 
 /**
  * Registrable domains ("eTLD+1") without the full Public Suffix List: a
@@ -77,13 +78,36 @@ object DomainNames {
 
     fun isIpLiteral(s: String): Boolean = IPV4.matches(s) || (s.contains(':') && s.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' || it == ':' || it == '.' })
 
-    /** A DNS name vigil can have a rule for: at least two labels, not an address. Leading digits are fine (163.com). */
+    private fun isAsciiLetter(c: Char): Boolean = c in 'a'..'z' || c in 'A'..'Z'
+
+    /**
+     * A DNS name vigil can have a rule for: at least two labels, not an
+     * address, ASCII only (the engine matches names in their ASCII form; see
+     * [ruleDomain] for internationalised names). Leading digits are fine (163.com).
+     */
     fun isDomainName(s: String): Boolean {
         if (s.length > 253 || isIpLiteral(s)) return false
         val labels = s.split('.')
         if (labels.size < 2) return false
-        return labels.all { it.isNotEmpty() && it.length <= 63 && it.all { c -> c.isLetterOrDigit() || c == '-' || c == '_' } } &&
-            labels.last().any { it.isLetter() }
+        return labels.all { it.isNotEmpty() && it.length <= 63 && it.all { c -> isAsciiLetter(c) || c in '0'..'9' || c == '-' || c == '_' } } &&
+            labels.last().any(::isAsciiLetter)
+    }
+
+    /**
+     * [input] as a rule domain: trimmed, lower case, without a leading `*.`
+     * or trailing dot, and internationalised names converted to the ASCII
+     * form the engine matches (`bücher.de` → `xn--bcher-kva.de`). Null when
+     * it is not a name vigil can have a rule for.
+     */
+    fun ruleDomain(input: String): String? {
+        val name = input.trim().lowercase().removePrefix("*.").trimEnd('.')
+        if (name.isEmpty()) return null
+        val ascii = try {
+            IDN.toASCII(name).lowercase()
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        return ascii.takeIf(::isDomainName)
     }
 
     /**
@@ -130,14 +154,20 @@ object BlockReasons {
     /** Reason code of a per-app domain rule (`app domain rule (<rule>)`). */
     const val APP_DOMAIN_RULE = "app domain rule"
 
+    /** Reason code of a refused encrypted-DNS server (`block_encrypted_dns`, policy.rs `encrypted_dns_block`). */
+    const val ENCRYPTED_DNS = "encrypted_dns"
+
+    /** Reason prefix of a refused non-standard DNS message (engine/dns.rs: `not a standard query (<why>)`). */
+    const val NONSTANDARD_DNS = "not a standard query"
+
     /** A decision about one app (all access, a condition or its own domain rule), not about the name for everyone. */
     fun isPerApp(reason: String?): Boolean = reason != null &&
         (reason == "app" || reason.startsWith(APP_RULE) || reason.startsWith(APP_DOMAIN_RULE))
 
     /**
      * [reason] is `feed:<id> (<rule>)`, `custom (<rule>)`, `app`, `app rule: <condition>`,
-     * `app domain rule (<rule>)`, `ja4:<feed> (<rule>)`, optionally with ` via CNAME <name>`
-     * inside the rule.
+     * `app domain rule (<rule>)`, `ja4:<feed> (<rule>)`, `encrypted_dns` or
+     * `not a standard query (<why>)`, optionally with ` via CNAME <name>` inside the rule.
      */
     @Composable
     fun explain(reason: String?, feeds: List<FeedEntity>, appLabel: String? = null): String = explainText(reason, feeds, appLabel).asString()
@@ -185,6 +215,11 @@ object BlockReasons {
                 val feed = code.removePrefix("ja4:")
                 if (listed != null) UiText.of(R.string.block_reason_ja4_rule, feed, listed) else UiText.of(R.string.block_reason_ja4, feed)
             }
+            code == ENCRYPTED_DNS -> UiText.of(R.string.block_reason_encrypted_dns)
+            reason.startsWith(NONSTANDARD_DNS) -> UiText.of(
+                R.string.block_reason_nonstandard_dns,
+                reason.removePrefix(NONSTANDARD_DNS).trim().removePrefix("(").removeSuffix(")"),
+            )
             else -> UiText.Raw(reason)
         }
     }

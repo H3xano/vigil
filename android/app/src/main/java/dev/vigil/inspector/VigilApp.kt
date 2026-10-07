@@ -55,6 +55,8 @@ class VigilApp : Application() {
     override fun onCreate() {
         super.onCreate()
         notifier.createChannels()
+        // Packet-export temporary files left by an interrupted export.
+        scope.launch(Dispatchers.IO) { dev.vigil.inspector.ui.CaptureExport.deleteStaleTemp(this@VigilApp) }
         scope.launch {
             feeds.seedBuiltins()
             feeds.schedulePeriodic()
