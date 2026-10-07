@@ -139,7 +139,13 @@ stream_port=18790
 export VIGIL_HOST_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
 export VIGIL_CAPTURE_HTTP_PORT=18791
 mkdir -p "$work/www" && echo "capture e2e" > "$work/www/index.html"
-python3 -m http.server --bind "$VIGIL_HOST_IP" --directory "$work/www" "$VIGIL_CAPTURE_HTTP_PORT" >/dev/null 2>&1 &
+# socketserver.TCPServer, not http.server's CLI: HTTPServer.server_bind does
+# a reverse DNS lookup (getfqdn), which takes 10 s on some hosts.
+python3 -c 'import functools, http.server, socketserver, sys
+socketserver.TCPServer.allow_reuse_address = True
+h = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[3])
+socketserver.TCPServer((sys.argv[1], int(sys.argv[2])), h).serve_forever()' \
+  "$VIGIL_HOST_IP" "$VIGIL_CAPTURE_HTTP_PORT" "$work/www" >/dev/null 2>&1 &
 http_pid=$!
 for _ in $(seq 50); do (exec 3<>"/dev/tcp/$VIGIL_HOST_IP/$VIGIL_CAPTURE_HTTP_PORT") 2>/dev/null && break; sleep 0.1; done
 echo "{\"stats_interval_ms\": 500, \"capture\": {\"enabled\": true, \"buffer_bytes\": 4194304,
